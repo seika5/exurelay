@@ -375,8 +375,7 @@ Rotation (D) and per-notification rotation are **not planned**. If wanted later,
 
 - No agent instruction files (`AGENTS.md`, `CLAUDE.md`, `.cursorrules`, etc.) exist yet. Point any you add at this file.
 - `relay-web/README.md` lists the files user customizations must not touch (crypto, identity, blob protocol). With plugins and forks this becomes the "core" boundary.
-- `relay-web` now has a `package-lock.json`. `relay-server` should get one too. Next.js is pinned to ≥ 15.5.7 because of the React Server Components RCE (CVE-2025-66478 / CVE-2025-55182).
-- Known build blocker: `tsc` reports two errors with current TypeScript (`src/lib/crypto.ts:115`, `src/lib/useSpeakingDetection.ts:72`), which will fail `next build`.
+- Both `relay-web` and `relay-server` have a `package-lock.json`. Next.js is pinned to ≥ 15.5.7 because of the React Server Components RCE (CVE-2025-66478 / CVE-2025-55182).
 
 ---
 
@@ -386,7 +385,7 @@ Ordered by dependency. Each phase should land as its own reviewed change.
 
 | # | Phase | Main work | Needs |
 | --- | --- | --- | --- |
-| 0 | Land current fixes | Review/commit this branch; fix the two `tsc` errors so `next build` works; add `relay-server/package-lock.json` | — |
+| 0 | Land current fixes | **Done**: security fixes, `tsc`/`next build` clean, lockfiles for web and server | — |
 | 1 | TLS and TURN | Domain + HTTPS reverse proxy (e.g. Caddy) in front of the server; coturn with `use-auth-secret` | — |
 | 2 | Self-generated identities | Client keygen + identity format v5 (adds an ECDSA signing key, drops `myUserNumber`); server `Member` table with public keys replacing `AllowedKey` hashes; admin keys in server config; signed QR codes with 3-minute expiry; admin-signed member directory with version check; key-change notices; retire `generate-20-identities.mjs`; hard cutover (wipe server, re-enroll everyone) | 0 |
 | 3 | Login, tokens and admin | Challenge-response login; RFC 9474 blind-token issuance, daily issuer-key rotation, key-consistency check, spent-token store; per-member token quotas; TURN credentials endpoint; no request/IP logging; Settings → Admin tab (enroll, remove + signed revocation list, server status) | 1, 2 |

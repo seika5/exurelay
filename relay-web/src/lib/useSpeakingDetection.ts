@@ -69,7 +69,7 @@ export function useSpeakingDetection(
 
       setLastSpokeId((prev) => {
         const last = lastSpokeRef.current ?? prev;
-        if (nowSpeaking.has(last)) return last;
+        if (last != null && nowSpeaking.has(last)) return last;
         if (nowSpeaking.size > 0) {
           const next = Array.from(nowSpeaking)[0];
           lastSpokeRef.current = next;

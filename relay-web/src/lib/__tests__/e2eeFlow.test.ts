@@ -18,7 +18,7 @@ describe("E2EE flow (encryptForRecipient / decryptFromSender)", () => {
     const alicePub = await import("../crypto").then((c) => c.exportPublicKey(alice.publicKey));
     const bobPub = await import("../crypto").then((c) => c.exportPublicKey(bob.publicKey));
 
-    const payload = { type: "text" as const, body: "Hello Bob" };
+    const payload = { senderKeyHash: "a", sentAt: 1, type: "text" as const, body: "Hello Bob" };
     const encrypted = await encryptForRecipient(alice, bobPub, payload);
     expect(encrypted.ciphertext).toBeTruthy();
     expect(encrypted.senderPublicKey).toBe(alicePub);
@@ -33,6 +33,8 @@ describe("E2EE flow (encryptForRecipient / decryptFromSender)", () => {
     const bobPub = await import("../crypto").then((c) => c.exportPublicKey(bob.publicKey));
 
     const payload = {
+      senderKeyHash: "a",
+      sentAt: 1,
       type: "file" as const,
       body: "base64encodedfiledata",
       filename: "secret.pdf",
@@ -50,7 +52,7 @@ describe("E2EE flow (encryptForRecipient / decryptFromSender)", () => {
     const bobPub = await import("../crypto").then((c) => c.exportPublicKey(bob.publicKey));
     const alicePub = await import("../crypto").then((c) => c.exportPublicKey(alice.publicKey));
 
-    const encrypted = await encryptForRecipient(alice, bobPub, { type: "text", body: "Secret" });
+    const encrypted = await encryptForRecipient(alice, bobPub, { senderKeyHash: "a", sentAt: 1, type: "text", body: "Secret" });
     await expect(
       decryptFromSender(eve, alicePub, encrypted.ciphertext)
     ).rejects.toThrow();

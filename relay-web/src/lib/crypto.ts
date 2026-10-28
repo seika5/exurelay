@@ -112,7 +112,7 @@ export async function deriveAesKeyFromEcdhHkdf(
       name: "HKDF",
       hash: "SHA-256",
       salt: HKDF_SALT,
-      info,
+      info: info as BufferSource,
     },
     hkdfKey,
     { name: ALG, length: KEY_LEN },
