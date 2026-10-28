@@ -8,9 +8,11 @@ import {
   createEnrollmentCode,
   directoryWithMember,
   directoryWithoutMember,
+  directoryWithoutMembers,
   keyHashOf,
   readEnrollmentCode,
   signRecord,
+  verifyDepartures,
   verifyDirectory,
   verifyProfiles,
   ENROLLMENT_CODE_TTL_MS,
@@ -109,10 +111,32 @@ describe("profiles", () => {
   });
 });
 
-describe("identity file v5", () => {
-  it("round-trips keys, name and contact settings", async () => {
+describe("departures", () => {
+  it("counts only leaves signed by the member themself, and the admin can drop them all at once", async () => {
+    const admin = await newMember();
+    const a = await newMember();
+    const b = await newMember();
+    const members = [admin.entry, a.entry, b.entry];
+    const leave = (keyHash: string) => ({ type: "relay-leave", keyHash, server: "https://relay.example", ts: 1 });
+    const own = await signRecord(a.signing.privateKey, leave(a.entry.keyHash));
+    const forged = await signRecord(a.signing.privateKey, leave(b.entry.keyHash));
+    const gone = await verifyDepartures([own, forged], members);
+    expect([...gone]).toEqual([a.entry.keyHash]);
+
+    const d = { type: "relay-directory" as const, version: 3, issuedAt: 1, signer: admin.entry.sig, members, removed: [], admins: [admin.entry.sig, a.entry.sig] };
+    const next = directoryWithoutMembers(d, admin.entry.sig, [...gone], 5);
+    expect(next.version).toBe(4);
+    expect(next.members.map((m) => m.keyHash)).toEqual([admin.entry.keyHash, b.entry.keyHash]);
+    expect(next.removed).toEqual([{ keyHash: a.entry.keyHash, removedAt: 5 }]);
+    expect(next.admins).toEqual([admin.entry.sig]);
+  });
+});
+
+describe("identity file v6", () => {
+  it("round-trips its server, keys, name and contact settings", async () => {
     const m = await newMember();
     const data = {
+      server: "https://relay.example.com",
       publicKeyBase64: m.entry.ecdh,
       privateKeyJwk: await exportPrivateKey(m.ecdh.privateKey),
       signingPublicKeyBase64: m.entry.sig,
@@ -124,7 +148,8 @@ describe("identity file v5", () => {
     expect(parsed).toEqual({ ...data, contactSettings: [data.contactSettings[0], { keyHash: "cc", nickname: undefined, volume: 100 }] });
   });
 
-  it("refuses old fixed-20 identity files", () => {
-    expect(() => parseIdentityBinary(new Uint8Array([4, 0, 0]).buffer)).toThrow(/no longer supported/);
+  it("refuses older identity files", () => {
+    expect(() => parseIdentityBinary(new Uint8Array([4, 0, 0]).buffer)).toThrow(/old identity file/);
+    expect(() => parseIdentityBinary(new Uint8Array([5, 0, 0]).buffer)).toThrow(/old identity file/);
   });
 });

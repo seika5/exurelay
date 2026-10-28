@@ -15,22 +15,18 @@ See the [root README](../README.md) for full setup instructions (server, web, an
 
 ## Setup
 
-### 1. Configure env
+### 1. Configure env (optional)
 
-```bash
-cp .env.local.example .env.local
-```
-
-Edit `.env.local`:
+Nothing is required: the app asks for a join code. To preset one server for this build, copy `.env.local.example` to `.env.local` and set both values:
 
 ```env
 NEXT_PUBLIC_API_URL=https://relay.example.com
 NEXT_PUBLIC_ADMIN_SIGNING_KEYS=ADMIN_KEY_FROM_THE_HOST
 ```
 
-### 2. Create your identity
+### 2. Join and create your identity
 
-On first run the app creates your keys and saves them to `public/identity/identity.bin`. Then show the admin your enrollment code (see the main README, 2.2).
+Join with your admin's join code; the app then creates your keys for that server and saves them to `public/identity/<id>.bin` (one identity per server). Show the admin your enrollment code (see the main README, 2.2).
 
 ### 3. Install and run
 
@@ -58,6 +54,8 @@ You can edit the look and layout of the app freely. Only change the files listed
 
 - **`src/lib/identityBinary.ts`**, **`src/lib/crypto.ts`**, **`src/lib/e2ee.ts`**: Identity format and encryption.
 - **`src/lib/blobPayload.ts`**, **`src/lib/blobChunk.ts`**, **`src/lib/api.ts`**: Blob protocol and server API.
+- **`src/lib/signed.ts`**, **`src/lib/server.ts`**: Signed records, the member list, join codes and pinned admin keys.
+- **`src/lib/session.ts`**, **`src/lib/tokens.ts`**, **`src/lib/socket.ts`**: Login, anonymous tokens and their checks.
 - **`src/context/IdentityContext.tsx`**, **`src/lib/useMessages.ts`**: Identity state and message loading.
 
 Changing these can break server compatibility or corrupt your identity binary.

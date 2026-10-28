@@ -1,11 +1,11 @@
 "use client";
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { io, Socket } from "socket.io-client";
+import type { Socket } from "socket.io-client";
 import { useSpeakingDetection } from "@/lib/useSpeakingDetection";
 import { getIceServers } from "@/lib/api";
-
-const SOCKET_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
+import { createSocket } from "@/lib/socket";
+import { useIdentity } from "@/context/IdentityContext";
 
 /** Fallback when the relay has no TURN configured (or the request fails). STUN only works on friendly NATs. */
 const FALLBACK_ICE_SERVERS: RTCIceServer[] = [
@@ -107,11 +107,18 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
 
   const setRoomId = useCallback((id: string) => setRoomIdState(id), []);
 
+  // The socket logs in as us, so it only exists once we're an enrolled member of a chosen server.
+  const { enrolled, server, identity } = useIdentity();
+  const myKeyHash = identity?.keyHash;
   useEffect(() => {
-    const s = io(SOCKET_URL, { path: "/socket.io", transports: ["websocket", "polling"] });
+    if (!enrolled || !server || !myKeyHash) return;
+    const s = createSocket();
     setSocket(s);
-    return () => { s.close(); };
-  }, []);
+    return () => {
+      s.close();
+      setSocket(null);
+    };
+  }, [enrolled, server, myKeyHash]);
 
   const drainIceQueue = useCallback(async (pc: RTCPeerConnection, peerId: string) => {
     const queue = iceQueueRef.current.get(peerId);
@@ -248,7 +255,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
         setRoomJoinError("Cannot join call: conversation members unknown.");
         return;
       }
-      const fetched = keyHash ? await getIceServers(keyHash).catch(() => []) : [];
+      const fetched = await getIceServers().catch(() => []);
       iceServersRef.current = fetched.length > 0 ? fetched : FALLBACK_ICE_SERVERS;
       // Audio only at join; video is requested only when user turns camera on
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
@@ -375,6 +382,14 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
     },
     [socket]
   );
+
+  // A call belongs to one server: switching servers ends it.
+  const serverUrl = server?.url;
+  const callServerRef = useRef(serverUrl);
+  useEffect(() => {
+    if (callServerRef.current !== serverUrl && inCall) hangUp();
+    callServerRef.current = serverUrl;
+  }, [serverUrl, inCall, hangUp]);
 
   const setScreenSharingWithMedia = useCallback(async (on: boolean) => {
     const stream = localStreamRef.current;

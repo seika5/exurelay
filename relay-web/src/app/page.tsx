@@ -9,8 +9,10 @@ import { useCall } from "@/context/CallContext";
 import { CompactCallTile } from "@/components/CallTile";
 import { InlineCallView } from "@/components/InlineCallView";
 import { RemoteCallAudio } from "@/components/RemoteCallAudio";
-import { CreateIdentity, NotEnrolled } from "@/components/Onboarding";
+import { CreateIdentity, JoinServer, NotEnrolled } from "@/components/Onboarding";
+import { TokenWarning } from "@/components/TokenWarning";
 import { SettingsModal } from "@/components/SettingsModal";
+import { ServerSwitcher } from "@/components/ServerSwitcher";
 import {
   useMessages,
   type Conversation,
@@ -26,6 +28,37 @@ const GROUP_BREAK_MS = 10 * 60 * 1000;
  * Messages from the same sender with < 10 min gap from the previous message
  * are visually grouped (no header repeated).
  */
+const iconProps = {
+  width: 14,
+  height: 14,
+  viewBox: "0 0 24 24",
+  fill: "none",
+  stroke: "currentColor",
+  strokeWidth: 2,
+  strokeLinecap: "round" as const,
+  strokeLinejoin: "round" as const,
+  "aria-hidden": true,
+};
+
+function RetryIcon() {
+  return (
+    <svg {...iconProps}>
+      <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+      <path d="M21 3v6h-6" />
+    </svg>
+  );
+}
+
+function DiscardIcon() {
+  return (
+    <svg {...iconProps}>
+      <path d="M3 6h18" />
+      <path d="M8 6V4h8v2" />
+      <path d="M6 6l1 14h10l1-14" />
+    </svg>
+  );
+}
+
 function isGroupedWithPrev(
   msg: DecryptedMessage,
   prev: DecryptedMessage | undefined
@@ -119,9 +152,15 @@ async function downloadFile(base64Body: string, rawFilename: string): Promise<vo
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+/** Remounts the chat for each server, so no conversation or call state carries over when switching. */
 export default function Home() {
+  const { server } = useIdentity();
+  return <Chat key={server?.url ?? ""} />;
+}
+
+function Chat() {
   const {
-    identity, loading, needsSetup, enrolled, directoryLoaded, error: identityError,
+    identity, loading, needsSetup, enrolled, directoryLoaded, error: identityError, server,
     getDisplayName, getMyDisplayName, setDisplayName, getMember, isRemoved,
   } = useIdentity();
   const {
@@ -130,7 +169,8 @@ export default function Home() {
     setScreenSharing, hangUp, setCurrentCallConversation, setCallExpanded,
     startOrJoinCall, roomJoinError, dismissRoomJoinError,
   } = useCall();
-  const { messages, conversations, sendMessage, error } = useMessages(identity);
+  // Messages need a login, which needs membership: nothing is fetched until we're enrolled on a server.
+  const { messages, conversations, sendMessage, retrySend, discardSend, error } = useMessages(enrolled && server ? identity : null);
 
   const [selected, setSelected] = useState<Conversation | null>(null);
   // On mobile: controls whether the sidebar or the chat panel is visible.
@@ -144,6 +184,7 @@ export default function Home() {
   const [displayNameSaveError, setDisplayNameSaveError] = useState<string | null>(null);
   const [displayNameSaving, setDisplayNameSaving] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [addingServer, setAddingServer] = useState(false);
   const [groupRenameModal, setGroupRenameModal] = useState<Conversation | null>(null);
   const [groupRenameValue, setGroupRenameValue] = useState("");
   const [callRoomId, setCallRoomId] = useState<string | null>(null);
@@ -258,23 +299,28 @@ export default function Home() {
           ? selected.memberKeyHashes.filter((k) => k !== identity.keyHash)
           : [];
 
-    if (input.trim()) {
+    // The composer clears at once; the message shows faded until the server has it (see useMessages' outbox).
+    const text = input.trim();
+    const files = pendingFiles;
+    setInput("");
+    setPendingFiles([]);
+
+    if (text) {
       if (selected?.type === "dm") {
         await sendMessage(
-          { type: "text", body: input.trim() } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt">,
+          { type: "text", body: text } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt">,
           recipients,
           { recipientKeyHash: selected.otherKeyHash }
         );
       } else if (selected?.type === "group") {
         await sendMessage(
-          { type: "text", body: input.trim(), groupMemberKeyHashes: selected.memberKeyHashes } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt">,
+          { type: "text", body: text, groupMemberKeyHashes: selected.memberKeyHashes } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt">,
           recipients
         );
       }
-      setInput("");
     }
 
-    for (const file of pendingFiles) {
+    for (const file of files) {
       const body = await readFileAsBase64(file);
       const fileMsg = {
         type: "file" as const,
@@ -293,7 +339,6 @@ export default function Home() {
         await sendMessage(fileMsg as Omit<DecryptedMessage, "senderKeyHash" | "sentAt">, recipients);
       }
     }
-    setPendingFiles([]);
   };
 
   const handleCreateGroup = () => {
@@ -356,6 +401,9 @@ export default function Home() {
   const isInactive = (conv: Conversation | null) => conv?.type === "dm" && directoryLoaded && !getMember(conv.otherKeyHash);
   const selectedInactive = isInactive(selected);
 
+  // Server first: each server has its own identity.
+  if (!loading && (!server || addingServer)) return <JoinServer onClose={server ? () => setAddingServer(false) : undefined} />;
+
   if (loading) return <main className="min-h-screen bg-[var(--bg)]" />;
 
   if (needsSetup) return <CreateIdentity />;
@@ -394,6 +442,7 @@ export default function Home() {
 
   return (
     <main className="flex h-screen overflow-hidden bg-[var(--bg)] text-[var(--text)]">
+      <TokenWarning />
 
       {/* ── Sidebar ────────────────────────────────────────────────────────── */}
       {/* Mobile: full-screen when sidebarVisible. Desktop (md+): always shown at 224px. */}
@@ -422,6 +471,11 @@ export default function Home() {
               Settings
             </button>
           </div>
+        </div>
+
+        {/* Which server: each has its own identity, members and chats */}
+        <div className="px-3 py-2 border-b border-[var(--border)] flex">
+          <ServerSwitcher onAdd={() => setAddingServer(true)} className="flex-1" />
         </div>
 
         {/* Conversation + contact list */}
@@ -658,7 +712,7 @@ export default function Home() {
                         <span className="text-xs text-[var(--muted)]">{formatMsgTime(m.sentAt)}</span>
                       </div>
                     )}
-                    <div className="text-sm">
+                    <div className={`text-sm ${m.outbox?.status === "sending" ? "opacity-50" : ""}`}>
                       {m.type === "text" && <span>{m.body}</span>}
                       {m.type === "file" && (
                         <span className="inline-flex items-center gap-2">
@@ -674,6 +728,29 @@ export default function Home() {
                       )}
                       {m.type === "contact" && <span className="text-[var(--muted)]">[Contact]</span>}
                     </div>
+                    {m.outbox?.status === "failed" && (
+                      <div className="flex items-center gap-1 text-xs text-red-500">
+                        Not sent
+                        <button
+                          type="button"
+                          aria-label="Retry sending"
+                          title="Retry"
+                          className="p-1 rounded hover:bg-[var(--border)]"
+                          onClick={() => retrySend(m.outbox!.id)}
+                        >
+                          <RetryIcon />
+                        </button>
+                        <button
+                          type="button"
+                          aria-label="Discard message"
+                          title="Discard"
+                          className="p-1 rounded hover:bg-[var(--border)] text-[var(--muted)]"
+                          onClick={() => discardSend(m.outbox!.id)}
+                        >
+                          <DiscardIcon />
+                        </button>
+                      </div>
+                    )}
                   </li>
                 );
               })}
@@ -920,7 +997,7 @@ function MemberNotice({
   const member = getMember(keyHash);
   let text: string | null = null;
   if (!member && isRemoved(keyHash)) {
-    text = "This member was removed or got a new key. You can't message them here any more.";
+    text = "This member left, was removed, or got a new key. You can't message them here any more.";
   } else if (member?.replaces) {
     const old = getDisplayName(member.replaces) || member.replaces.slice(0, 8);
     text = `New key since ${new Date(member.enrolledAt).toLocaleDateString()}: the admin re-enrolled this member, replacing ${old}'s old key. Older messages are in that conversation.`;

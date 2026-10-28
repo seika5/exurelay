@@ -1,8 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useIdentity } from "@/context/IdentityContext";
+import { QrScanner } from "@/components/QrScanner";
+import { getAdminLabels, setAdminLabel } from "@/lib/api";
 import {
+  directoryWithAdmins,
   directoryWithMember,
   directoryWithoutMember,
   fingerprint,
@@ -25,16 +28,27 @@ function Fingerprint({ keyB64 }: { keyB64: string }) {
 type Pending = { request: EnrollmentRequest; keyHash: string };
 
 /**
- * Admin-only member management: create the directory, enroll from a pasted enrollment code, remove members.
- * Every change is a new directory version signed on this device; the server can't make these changes itself.
+ * Admin-only member management: create the directory, enroll from a scanned or pasted enrollment code, remove
+ * members, choose admins, and keep private labels. Every membership change is a new directory version signed on
+ * this device; the server can't make these changes itself. Labels live on the server and only admins see them.
  */
 export function MembersAdmin() {
   const { identity, directory, isAdmin, publishSignedDirectory, getDisplayName } = useIdentity();
   const [code, setCode] = useState("");
   const [pending, setPending] = useState<Pending | null>(null);
   const [replaces, setReplaces] = useState("");
+  const [label, setLabel] = useState("");
+  const [labels, setLabels] = useState<Record<string, string>>({});
+  const [scanning, setScanning] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const loadLabels = useCallback(() => {
+    getAdminLabels().then(setLabels, () => {});
+  }, []);
+  useEffect(() => {
+    if (directory && isAdmin) loadLabels();
+  }, [directory, isAdmin, loadLabels]);
 
   if (!identity || !isAdmin) return null;
   const me = identity.signingPublicKeyBase64;
@@ -78,13 +92,16 @@ export function MembersAdmin() {
     );
   }
 
-  const checkCode = () =>
+  const admins = directory.admins ?? [directory.signer];
+
+  const checkCode = (text = code) =>
     run(async () => {
-      const result = await readEnrollmentCode(code);
+      const result = await readEnrollmentCode(text);
       if (!result.ok) throw new Error(result.error);
       if (directory.members.some((m) => m.keyHash === result.keyHash)) throw new Error("That key is already enrolled.");
       setPending({ request: result.request, keyHash: result.keyHash });
       setReplaces("");
+      setLabel("");
     });
 
   const confirmEnroll = () =>
@@ -101,9 +118,32 @@ export function MembersAdmin() {
         ...(replaces ? { replaces } : {}),
       };
       await publishSignedDirectory(directoryWithMember(directory, me, member));
+      const newLabel = label.trim() || (replaces ? labels[replaces] : "");
+      if (newLabel) await setAdminLabel(member.keyHash, newLabel).catch(() => {});
+      loadLabels();
       setPending(null);
       setCode("");
     });
+
+  const editLabel = (m: DirectoryMember) => {
+    const next = window.prompt("Label (only admins see this)", labels[m.keyHash] ?? "");
+    if (next === null) return;
+    run(async () => {
+      await setAdminLabel(m.keyHash, next);
+      loadLabels();
+    });
+  };
+
+  const toggleAdmin = (m: DirectoryMember) => {
+    const isAdminNow = admins.includes(m.sig);
+    const label = getDisplayName(m.keyHash) || m.keyHash.slice(0, 8);
+    const question = isAdminNow
+      ? `Stop ${label} being an admin?`
+      : `Make ${label} an admin? Admins can enroll and remove anyone, including you.`;
+    if (!window.confirm(question)) return;
+    const next = isAdminNow ? admins.filter((a) => a !== m.sig) : [...admins, m.sig];
+    run(() => publishSignedDirectory(directoryWithAdmins(directory, me, next)));
+  };
 
   const remove = (m: DirectoryMember) => {
     const label = getDisplayName(m.keyHash) || m.keyHash.slice(0, 8);
@@ -119,17 +159,27 @@ export function MembersAdmin() {
             <div className="flex-1 min-w-0">
               <div className="text-sm truncate">
                 {getDisplayName(m.keyHash) || m.keyHash.slice(0, 8)}
+                {labels[m.keyHash] && <span className="text-[var(--muted)]"> · {labels[m.keyHash]}</span>}
                 {m.keyHash === identity.keyHash && <span className="text-[var(--muted)]"> (you)</span>}
+                {admins.includes(m.sig) && <span className="ml-1 text-xs text-[var(--accent)]">admin</span>}
               </div>
               <div className="flex gap-2 items-center">
                 <Fingerprint keyB64={m.ecdh} />
                 <span className="text-xs text-[var(--muted)]">{new Date(m.enrolledAt).toLocaleDateString()}</span>
               </div>
             </div>
+            <button type="button" disabled={busy} className={button} onClick={() => editLabel(m)}>
+              Label
+            </button>
             {m.keyHash !== identity.keyHash && (
-              <button type="button" disabled={busy} className={button} onClick={() => remove(m)}>
-                Remove
-              </button>
+              <>
+                <button type="button" disabled={busy} className={button} onClick={() => toggleAdmin(m)}>
+                  {admins.includes(m.sig) ? "Unadmin" : "Admin"}
+                </button>
+                <button type="button" disabled={busy} className={button} onClick={() => remove(m)}>
+                  Remove
+                </button>
+              </>
             )}
           </li>
         ))}
@@ -137,16 +187,28 @@ export function MembersAdmin() {
 
       <div className="border-t border-[var(--border)] pt-3 flex flex-col gap-2">
         <h3 className="text-sm font-medium">Enroll a member</h3>
-        {!pending ? (
+        {scanning ? (
+          <QrScanner
+            onClose={() => setScanning(false)}
+            onResult={(text) => {
+              setScanning(false);
+              setCode(text);
+              checkCode(text);
+            }}
+          />
+        ) : !pending ? (
           <>
+            <button type="button" disabled={busy} className={primary} onClick={() => setScanning(true)}>
+              Scan their QR code
+            </button>
             <textarea
               value={code}
               onChange={(e) => setCode(e.target.value)}
-              placeholder="Paste their enrollment code (RELAY-ENROLL:…)"
+              placeholder="…or paste their enrollment code (RELAY-ENROLL:…)"
               rows={3}
               className="px-3 py-2 rounded bg-[var(--bg)] border border-[var(--border)] text-xs font-mono"
             />
-            <button type="button" disabled={busy || !code.trim()} className={primary} onClick={checkCode}>
+            <button type="button" disabled={busy || !code.trim()} className={button} onClick={() => checkCode()}>
               Check code
             </button>
           </>
@@ -158,6 +220,17 @@ export function MembersAdmin() {
             <p className="text-xs text-[var(--muted)]">
               Check this fingerprint matches the one on their screen: <Fingerprint keyB64={pending.request.ecdh} />
             </p>
+            <label className="text-xs text-[var(--muted)] flex flex-col gap-1">
+              Label (optional, only admins see it)
+              <input
+                type="text"
+                value={label}
+                maxLength={64}
+                onChange={(e) => setLabel(e.target.value)}
+                placeholder="e.g. Sam's work phone"
+                className="px-2 py-1.5 rounded bg-[var(--bg)] border border-[var(--border)] text-sm text-[var(--text)]"
+              />
+            </label>
             <label className="text-xs text-[var(--muted)] flex flex-col gap-1">
               Re-enrolling someone who lost their device? Pick their old key to replace it:
               <select

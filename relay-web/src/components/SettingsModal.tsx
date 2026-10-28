@@ -3,14 +3,19 @@
 import { useEffect, useState } from "react";
 import { useIdentity } from "@/context/IdentityContext";
 import { MembersAdmin } from "@/components/MembersAdmin";
+import { JoinCodePanel, ServerStatusPanel } from "@/components/AdminPanels";
 import { fingerprint } from "@/lib/signed";
+import { ApiError } from "@/lib/api";
 
 export function SettingsModal({ onClose }: { onClose: () => void }) {
-  const { identity, isAdmin, directory, directoryError, setDisplayName, saveIdentityBinary } = useIdentity();
+  const { identity, isAdmin, directory, directoryError, setDisplayName, saveIdentityBinary, server, servers, leaveServer } = useIdentity();
+  const [tab, setTab] = useState<"general" | "admin">("general");
   const [name, setName] = useState(identity?.myName ?? "");
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [fp, setFp] = useState("");
+  const [leaving, setLeaving] = useState(false);
+  const [leaveError, setLeaveError] = useState<string | null>(null);
 
   useEffect(() => {
     if (identity) fingerprint(identity.publicKeyBase64).then(setFp);
@@ -27,6 +32,39 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
             Done
           </button>
         </div>
+
+        {isAdmin && (
+          <div className="flex gap-1 text-sm">
+            {(["general", "admin"] as const).map((t) => (
+              <button
+                key={t}
+                type="button"
+                onClick={() => setTab(t)}
+                className={`px-3 py-1 rounded ${tab === t ? "bg-[var(--accent)] text-white" : "border border-[var(--border)]"}`}
+              >
+                {t === "general" ? "General" : "Admin"}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {tab === "admin" && isAdmin ? (
+          <>
+            <section className="flex flex-col gap-2">
+              <h3 className="text-sm font-medium">Join code</h3>
+              <JoinCodePanel />
+            </section>
+            <section className="flex flex-col gap-2">
+              <h3 className="text-sm font-medium">Members</h3>
+              <MembersAdmin />
+            </section>
+            <section className="flex flex-col gap-2">
+              <h3 className="text-sm font-medium">Server status</h3>
+              <ServerStatusPanel />
+            </section>
+          </>
+        ) : (
+          <>
 
         <section className="flex flex-col gap-2">
           <h3 className="text-sm font-medium">Your name</h3>
@@ -71,17 +109,47 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
           {directoryError && <p className="text-xs text-red-500">{directoryError}</p>}
         </section>
 
-        {isAdmin && (
-          <section className="flex flex-col gap-2">
-            <h3 className="text-sm font-medium">Members (admin)</h3>
-            <MembersAdmin />
-          </section>
-        )}
+        <section className="flex flex-col gap-1">
+          <h3 className="text-sm font-medium">Server</h3>
+          <code className="text-xs text-[var(--muted)] break-all">{server?.url}</code>
+          {servers.length > 1 && (
+            <p className="text-xs text-[var(--muted)]">
+              Joined {servers.length} servers; switch with the menu above your chats. Each has its own identity.
+            </p>
+          )}
+          <button
+            type="button"
+            disabled={leaving}
+            onClick={async () => {
+              if (!window.confirm("Leave this server? You're removed as a member right away, and your identity, unspent tokens and unread messages for it are deleted. To come back you'd need a new join code and the admin's approval.")) return;
+              setLeaving(true);
+              setLeaveError(null);
+              try {
+                await leaveServer();
+                onClose();
+              } catch (e) {
+                // The server answered and said no (e.g. the last admin): leaving anyway would strand it.
+                if (e instanceof ApiError && e.status < 500) {
+                  setLeaveError(e.message);
+                } else if (window.confirm("Couldn't reach the server to tell it you're leaving. Leave on this device anyway? You'll stay listed as a member until an admin removes you.")) {
+                  await leaveServer({ force: true });
+                  onClose();
+                }
+              } finally {
+                setLeaving(false);
+              }
+            }}
+            className="self-start px-3 py-1.5 rounded border border-[var(--border)] text-sm text-red-500 disabled:opacity-50"
+          >
+            {leaving ? "Leaving…" : "Leave server"}
+          </button>
+          {leaveError && <p className="text-xs text-red-500">{leaveError}</p>}
+        </section>
 
         <section className="flex flex-col gap-2">
           <h3 className="text-sm font-medium">Identity file</h3>
           <p className="text-xs text-[var(--muted)]">
-            Contains your private keys. Anyone with this file can read your messages and act as you.
+            Your private keys for this server only. Anyone with this file can read your messages here and act as you.
           </p>
           <button
             type="button"
@@ -91,6 +159,8 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
             Save identity file
           </button>
         </section>
+          </>
+        )}
       </div>
     </div>
   );

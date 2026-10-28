@@ -3,12 +3,15 @@
  * Used after decryption; server never sees this.
  */
 
-export type DecryptedMessage =
+export type DecryptedMessageBody =
   | { senderKeyHash: string; sentAt: number; recipientKeyHash?: string; type: "text"; body: string; groupMemberKeyHashes?: string[] }
   | { senderKeyHash: string; sentAt: number; recipientKeyHash?: string; type: "file"; body: string; filename?: string; fileSize?: number; groupMemberKeyHashes?: string[] }
   | { senderKeyHash: string; sentAt: number; recipientKeyHash?: string; type: "contact"; keyHash: string; publicKey: string; name?: string; groupMemberKeyHashes?: string[] }
   | { senderKeyHash: string; sentAt: number; type: "call_event"; event: "started" | "ended"; recipientKeyHash?: string; groupMemberKeyHashes?: string[] }
   | { senderKeyHash: string; sentAt: number; type: "group_rename"; newName: string; groupMemberKeyHashes: string[]; recipientKeyHash?: string };
+
+/** Every message may carry the sender's token issuer key id, for the cross-check in tokens.ts. */
+export type DecryptedMessage = DecryptedMessageBody & { issuer?: string };
 
 export function encodeMessage(m: DecryptedMessage): string {
   return JSON.stringify(m);

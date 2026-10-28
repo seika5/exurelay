@@ -12,6 +12,22 @@ export function adminKeysFromEnv(env = process.env) {
 }
 
 /**
+ * Admins trusted to sign the next directory: the `admins` list in the newest directory once there is one,
+ * otherwise ADMIN_SIGNING_KEYS (which only bootstraps the first directory).
+ */
+export function trustedAdmins(latestBody, envKeys = adminKeysFromEnv()) {
+  if (latestBody) {
+    try {
+      const d = JSON.parse(latestBody);
+      if (Array.isArray(d.admins) && d.admins.length > 0) return d.admins;
+    } catch {
+      // fall through
+    }
+  }
+  return envKeys;
+}
+
+/**
  * Check a signed member directory. Returns { ok, directory } or { ok: false, error }.
  * The directory must be signed by one of adminKeys, and its version must be above currentVersion.
  */
@@ -37,6 +53,10 @@ export async function validateDirectory(envelope, adminKeys, currentVersion = 0)
     hashes.add(m.keyHash);
     sigKeys.add(m.sig);
   }
+  if (d.admins != null) {
+    if (!Array.isArray(d.admins) || d.admins.length === 0 || d.admins.length > 20) return { ok: false, error: "malformed admins" };
+    if (!d.admins.every((a) => isB64(a) && sigKeys.has(a))) return { ok: false, error: "every admin must be a member" };
+  }
   for (const r of d.removed) {
     if (!r || typeof r.keyHash !== "string" || !isTime(r.removedAt)) return { ok: false, error: "malformed removal" };
     if (hashes.has(r.keyHash)) return { ok: false, error: "member is both enrolled and removed" };
@@ -58,4 +78,26 @@ export async function validateProfile(envelope, member, previousUpdatedAt = 0) {
   }
   if (!isTime(p.updatedAt) || p.updatedAt <= previousUpdatedAt) return { ok: false, error: "stale profile" };
   return { ok: true, profile: p };
+}
+
+export const LEAVE_MAX_AGE_MS = 5 * 60_000;
+
+const trimSlash = (u) => (typeof u === "string" ? u.replace(/\/+$/, "") : u);
+
+/**
+ * Check a member's signed { type: "relay-leave", keyHash, server, ts }. Returns { ok, leave } or { ok: false, error }.
+ * server must match publicUrl when it's set, so a leave signed for another relay can't be replayed here.
+ * The last admin can't leave: nobody would be left to sign the next directory.
+ */
+export async function validateLeave(envelope, member, adminKeys, { publicUrl = "", now = Date.now() } = {}) {
+  const l = parseBody(envelope);
+  if (!l || l.type !== "relay-leave" || typeof l.keyHash !== "string") return { ok: false, error: "not a leave request" };
+  if (!member || member.keyHash !== l.keyHash) return { ok: false, error: "not a member" };
+  if (!(await verifySigned(envelope, member.signingPublicKey))) return { ok: false, error: "bad signature" };
+  if (publicUrl && trimSlash(l.server) !== trimSlash(publicUrl)) return { ok: false, error: "leave is for a different server" };
+  if (!isTime(l.ts) || Math.abs(now - l.ts) > LEAVE_MAX_AGE_MS) return { ok: false, error: "stale leave request" };
+  if (adminKeys.length === 1 && adminKeys[0] === member.signingPublicKey) {
+    return { ok: false, error: "You're the only admin. Make someone else an admin before leaving." };
+  }
+  return { ok: true, leave: l };
 }

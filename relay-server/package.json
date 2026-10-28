@@ -10,7 +10,7 @@
     "db:push": "prisma db push",
     "db:migrate": "prisma migrate dev",
     "worker": "node ./src/worker.js",
-    "test": "node --test src/lib/__tests__/expiry.test.js src/lib/__tests__/turn.test.js src/lib/__tests__/directory.test.js src/__tests__/socket.test.js"
+    "test": "node --test src/lib/__tests__/expiry.test.js src/lib/__tests__/turn.test.js src/lib/__tests__/directory.test.js src/lib/__tests__/tokens.test.js src/__tests__/socket.test.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

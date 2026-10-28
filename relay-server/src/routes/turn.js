@@ -2,21 +2,13 @@ import { Router } from "express";
 import { getIceServersFromEnv } from "../lib/turn.js";
 
 /**
- * TURN: hand allowed members short-lived TURN credentials instead of a static password baked into clients.
- * Gated on an allowed key hash for now; phase 3 replaces this with a blind-token spend.
+ * TURN: hand members short-lived TURN credentials instead of a static password baked into clients.
+ * Paid for with one anonymous token, so the server can't tell which member is about to make a call.
  */
-export function turnRouter(prisma) {
+export function turnRouter(requireToken) {
   const router = Router();
 
-  router.get("/credentials", async (req, res) => {
-    const keyHash = req.query.keyHash;
-    if (!keyHash || typeof keyHash !== "string") {
-      return res.status(400).json({ error: "keyHash required" });
-    }
-    const allowed = await prisma.member.findUnique({ where: { keyHash }, select: { keyHash: true } });
-    if (!allowed) {
-      return res.status(403).json({ error: "key not allowed" });
-    }
+  router.get("/credentials", requireToken, (_req, res) => {
     res.set("Cache-Control", "no-store");
     return res.json(getIceServersFromEnv());
   });

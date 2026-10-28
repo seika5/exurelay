@@ -1,8 +1,10 @@
 /**
- * Binary identity format v5 (identity.bin). Versions 1–4 (host-generated, fixed 20 accounts) are not readable:
- * the move to self-generated keys is a hard cutover.
+ * Binary identity format v6. Each identity belongs to exactly one server, so servers can't link a member across
+ * servers by key. Versions 1–5 are not readable (v1–4: host-generated fixed accounts; v5: one identity for every
+ * server); each was a hard cutover.
  *
- * - version (1B) = 5
+ * - version (1B) = 6
+ * - server URL: len (2B) + utf8 (normalized, as in server.ts)
  * - ECDH public key: len (2B) + raw bytes; ECDH private key: JWK len (4B) + utf8
  * - ECDSA signing public key: len (2B) + raw bytes; ECDSA private key: JWK len (4B) + utf8
  * - my display name: len (2B) + utf8
@@ -28,6 +30,7 @@ export type ContactSettings = {
 };
 
 export type IdentityData = {
+  server: string;
   publicKeyBase64: string;
   privateKeyJwk: JsonWebKey;
   signingPublicKeyBase64: string;
@@ -36,7 +39,7 @@ export type IdentityData = {
   contactSettings: ContactSettings[];
 };
 
-const VERSION = 5;
+const VERSION = 6;
 
 const toB64 = (bytes: Uint8Array) => btoa(String.fromCharCode(...Array.from(bytes)));
 const fromB64 = (s: string) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
@@ -73,12 +76,13 @@ export function parseIdentityBinary(buf: ArrayBuffer): IdentityData {
   o += 1;
   if (version !== VERSION) {
     throw new Error(
-      version >= 1 && version <= 4
-        ? "This is an old identity file from the fixed 20 accounts, which are no longer supported. Create a new identity."
+      version >= 1 && version <= 5
+        ? "This is an old identity file from before each server got its own identity. Create a new identity."
         : "Unsupported identity file version"
     );
   }
 
+  const server = str(u16());
   const publicKeyBase64 = toB64(raw(u16()));
   const privateKeyJwk = JSON.parse(str(u32())) as JsonWebKey;
   const signingPublicKeyBase64 = toB64(raw(u16()));
@@ -92,7 +96,7 @@ export function parseIdentityBinary(buf: ArrayBuffer): IdentityData {
     const volume = Math.min(100, Math.max(0, u16()));
     contactSettings.push({ keyHash, nickname, volume });
   }
-  return { publicKeyBase64, privateKeyJwk, signingPublicKeyBase64, signingPrivateKeyJwk, myName, contactSettings };
+  return { server, publicKeyBase64, privateKeyJwk, signingPublicKeyBase64, signingPrivateKeyJwk, myName, contactSettings };
 }
 
 export function writeIdentityBinary(data: IdentityData): Uint8Array {
@@ -119,6 +123,7 @@ export function writeIdentityBinary(data: IdentityData): Uint8Array {
   };
 
   u8(VERSION);
+  short(enc(data.server));
   short(fromB64(data.publicKeyBase64));
   long(enc(JSON.stringify(data.privateKeyJwk)));
   short(fromB64(data.signingPublicKeyBase64));

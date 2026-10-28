@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
-import { io } from "socket.io-client";
-import { getBlobs, postBlobBinary } from "@/lib/api";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { ApiError, getBlobs, postBlobs } from "@/lib/api";
+import { createSocket } from "@/lib/socket";
+import { checkPeerIssuer, currentIssuerId, RateLimitError } from "@/lib/tokens";
 import {
   encryptMessageToBlobPackets,
   decryptBlobPacketToChunk,
@@ -12,9 +13,41 @@ import {
 import type { DecryptedMessage } from "@/lib/blobPayload";
 import type { Contact } from "@/lib/identityBinary";
 
-const SOCKET_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
+/** Several "refresh" pings in a row (e.g. a multi-blob message) cost one sync, and so one token. */
+const REFRESH_DEBOUNCE_MS = 1500;
+/** Must not exceed the server's MAX_BLOBS_PER_POST (relay-server/src/routes/blob.js). */
+const MAX_BLOBS_PER_POST = 64;
 
-/** No local persistence: all messages come from blobs (including our own via send-to-self). */
+/**
+ * No local persistence: all messages come from blobs (including our own via send-to-self). Until our self-copy
+ * comes back, a message we sent is shown from the outbox:
+ *
+ * - "sending" (drawn faded): queued or in flight. The queue sends one message at a time, in order. Out of tokens
+ *   (the server's rate limit), it waits until there are some and carries on; the messages just stay faded.
+ * - "sent": the server has every blob; shown normally until our self-copy replaces it.
+ * - "failed": the server refused it (any 4xx other than the rate limit), or it couldn't be reached for about a
+ *   minute of retries. Shown with Retry and Discard.
+ */
+export type OutboxStatus = "sending" | "sent" | "failed";
+export type ShownMessage = DecryptedMessage & { outbox?: { id: string; status: OutboxStatus } };
+type OutboxEntry = { id: string; message: DecryptedMessage; status: OutboxStatus; post: () => Promise<void> };
+
+/** Waits between retries when the server can't be reached (or errs); after the last, the message is "failed". */
+const UNREACHABLE_BACKOFF_MS = [2_000, 5_000, 10_000, 20_000, 30_000];
+
+/** How long to wait before trying again, or null to give up and mark the message failed. */
+export function retryDelay(e: unknown, attempt: number): number | null {
+  // Never give up on the rate limit: tokens always come back.
+  if (e instanceof RateLimitError) return Math.max(1, e.retryAfter) * 1000;
+  // The server refused this request; trying again won't change that.
+  if (e instanceof ApiError && e.status >= 400 && e.status < 500 && e.status !== 408 && e.status !== 409) return null;
+  // Unreachable, a 5xx, or a key change mid-request.
+  return UNREACHABLE_BACKOFF_MS[attempt] ?? null;
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+const outboxMatch = (a: DecryptedMessage, b: DecryptedMessage) => a.senderKeyHash === b.senderKeyHash && a.sentAt === b.sentAt;
 
 export type Conversation = { type: "dm"; otherKeyHash: string } | { type: "group"; memberKeyHashes: string[] };
 
@@ -46,15 +79,35 @@ export function useMessages(
   identity: { keyPair: CryptoKeyPair; keyHash: string; publicKeyBase64: string; contacts: Contact[] } | null
 ) {
   const [receivedMessages, setReceivedMessages] = useState<DecryptedMessage[]>([]);
+  const [outbox, setOutboxState] = useState<OutboxEntry[]>([]);
+  // The queue worker reads the outbox outside React renders, so keep the latest copy in a ref too.
+  const outboxRef = useRef<OutboxEntry[]>([]);
+  const setOutbox = useCallback((fn: (box: OutboxEntry[]) => OutboxEntry[]) => {
+    outboxRef.current = fn(outboxRef.current);
+    setOutboxState(outboxRef.current);
+  }, []);
+  const draining = useRef(false);
+  /** Set while the socket is up: schedules a sync after a delay. */
+  const syncLater = useRef<((ms: number) => void) | null>(null);
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
   const [error, setError] = useState<string | null>(null);
 
   const contactByKeyHash = new Map(identity?.contacts.map((c) => [c.keyHash, c]) ?? []);
 
   const messages = useMemo(() => {
-    const list = [...receivedMessages];
+    const list: ShownMessage[] = [...receivedMessages];
+    for (const o of outbox) {
+      if (!receivedMessages.some((m) => outboxMatch(m, o.message))) list.push({ ...o.message, outbox: { id: o.id, status: o.status } });
+    }
     list.sort((a, b) => a.sentAt - b.sentAt);
     return list;
-  }, [receivedMessages]);
+  }, [receivedMessages, outbox]);
 
   const loadBlobs = useCallback(async () => {
     if (!identity) return;
@@ -73,22 +126,39 @@ export function useMessages(
       const out = assembleVerifiedMessages(decrypted, knownKeys);
       out.sort((a, b) => a.sentAt - b.sentAt);
       setReceivedMessages(out);
+      // Our self-copy is back: those messages no longer need the outbox.
+      setOutbox((box) => box.filter((o) => o.status !== "sent" || !out.some((m) => outboxMatch(m, o.message))));
+      // Cross-check the token keys other members are using (see tokens.ts).
+      const issuers = new Set(out.filter((m) => m.senderKeyHash !== identity.keyHash && m.issuer).map((m) => m.issuer!));
+      for (const id of issuers) checkPeerIssuer(id).catch(() => {});
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Load failed");
+      // Out of tokens: sync again once there are some.
+      if (e instanceof RateLimitError) syncLater.current?.(e.retryAfter * 1000);
+      else setError(e instanceof Error ? e.message : "Load failed");
     }
-  }, [identity]);
+  }, [identity, setOutbox]);
 
   // Fetch blobs only on initial load and when the server notifies us (socket "refresh"). No polling.
   useEffect(() => {
     if (!identity) return;
-    loadBlobs();
-    const socket = io(SOCKET_URL, { path: "/socket.io", transports: ["websocket", "polling"] });
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const soon = (delay = REFRESH_DEBOUNCE_MS) => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = null;
+        loadBlobs();
+      }, delay);
+    };
+    syncLater.current = soon;
+    const socket = createSocket();
     socket.on("connect", () => {
       socket.emit("join_blob", identity.keyHash);
-      loadBlobs();
+      soon();
     });
-    socket.on("refresh", () => loadBlobs());
+    socket.on("refresh", () => soon());
     return () => {
+      syncLater.current = null;
+      if (timer) clearTimeout(timer);
       socket.emit("leave_blob", identity.keyHash);
       socket.close();
     };
@@ -127,6 +197,44 @@ export function useMessages(
     return list.sort((a, b) => lastAt(b) - lastAt(a));
   }, [identity?.keyHash, messages]);
 
+  const setStatus = useCallback(
+    (id: string, status: OutboxStatus) => setOutbox((box) => box.map((o) => (o.id === id ? { ...o, status } : o))),
+    [setOutbox]
+  );
+
+  /** Send queued messages one at a time, oldest first, until none are left. */
+  const drain = useCallback(async () => {
+    if (draining.current) return;
+    draining.current = true;
+    try {
+      for (;;) {
+        const next = outboxRef.current.find((o) => o.status === "sending");
+        if (!next || !alive.current) return;
+        for (let attempt = 0; ; ) {
+          try {
+            await next.post();
+            // The server's "refresh" ping for our self-copy reloads the conversation and clears this entry.
+            setStatus(next.id, "sent");
+            break;
+          } catch (e) {
+            const wait = retryDelay(e, e instanceof RateLimitError ? 0 : attempt++);
+            if (wait === null) {
+              setStatus(next.id, "failed");
+              break;
+            }
+            await sleep(wait);
+            // Discarded while we waited, or the chat went away.
+            if (!alive.current) return;
+            if (!outboxRef.current.some((o) => o.id === next.id && o.status === "sending")) break;
+          }
+        }
+      }
+    } finally {
+      draining.current = false;
+    }
+  }, [setStatus]);
+
+  /** Queue a message. It shows at once (faded) and is sent in order behind anything already queued. */
   const sendMessage = useCallback(
     async (
       message: Omit<DecryptedMessage, "senderKeyHash" | "sentAt">,
@@ -140,26 +248,59 @@ export function useMessages(
         sentAt: Date.now(),
         recipientKeyHash: options?.recipientKeyHash,
       } as DecryptedMessage;
-      for (const recipientKeyHash of recipientKeyHashes) {
-        const contact = contactByKeyHash.get(recipientKeyHash);
-        if (!contact) continue;
-        const packets = await encryptMessageToBlobPackets(identity.keyPair, contact.publicKey, {
-          ...fullMessage,
-          recipientKeyHash: recipientKeyHashes.length === 1 ? recipientKeyHash : undefined,
-        });
-        for (const packet of packets) {
-          await postBlobBinary(recipientKeyHash, packet);
+
+      // Encrypted once, when its turn comes; a retry resumes with the first batch the server didn't take.
+      let prepared: { to: string[]; blobs: ArrayBuffer[] } | null = null;
+      let posted = 0;
+      const post = async () => {
+        if (!prepared) {
+          const sealed = { ...fullMessage, issuer: await currentIssuerId() };
+          // Every recipient's blobs plus our self-copy go up together, in batches, one token per request.
+          const to: string[] = [];
+          const blobs: ArrayBuffer[] = [];
+          for (const recipientKeyHash of recipientKeyHashes) {
+            const contact = contactByKeyHash.get(recipientKeyHash);
+            if (!contact) continue;
+            const packets = await encryptMessageToBlobPackets(identity.keyPair, contact.publicKey, {
+              ...sealed,
+              recipientKeyHash: recipientKeyHashes.length === 1 ? recipientKeyHash : undefined,
+            });
+            for (const packet of packets) {
+              to.push(recipientKeyHash);
+              blobs.push(packet);
+            }
+          }
+          // A copy to self so we see it from blobs (no local persistence).
+          for (const packet of await encryptMessageToBlobPackets(identity.keyPair, identity.publicKeyBase64, sealed)) {
+            to.push(identity.keyHash);
+            blobs.push(packet);
+          }
+          prepared = { to, blobs };
         }
-      }
-      // Send a copy to self so we see it from blobs (no local persistence).
-      const selfPackets = await encryptMessageToBlobPackets(identity.keyPair, identity.publicKeyBase64, fullMessage);
-      for (const packet of selfPackets) {
-        await postBlobBinary(identity.keyHash, packet);
-      }
-      await loadBlobs();
+        for (; posted < prepared.blobs.length; posted += MAX_BLOBS_PER_POST) {
+          await postBlobs(prepared.to.slice(posted, posted + MAX_BLOBS_PER_POST), prepared.blobs.slice(posted, posted + MAX_BLOBS_PER_POST));
+        }
+      };
+      setOutbox((box) => [...box, { id: crypto.randomUUID(), message: fullMessage, status: "sending", post }]);
+      drain();
     },
-    [identity, contactByKeyHash, loadBlobs]
+    [identity, contactByKeyHash, setOutbox, drain]
   );
 
-  return { messages, conversations, loadBlobs, sendMessage, error };
+  const retrySend = useCallback(
+    (id: string) => {
+      setStatus(id, "sending");
+      drain();
+    },
+    [setStatus, drain]
+  );
+  const discardSend = useCallback((id: string) => setOutbox((box) => box.filter((o) => o.id !== id)), [setOutbox]);
+
+  // A different identity starts with an empty outbox and inbox.
+  useEffect(() => {
+    setOutbox(() => []);
+    setReceivedMessages([]);
+  }, [identity?.keyHash, setOutbox]);
+
+  return { messages, conversations, loadBlobs, sendMessage, retrySend, discardSend, error };
 }

@@ -18,6 +18,8 @@ See **[DESIGN.md](DESIGN.md)** for the threat model, crypto details, design deci
 ## Features
 
 - **Self-made identities, admin enrollment**: Each person's app makes their own keys; nobody else ever holds them. The admin enrolls people in person from a signed code and publishes an admin-signed member list that every app verifies. Anyone on the list can message anyone else on it.
+- **One app, any server**: The app isn't tied to a server. Members join with a join code (QR or link) from their admin, which pins the server address and the admin keys the app will trust. One app can join several servers and switch between them.
+- **Anonymous requests**: Members log in only to collect blind-signed tokens (RFC 9474). Sending, syncing and call setup each spend a token, so the server can tell a member is asking but not which one. The server keeps no request or IP logs.
 - **E2EE messaging**: Text and files sent as uniform encrypted blobs (fixed 64 KB size, chunked when larger). The server only sees opaque blobs; no content, length, or file type is visible.
 - **Voice/video**: Room-based WebRTC with Socket.io signaling. Mute, deafen, camera, screen share.
 - **72-hour blob expiry with timestamp obfuscation**: Blobs expire in a random window around 72 hours. Exact send time is not stored. A background worker deletes expired blobs.
@@ -45,9 +47,9 @@ This is done once by the person running the server, who is also the first admin.
 
 ### 1.1 Create the admin identity
 
-1. Set up the web app (section 2) with `NEXT_PUBLIC_ADMIN_SIGNING_KEYS` left empty, run it, and create your identity.
-2. On the "Waiting for enrollment" screen, open **Setting up a new server?** and copy your signing key.
-3. Put that key in `NEXT_PUBLIC_ADMIN_SIGNING_KEYS` (web app `.env.local`) and `ADMIN_SIGNING_KEYS` (server `.env`, below). More admins: comma-separate their keys.
+1. Open the web app (section 2).
+2. On **Join a server**, choose **I'm setting up a new server**, enter your server's address (e.g. `https://relay.example.com`) and your display name. This creates your identity for that server.
+3. The next screen shows your signing key. Put it in `ADMIN_SIGNING_KEYS` in the server's `.env` (below). It only authorizes the first member list; after that, admins are managed in the app.
 
 ### 1.2 Deploy the server
 
@@ -58,7 +60,7 @@ On the machine that will host the relay (e.g. a DigitalOcean droplet, VPS):
 3. Configure env:
   ```bash
    cp .env.example .env
-   # Edit .env: DATABASE_URL, PORT (4000), HOST=127.0.0.1, WEB_ORIGIN, ADMIN_SIGNING_KEYS, and the TURN_* values (see 1.4)
+   # Edit .env: DATABASE_URL, PORT (4000), HOST=127.0.0.1, PUBLIC_URL, ADMIN_SIGNING_KEYS, and the TURN_* values (see 1.4)
   ```
 4. Install deps and create the schema:
   ```bash
@@ -71,9 +73,12 @@ On the machine that will host the relay (e.g. a DigitalOcean droplet, VPS):
    npm run start    # API + Socket.io (use PM2 for production: pm2 start src/index.js --name relay-api)
    npm run worker   # Deletes expired blobs (pm2 start src/worker.js --name relay-worker)
   ```
-6. Rebuild and restart the web app with your admin key, open it, and press **Create member list**. You're now enrolled.
+6. Back in the app, press **Create member list**. You're now enrolled.
+7. Share the join code from **Settings → Admin** (QR or link) with each new member, in person or over a channel you already trust, then enroll them there.
 
-**Upgrading from the fixed-20 setup:** this is a hard cutover. Old `identity-NN.bin` files no longer load. Wipe the database (`npx prisma db push --force-reset`), then everyone creates a new identity and gets enrolled again.
+`PUBLIC_URL` must match the address in your join code exactly: logins signed for any other address are refused. `TOKEN_RATE_PER_MINUTE` (default 30, after a burst of `TOKEN_BURST`, default 200) limits how fast each member gets anonymous tokens; one token pays for one send, sync or call setup. There's no daily cap.
+
+**Upgrading:** each phase so far is a hard cutover (phase 3 identity files are v6, one per server; older files are refused). Wipe the database (`npx prisma db push --force-reset`), then everyone creates a new identity, joins with the join code, and gets enrolled again.
 
 ### 1.3 HTTPS (required)
 
@@ -110,27 +115,26 @@ openssl rand -hex 32   # the shared secret
 
 Each person sets up their own local copy of `relay-web`. Your identity file stays on your machine.
 
-### 2.1 Configure env
+### 2.1 Configure env (optional)
 
-```bash
-cd relay-web
-cp .env.local.example .env.local
-```
-
-Edit `.env.local`:
+No configuration is needed: the app asks which server to join. A build can preset one server by setting both values in `relay-web/.env.local` (copy `.env.local.example`):
 
 ```env
 NEXT_PUBLIC_API_URL=https://relay.example.com
 NEXT_PUBLIC_ADMIN_SIGNING_KEYS=ADMIN_KEY_FROM_THE_HOST
 ```
 
-TURN settings come from the relay at call time. The admin keys are what your app uses to check the member list, so get them from the admin directly, not from the server.
+TURN settings come from the relay at call time.
 
-### 2.2 Create your identity and get enrolled
+### 2.2 Join, create your identity, and get enrolled
 
-On first run the app asks for a display name and creates your keys. They're saved to `relay-web/public/identity/identity.bin` (git ignores it; don't share it). Then the app shows an enrollment QR and code that expire after 3 minutes. Meet the admin, give them the code (or let them read it off your screen), and check the fingerprint they see matches yours. The app moves on by itself once you're enrolled.
+1. **Join a server**: scan the admin's join QR, open their join link, or paste the code. Get it from the admin directly: it carries the admin keys your app will use to check the member list.
+2. The app asks for a display name and creates your keys for that server. Each server gets its own identity, so servers can't link you. They're saved to `relay-web/public/identity/<id>.bin`, one file per server (git ignores them; don't share them).
+3. The app shows an enrollment QR and code that expire after 3 minutes. Meet the admin, let them scan it (or give them the code), and check the fingerprint they see matches yours. The app moves on by itself once you're enrolled.
 
-Admins enroll and remove people in **Settings → Members**.
+Admins enroll, label and remove people, choose other admins, and see server status in **Settings → Admin**.
+
+To join another server, pick **+ Join another server…** in the server menu above your chats; the same menu switches between them. Each server has its own identity and tokens. **Settings → Leave server** removes you as a member right away and deletes that server's identity from the device; to come back you need a new join code and approval. The last admin can't leave.
 
 ### 2.3 Install and run
 
@@ -166,7 +170,7 @@ sudo xcodebuild -license accept
 
 ### 3.2 Configure the server URL
 
-Set `NEXT_PUBLIC_API_URL` in `relay-web/.env.local` to the relay's HTTPS URL. This must not be `localhost`; it is baked into the app at build time.
+Optional: the app asks for a join code on first run. To preset a server instead, set `NEXT_PUBLIC_API_URL` (and `NEXT_PUBLIC_ADMIN_SIGNING_KEYS`) in `relay-web/.env.local`; they're baked in at build time, and the URL must not be `localhost`.
 
 ```env
 NEXT_PUBLIC_API_URL=https://relay.example.com
@@ -252,7 +256,7 @@ You now have `Relay.ipa` on your Desktop.
 
 ### 3.9 Create your identity on iOS
 
-Open the app and create your identity, as in 2.2. It's saved in the app's Documents folder. **Settings → Save identity file** exports it; anyone with that file can act as you.
+Open the app, join and create your identity, as in 2.2. It's saved in the app's Documents folder. **Settings → Save identity file** exports the active server's identity; anyone with that file can act as you there.
 
 ### 3.10 Certificate refresh
 

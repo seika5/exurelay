@@ -5,7 +5,7 @@
 import { describe, it, before } from "node:test";
 import assert from "node:assert";
 import { webcrypto } from "crypto";
-import { validateDirectory, validateProfile } from "../directory.js";
+import { validateDirectory, validateLeave, validateProfile } from "../directory.js";
 import { keyHashOf } from "../signed.js";
 
 const subtle = webcrypto.subtle;
@@ -82,5 +82,36 @@ describe("validateProfile", () => {
     assert.ok((await validateProfile(await sign(member.pair.privateKey, profile), row, 5)).ok);
     assert.strictEqual((await validateProfile(await sign(member.pair.privateKey, profile), row, 10)).ok, false);
     assert.strictEqual((await validateProfile(await sign(other.pair.privateKey, profile), row, 0)).ok, false);
+  });
+});
+
+describe("trustedAdmins", () => {
+  it("uses the newest directory's admins once it has some, else the env bootstrap keys", async () => {
+    const { trustedAdmins } = await import("../directory.js");
+    assert.deepStrictEqual(trustedAdmins(null, ["env"]), ["env"]);
+    assert.deepStrictEqual(trustedAdmins(JSON.stringify({ admins: [] }), ["env"]), ["env"]);
+    assert.deepStrictEqual(trustedAdmins(JSON.stringify({ admins: ["a", "b"] }), ["env"]), ["a", "b"]);
+  });
+});
+
+describe("validateLeave", () => {
+  it("accepts a fresh leave signed by the member for this server, and refuses the last admin", async () => {
+    const me = await signingKeyPair();
+    const other = await signingKeyPair();
+    const ecdh = await ecdhPub();
+    const member = { keyHash: keyHashOf(ecdh), signingPublicKey: me.pub };
+    const now = 1_700_000_000_000;
+    const opts = { publicUrl: "https://relay.example/", now };
+    const leave = (fields = {}) =>
+      sign(me.pair.privateKey, { type: "relay-leave", keyHash: member.keyHash, server: "https://relay.example", ts: now, ...fields });
+
+    assert.strictEqual((await validateLeave(await leave(), member, [other.pub], opts)).ok, true);
+    assert.strictEqual((await validateLeave(await leave(), member, [other.pub, me.pub], opts)).ok, true);
+    assert.match((await validateLeave(await leave(), member, [me.pub], opts)).error, /only admin/);
+    assert.match((await validateLeave(await leave({ server: "https://evil.example" }), member, [other.pub], opts)).error, /different server/);
+    assert.match((await validateLeave(await leave({ ts: now - 10 * 60_000 }), member, [other.pub], opts)).error, /stale/);
+    assert.match((await validateLeave(await leave(), null, [other.pub], opts)).error, /not a member/);
+    const forged = await sign(other.pair.privateKey, JSON.parse((await leave()).body));
+    assert.match((await validateLeave(forged, member, [other.pub], opts)).error, /bad signature/);
   });
 });

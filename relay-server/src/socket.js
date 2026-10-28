@@ -1,8 +1,8 @@
 /**
- * Socket.io: signaling for WebRTC 1:1 and group (room-based).
- * No auth at transport; clients use key-derived identities in payloads.
- * Room authorization: only key hashes in the room's allowed set can join;
- * join_room and join_blob additionally validate keyHash against the Member DB table.
+ * Socket.io: signaling for WebRTC 1:1 and group (room-based), plus "new blob" pings.
+ * Each socket must present a login session (handshake auth.session), which fixes its keyHash:
+ * a socket can only listen for its own blobs and join calls as itself.
+ * Room authorization: only key hashes in the room's allowed set can join, and they must be members.
  */
 const roomAllowedKeyHashes = new Map(); // roomId -> Set(keyHash)
 
@@ -10,7 +10,17 @@ function emitRoomJoinError(socket, message = "Not allowed to join this call.") {
   socket.emit("room_join_error", { message });
 }
 
-export function registerSocketHandlers(io, prisma) {
+export function registerSocketHandlers(io, prisma, auth) {
+  if (auth && io.use) {
+    io.use((socket, next) => {
+      const session = auth.getSession(socket.handshake?.auth?.session);
+      if (!session) return next(new Error("unauthorized"));
+      socket.data = socket.data || {};
+      socket.data.keyHash = session.keyHash;
+      next();
+    });
+  }
+
   io.on("connection", (socket) => {
     socket.on("signal", (payload) => {
       const { to, ...data } = payload;
@@ -37,6 +47,10 @@ export function registerSocketHandlers(io, prisma) {
         const normalized = allowedKeyHashes
           .filter((k) => typeof k === "string" && k.trim())
           .slice(0, 100);
+        if (socket.data?.keyHash && keyHash !== socket.data.keyHash) {
+          emitRoomJoinError(socket);
+          return;
+        }
         if (normalized.length === 0 || !keyHash || !normalized.includes(keyHash)) {
           emitRoomJoinError(socket);
           return;
@@ -68,7 +82,7 @@ export function registerSocketHandlers(io, prisma) {
         socket.emit("members", members);
         socket.to(roomId).emit("peer_joined", { id: socket.id, keyHash: socket.data.keyHash ?? null });
       } catch (e) {
-        console.error("join_room error:", e);
+        console.error("join_room error:", e?.message);
       }
     });
 
@@ -93,11 +107,12 @@ export function registerSocketHandlers(io, prisma) {
     socket.on("join_blob", async (keyHash) => {
       try {
         if (!keyHash) return;
+        if (socket.data?.keyHash && keyHash !== socket.data.keyHash) return;
         const allowed = await prisma.member.findUnique({ where: { keyHash } });
         if (!allowed) return;
         socket.join(`blob:${keyHash}`);
       } catch (e) {
-        console.error("join_blob error:", e);
+        console.error("join_blob error:", e?.message);
       }
     });
 
@@ -105,4 +120,12 @@ export function registerSocketHandlers(io, prisma) {
       if (keyHash) socket.leave(`blob:${keyHash}`);
     });
   });
+}
+
+/** Disconnect every socket logged in as one of these (removed) members. */
+export function disconnectKeyHashes(io, keyHashes) {
+  const gone = new Set(keyHashes);
+  for (const s of io.sockets.sockets.values()) {
+    if (gone.has(s.data?.keyHash)) s.disconnect(true);
+  }
 }

@@ -7,34 +7,56 @@ import { computeExpiresAt } from "./lib/expiry.js";
 import { blobRouter } from "./routes/blob.js";
 import { turnRouter } from "./routes/turn.js";
 import { directoryRouter } from "./routes/directory.js";
-import { registerSocketHandlers } from "./socket.js";
+import { authRouter } from "./routes/auth.js";
+import { tokensRouter } from "./routes/tokens.js";
+import { adminRouter } from "./routes/admin.js";
+import { registerSocketHandlers, disconnectKeyHashes } from "./socket.js";
+import { createAuth } from "./lib/auth.js";
+import { createIssuer, requireToken } from "./lib/tokens.js";
 
 const prisma = new PrismaClient();
 const app = express();
+app.disable("x-powered-by");
 const httpServer = createServer(app);
 
-// Allow WEB_ORIGIN, any localhost (for dev: 3000, 3001, etc.), and Capacitor iOS origin.
-const corsOrigin = (origin, cb) => {
-  if (!origin) return cb(null, true);
-  if (process.env.WEB_ORIGIN && origin === process.env.WEB_ORIGIN) return cb(null, origin);
-  if (/^https?:\/\/localhost(:\d+)?$/.test(origin)) return cb(null, origin);
-  // Capacitor iOS app runs at capacitor://localhost
-  if (origin === "capacitor://localhost") return cb(null, origin);
-  return cb(null, false);
-};
-app.use(cors({ origin: corsOrigin, credentials: true }));
-// No global JSON body parser: only the directory routes take JSON, with their own small limit.
+// Any origin may call the API: the official app, forks and local builds all live on different origins.
+// That's safe because nothing uses cookies; every request carries its own session or token.
+const corsOptions = { origin: true, credentials: false, exposedHeaders: [] };
+app.use(cors(corsOptions));
+// No global JSON body parser: routes that take JSON add their own small limit.
+// No request logging, on purpose: requests must not be tied to IPs or times (DESIGN.md §1, §6).
 
-const io = new Server(httpServer, {
-  cors: { origin: corsOrigin, credentials: true },
-});
+const io = new Server(httpServer, { cors: corsOptions });
+
+const auth = createAuth();
+const issuer = createIssuer(prisma);
+const spend = requireToken(issuer);
+
+async function onMembersRemoved(keyHashes, version) {
+  await issuer.rotateForRemoval(version);
+  auth.revokeKeyHashes(keyHashes);
+  disconnectKeyHashes(io, keyHashes);
+}
+
+function onMemberLeft(keyHash) {
+  auth.revokeKeyHashes([keyHash]);
+  disconnectKeyHashes(io, [keyHash]);
+}
 
 app.get("/health", (_, res) => res.status(200).json({ ok: true }));
-app.use("/api/blobs", blobRouter(prisma, computeExpiresAt, io));
-app.use("/api/turn", turnRouter(prisma));
-app.use("/api/directory", directoryRouter(prisma, io));
+app.use("/api/auth", authRouter(prisma, auth));
+app.use("/api/tokens", tokensRouter(issuer, auth));
+app.use("/api/blobs", blobRouter(prisma, computeExpiresAt, io, spend));
+app.use("/api/turn", turnRouter(spend));
+app.use("/api/directory", directoryRouter(prisma, io, { onRemoved: onMembersRemoved, onLeft: onMemberLeft }));
+app.use("/api/admin", adminRouter(prisma, auth, issuer));
 
-registerSocketHandlers(io, prisma);
+registerSocketHandlers(io, prisma, auth);
+
+// Create each day's issuer key shortly after UTC midnight even if nobody asks for tokens.
+const ensureKey = () => issuer.ensureDailyKey().catch((e) => console.error("issuer key:", e?.message));
+ensureKey();
+setInterval(ensureKey, 10 * 60 * 1000).unref();
 
 const PORT = process.env.PORT || 4000;
 // Behind a TLS reverse proxy, set HOST=127.0.0.1 so the plain-HTTP port isn't reachable from outside.

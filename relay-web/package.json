@@ -18,6 +18,8 @@
     "@capacitor/core": "7.6.5",
     "@capacitor/filesystem": "7.1.8",
     "@capacitor/share": "7.0.4",
+    "@cloudflare/blindrsa-ts": "0.4.6",
+    "jsqr": "1.4.0",
     "next": "^15.5.7",
     "qrcode": "1.5.4",
     "react": "^19.0.0",
