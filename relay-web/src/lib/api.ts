@@ -20,11 +20,6 @@ export async function getBlobs(recipientKeyHash: string): Promise<{ id: string; 
   return res.json();
 }
 
-export async function deleteBlob(id: string, recipientKeyHash: string): Promise<void> {
-  const res = await fetch(`${API}/api/blobs/${id}?recipientKeyHash=${encodeURIComponent(recipientKeyHash)}`, { method: "DELETE" });
-  if (!res.ok) throw new Error(await res.text());
-}
-
 export async function checkAllowed(keyHash: string): Promise<boolean> {
   const res = await fetch(`${API}/api/keys/allowed?keyHash=${encodeURIComponent(keyHash)}`);
   if (!res.ok) return false;

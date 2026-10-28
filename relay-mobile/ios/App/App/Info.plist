@@ -59,9 +59,6 @@
 	     Users can drag identity files here directly. -->
 	<key>UIFileSharingEnabled</key>
 	<true/>
-	<!-- Allow Files app to open documents directly from the Relay folder. -->
-	<key>LSSupportsOpeningDocumentsInPlace</key>
-	<true/>
 	<!-- Privacy usage descriptions required by iOS for WebRTC and notifications. -->
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Required for voice calls.</string>

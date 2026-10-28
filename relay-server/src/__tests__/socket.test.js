@@ -37,8 +37,9 @@ describe("registerSocketHandlers (voice + blob)", () => {
     assert.ok(events.includes("join_room"), "should register join_room (voice group)");
     assert.ok(events.includes("leave_room"), "should register leave_room");
     assert.ok(events.includes("signal"), "should register signal (voice 1:1)");
-    assert.ok(events.includes("join"), "should register join (voice 1:1)");
-    assert.ok(events.includes("leave"), "should register leave");
+    // Raw join/leave would let any socket enter any room (call or blob) without checks.
+    assert.ok(!events.includes("join"), "must not register unchecked join");
+    assert.ok(!events.includes("leave"), "must not register unchecked leave");
   });
 
   it("join_blob adds socket to blob:keyHash room", async () => {

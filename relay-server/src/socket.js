@@ -26,14 +26,6 @@ export function registerSocketHandlers(io, prisma) {
       io.to(to).emit("signal", { from: socket.id, ...data });
     });
 
-    socket.on("join", (room) => {
-      if (room) socket.join(room);
-    });
-
-    socket.on("leave", (room) => {
-      if (room) socket.leave(room);
-    });
-
     socket.on("join_room", async (roomId, keyHash, allowedKeyHashes) => {
       try {
         if (!roomId) return;

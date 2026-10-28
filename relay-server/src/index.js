@@ -22,7 +22,7 @@ const corsOrigin = (origin, cb) => {
   return cb(null, false);
 };
 app.use(cors({ origin: corsOrigin, credentials: true }));
-app.use(express.json({ limit: "50mb" }));
+// No JSON body parser: no route accepts JSON, and the old 50mb limit was a memory-DoS vector.
 
 const io = new Server(httpServer, {
   cors: { origin: corsOrigin, credentials: true },

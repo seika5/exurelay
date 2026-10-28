@@ -42,11 +42,14 @@ export async function encryptMessageToBlobPackets(
   return packets;
 }
 
-/** Decrypt one blob packet; returns ChunkPlaintext (for reassembly) or null if decrypt fails. */
+/** A decrypted chunk plus the public key that actually encrypted it (proven by AES-GCM auth). */
+export type DecryptedChunk = { chunk: ChunkPlaintext; senderPublicKeyBase64: string };
+
+/** Decrypt one blob packet; returns the chunk and its real sender key, or null if decrypt fails. */
 export async function decryptBlobPacketToChunk(
   myKeyPair: CryptoKeyPair,
   packet: ArrayBuffer
-): Promise<ChunkPlaintext | null> {
+): Promise<DecryptedChunk | null> {
   try {
     const { senderPublicKeyBase64, ciphertext, messageId } = parseBlobPacket(packet);
     const senderPublic = await importPublicKey(senderPublicKeyBase64);
@@ -60,10 +63,39 @@ export async function decryptBlobPacketToChunk(
     if (typeof chunk.messageId !== "string" || typeof chunk.chunkIndex !== "number" || typeof chunk.totalChunks !== "number" || typeof chunk.fragmentBase64 !== "string") {
       return null;
     }
-    return chunk;
+    // The packet header's messageId is bound as AAD; the inner one must match it.
+    if (messageId != null && chunk.messageId !== messageId) return null;
+    return { chunk, senderPublicKeyBase64 };
   } catch {
     return null;
   }
+}
+
+/**
+ * Reassemble decrypted chunks into messages, keeping only messages whose claimed senderKeyHash
+ * maps (in knownKeys: keyHash -> publicKey base64) to the key that actually encrypted them.
+ * Without this check anyone could forge a message that appears to come from any contact.
+ */
+export function assembleVerifiedMessages(
+  decrypted: DecryptedChunk[],
+  knownKeys: Map<string, string>
+): DecryptedMessage[] {
+  const groups = new Map<string, DecryptedChunk[]>();
+  for (const d of decrypted) {
+    // Group by sender too, so one sender can't inject chunks into another sender's message.
+    const id = `${d.senderPublicKeyBase64}|${d.chunk.messageId}`;
+    const arr = groups.get(id) ?? [];
+    arr.push(d);
+    groups.set(id, arr);
+  }
+  const out: DecryptedMessage[] = [];
+  for (const group of groups.values()) {
+    const msg = reassembleChunksToMessage(group.map((d) => d.chunk));
+    if (!msg) continue;
+    const expectedKey = knownKeys.get(msg.senderKeyHash);
+    if (expectedKey && expectedKey === group[0].senderPublicKeyBase64) out.push(msg);
+  }
+  return out;
 }
 
 /** Reassemble chunks (same messageId) into one DecryptedMessage. */

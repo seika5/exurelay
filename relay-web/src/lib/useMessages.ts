@@ -6,7 +6,8 @@ import { getBlobs, postBlobBinary } from "@/lib/api";
 import {
   encryptMessageToBlobPackets,
   decryptBlobPacketToChunk,
-  reassembleChunksToMessage,
+  assembleVerifiedMessages,
+  type DecryptedChunk,
 } from "@/lib/blobChunk";
 import type { DecryptedMessage } from "@/lib/blobPayload";
 import type { Contact } from "@/lib/identityBinary";
@@ -57,28 +58,19 @@ export function useMessages(
 
   const loadBlobs = useCallback(async () => {
     if (!identity) return;
-    const contactSet = new Set(identity.contacts.map((c) => c.keyHash));
+    // Only contacts and ourselves; each message must be encrypted by the key its sender claims.
+    const knownKeys = new Map(identity.contacts.map((c) => [c.keyHash, c.publicKey]));
+    knownKeys.set(identity.keyHash, identity.publicKeyBase64);
     setError(null);
     try {
       const list = await getBlobs(identity.keyHash);
-      const allChunks: import("@/lib/blobPayload").ChunkPlaintext[] = [];
+      const decrypted: DecryptedChunk[] = [];
       for (const b of list) {
         const buf = Uint8Array.from(atob(b.payload), (c) => c.charCodeAt(0)).buffer;
-        const chunk = await decryptBlobPacketToChunk(identity.keyPair, buf);
-        if (chunk) allChunks.push(chunk);
+        const d = await decryptBlobPacketToChunk(identity.keyPair, buf);
+        if (d) decrypted.push(d);
       }
-      const byMessageId = new Map<string, typeof allChunks>();
-      for (const c of allChunks) {
-        const arr = byMessageId.get(c.messageId) ?? [];
-        arr.push(c);
-        byMessageId.set(c.messageId, arr);
-      }
-      const out: DecryptedMessage[] = [];
-      for (const chunks of byMessageId.values()) {
-        const msg = reassembleChunksToMessage(chunks);
-        if (msg && (contactSet.has(msg.senderKeyHash) || msg.senderKeyHash === identity.keyHash))
-          out.push(msg);
-      }
+      const out = assembleVerifiedMessages(decrypted, knownKeys);
       out.sort((a, b) => a.sentAt - b.sentAt);
       setReceivedMessages(out);
     } catch (e) {

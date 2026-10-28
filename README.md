@@ -11,6 +11,8 @@ relay/
 
 **Each user runs their own copy of the app** (web and/or mobile) and points it at the shared server. Running locally is intentional: it lets each person customize the UI, make edits, and rebuild without touching the server or other users' setups.
 
+See **[DESIGN.md](DESIGN.md)** for the threat model, crypto details, design decisions, and known security gaps.
+
 ---
 
 ## Features

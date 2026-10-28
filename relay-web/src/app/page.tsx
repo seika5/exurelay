@@ -82,12 +82,19 @@ function getMimeType(filename: string): string {
   return map[ext] ?? "application/octet-stream";
 }
 
+/** Drop directory parts and leading dots: the filename comes from the sender and could be "../identity.bin". */
+function safeFilename(name: string): string {
+  const base = (name.split(/[\\/]/).pop() ?? "").replace(/^\.+/, "").trim();
+  return base || "download";
+}
+
 /**
  * Download / share a file received as a base64 blob.
  * - Native (Capacitor): writes to cache then opens the iOS share sheet.
  * - Web: creates an object URL, clicks a temporary anchor, then cleans up.
  */
-async function downloadFile(base64Body: string, filename: string): Promise<void> {
+async function downloadFile(base64Body: string, rawFilename: string): Promise<void> {
+  const filename = safeFilename(rawFilename);
   if (Capacitor.isNativePlatform()) {
     await Filesystem.writeFile({
       path: filename,

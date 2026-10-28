@@ -76,29 +76,8 @@ export function blobRouter(prisma, computeExpiresAt, io) {
     }
   });
 
-  // Delete a blob by id (recipient confirms consumption)
-  router.delete("/:id", async (req, res) => {
-    try {
-      const recipientKeyHash = req.query.recipientKeyHash;
-      if (!recipientKeyHash || typeof recipientKeyHash !== "string") {
-        return res.status(400).json({ error: "recipientKeyHash required" });
-      }
-      const allowed = await prisma.allowedKey.findUnique({ where: { keyHash: recipientKeyHash } });
-      if (!allowed) {
-        return res.status(403).json({ error: "recipient key not allowed" });
-      }
-      const result = await prisma.blob.deleteMany({
-        where: { id: req.params.id, recipientKeyHash },
-      });
-      if (result.count === 0) {
-        return res.status(404).json({ error: "not found" });
-      }
-      return res.status(204).send();
-    } catch (e) {
-      console.error(e);
-      return res.status(500).json({ error: "Failed to delete blob" });
-    }
-  });
+  // No DELETE route: requests are unauthenticated, so anyone knowing a key hash could wipe
+  // that user's inbox. Blobs are removed only by the expiry worker.
 
   return router;
 }
