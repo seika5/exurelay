@@ -65,11 +65,12 @@ On the machine that will host the relay (e.g. a DigitalOcean droplet, VPS):
 3. Configure env:
   ```bash
    cp .env.example .env
-   # Edit .env: set DATABASE_URL, PORT (e.g. 4000), WEB_ORIGIN (e.g. http://localhost:3000)
+   # Edit .env: DATABASE_URL, PORT (4000), HOST=127.0.0.1, WEB_ORIGIN, and the TURN_* values (see 1.4)
   ```
 4. Install deps, push schema, and seed keys:
   ```bash
    npm i
+   npx prisma generate
    npx prisma db push
    npm run seed
   ```
@@ -78,41 +79,35 @@ On the machine that will host the relay (e.g. a DigitalOcean droplet, VPS):
    npm run start    # API + Socket.io (use PM2 for production: pm2 start src/index.js --name relay-api)
    npm run worker   # Deletes expired blobs (pm2 start src/worker.js --name relay-worker)
   ```
-6. Open the firewall: allow the API port (e.g. 4000) and TURN port(s) if using coturn.
 
-### 1.3 TURN server (needed for cross-network calls)
+### 1.3 HTTPS (required)
 
-WebRTC media is peer-to-peer. STUN (bundled) works for some same-network setups, but calls across different networks or strict NATs require a TURN relay. Run coturn on the same host:
+Clients must reach the relay over HTTPS. Point a domain's DNS record at the host, then put [Caddy](https://caddyserver.com/docs/install) in front of the API. It gets and renews the certificate itself:
+
+```bash
+sudo cp deploy/Caddyfile /etc/caddy/Caddyfile   # edit relay.example.com to your domain
+sudo systemctl reload caddy
+sudo ufw allow 80/tcp && sudo ufw allow 443/tcp
+```
+
+With `HOST=127.0.0.1` the API's plain-HTTP port is only reachable through Caddy. Don't open port 4000 in the firewall.
+
+### 1.4 TURN server (needed for cross-network calls)
+
+WebRTC media is peer-to-peer. STUN works for some same-network setups, but calls across different networks or strict NATs need a TURN relay. Run coturn on the same host. Clients never get a fixed password: the API hands out credentials that expire (12 hours by default).
 
 ```bash
 sudo apt install -y coturn
+openssl rand -hex 32   # the shared secret
 ```
 
-Edit `/etc/turnserver.conf` (or `/etc/coturn/turnserver.conf`):
-
-```conf
-listening-port=3478
-lt-cred-mech
-user=relay_turn:YOUR_STRONG_TURN_PASSWORD
-realm=relay.local
-fingerprint
-no-multicast-peers
-```
-
-Open firewall ports and start:
-
-```bash
-sudo ufw allow 3478/udp && sudo ufw allow 3478/tcp && sudo ufw allow 49152:65535/udp
-sudo systemctl enable coturn && sudo systemctl start coturn
-```
-
-Each user sets these in their `relay-web/.env.local` (and rebuilds the mobile app if using it):
-
-```env
-NEXT_PUBLIC_TURN_URL=turn:YOUR_SERVER_IP:3478
-NEXT_PUBLIC_TURN_USERNAME=relay_turn
-NEXT_PUBLIC_TURN_CREDENTIAL=YOUR_STRONG_TURN_PASSWORD
-```
+1. Copy `deploy/turnserver.conf` to `/etc/turnserver.conf`. Set `static-auth-secret` to the secret, and `realm` and the cert paths to your domain. If you skip TLS, comment out `tls-listening-port`, `cert` and `pkey`.
+2. In `relay-server/.env`, set `TURN_SECRET` to the same secret and `TURN_URLS`/`STUN_URLS` to your domain, then restart the API.
+3. Open the ports and start coturn:
+  ```bash
+   sudo ufw allow 3478 && sudo ufw allow 5349/tcp && sudo ufw allow 49152:65535/udp
+   sudo systemctl enable coturn && sudo systemctl restart coturn
+  ```
 
 ---
 
@@ -130,11 +125,10 @@ cp .env.local.example .env.local
 Edit `.env.local`:
 
 ```env
-NEXT_PUBLIC_API_URL=http://YOUR_SERVER_IP:4000
-NEXT_PUBLIC_TURN_URL=turn:YOUR_SERVER_IP:3478
-NEXT_PUBLIC_TURN_USERNAME=relay_turn
-NEXT_PUBLIC_TURN_CREDENTIAL=YOUR_STRONG_TURN_PASSWORD
+NEXT_PUBLIC_API_URL=https://relay.example.com
 ```
+
+TURN settings come from the relay at call time, so there's nothing else to set.
 
 ### 2.2 Add your identity file
 
@@ -178,10 +172,10 @@ sudo xcodebuild -license accept
 
 ### 3.2 Configure the server URL
 
-Set `NEXT_PUBLIC_API_URL` (and TURN vars if applicable) in `relay-web/.env.local` to point at the deployed server. This must not be `localhost`; it is baked into the app at build time.
+Set `NEXT_PUBLIC_API_URL` in `relay-web/.env.local` to the relay's HTTPS URL. This must not be `localhost`; it is baked into the app at build time.
 
 ```env
-NEXT_PUBLIC_API_URL=http://YOUR_SERVER_IP:4000
+NEXT_PUBLIC_API_URL=https://relay.example.com
 ```
 
 ### 3.3 Install dependencies

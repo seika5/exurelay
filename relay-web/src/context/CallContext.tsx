@@ -3,29 +3,15 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { io, Socket } from "socket.io-client";
 import { useSpeakingDetection } from "@/lib/useSpeakingDetection";
+import { getIceServers } from "@/lib/api";
 
 const SOCKET_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
-/** ICE servers for WebRTC. STUN is required; TURN is required for cross-network (different devices/NATs). */
-function getIceServers(): RTCIceServer[] {
-  const servers: RTCIceServer[] = [
-    { urls: "stun:stun.l.google.com:19302" },
-    { urls: "stun:stun1.l.google.com:19302" },
-  ];
-  const turnUrl = process.env.NEXT_PUBLIC_TURN_URL;
-  const turnUser = process.env.NEXT_PUBLIC_TURN_USERNAME;
-  const turnCred = process.env.NEXT_PUBLIC_TURN_CREDENTIAL;
-  if (turnUrl?.trim()) {
-    servers.push(
-      turnUser && turnCred
-        ? { urls: turnUrl.trim(), username: turnUser, credential: turnCred }
-        : { urls: turnUrl.trim() }
-    );
-  }
-  return servers;
-}
-
-const ICE_SERVERS = getIceServers();
+/** Fallback when the relay has no TURN configured (or the request fails). STUN only works on friendly NATs. */
+const FALLBACK_ICE_SERVERS: RTCIceServer[] = [
+  { urls: "stun:stun.l.google.com:19302" },
+  { urls: "stun:stun1.l.google.com:19302" },
+];
 
 export type ConversationForCall = { type: "dm"; otherKeyHash: string } | { type: "group"; memberKeyHashes: string[] };
 
@@ -104,6 +90,8 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
   const pcRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const iceQueueRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
   const localStreamRef = useRef<MediaStream | null>(null);
+  /** Fetched per call: TURN credentials are short-lived. */
+  const iceServersRef = useRef<RTCIceServer[]>(FALLBACK_ICE_SERVERS);
   const roomIdRef = useRef(roomId);
   const socketRef = useRef(socket);
   const onFirstInRoomRef = useRef<(() => void | Promise<void>) | null>(null);
@@ -260,6 +248,8 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
         setRoomJoinError("Cannot join call: conversation members unknown.");
         return;
       }
+      const fetched = keyHash ? await getIceServers(keyHash).catch(() => []) : [];
+      iceServersRef.current = fetched.length > 0 ? fetched : FALLBACK_ICE_SERVERS;
       // Audio only at join; video is requested only when user turns camera on
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
       setLocalStream(stream);
@@ -276,7 +266,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
       // server sends "members" before the effect that subscribes runs, which could break audio-only setup).
       const createOfferToExisting = async (toId: string) => {
         if (pcRef.current.has(toId)) return;
-        const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+        const pc = new RTCPeerConnection({ iceServers: iceServersRef.current });
         pcRef.current.set(toId, pc);
         stream.getTracks().forEach((t) => pc.addTrack(t, stream));
         pc.ontrack = (e) => {
@@ -516,7 +506,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
           }
           const streamToUse = localStreamRef.current ?? localStream;
           if (!pc && streamToUse) {
-            pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+            pc = new RTCPeerConnection({ iceServers: iceServersRef.current });
             pcRef.current.set(from, pc);
             pc.ontrack = (e) => {
               if (!e.track) return;
@@ -623,7 +613,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!inCall || !localStream || !socket) return;
     const createOfferTo = async (toId: string) => {
-      const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+      const pc = new RTCPeerConnection({ iceServers: iceServersRef.current });
       pcRef.current.set(toId, pc);
       localStream.getTracks().forEach((t) => pc.addTrack(t, localStream));
       pc.ontrack = (e) => {

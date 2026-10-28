@@ -196,9 +196,9 @@ This is a required feature: no delete exists in the app today, and it ships with
 | "Only allowed keys can use the server". In reality, every request only *names* a key hash and never proves it owns that key. Anyone who knows a hash can list that user's blobs, POST unlimited blobs to them, subscribe to their "new message" pings, and join their calls (§7). | **Gap** |
 | Unauthenticated blob DELETE. | **Fixed** (route removed; only the expiry worker deletes) |
 | Unchecked Socket.io `join` / `leave` that let any socket enter any room. | **Fixed** (handlers removed; client never used them) |
-| Plain HTTP between clients and server. Key hashes travel in query strings in the clear. | **Gap** (put the server behind TLS, e.g. Caddy) |
+| Plain HTTP between clients and server. Key hashes travel in query strings in the clear. | **Fixed in config** (`relay-server/deploy/Caddyfile`; API binds to loopback with `HOST=127.0.0.1`). Only protects a host that actually deploys it. |
 | No rate limits or per-member quotas. | **Gap** |
-| TURN username/password are static and compiled into every client. A public PWA makes them public. | **Gap** (use coturn `use-auth-secret` with short-lived credentials) |
+| TURN username/password are static and compiled into every client. A public PWA makes them public. | **Fixed** (`GET /api/turn/credentials` issues HMAC credentials that expire after 12 h by default; `relay-server/deploy/turnserver.conf` uses `use-auth-secret`, refuses to relay to private addresses and writes no logs). Gated on a key hash until phase 3 moves it behind a token. |
 
 ### Decided: anonymous membership tokens (RFC 9474)
 
@@ -386,9 +386,9 @@ Ordered by dependency. Each phase should land as its own reviewed change.
 | # | Phase | Main work | Needs |
 | --- | --- | --- | --- |
 | 0 | Land current fixes | **Done**: security fixes, `tsc`/`next build` clean, lockfiles for web and server | — |
-| 1 | TLS and TURN | Domain + HTTPS reverse proxy (e.g. Caddy) in front of the server; coturn with `use-auth-secret` | — |
+| 1 | TLS and TURN | **Done in code and config**: Caddy and coturn configs in `relay-server/deploy/`, short-lived TURN credentials endpoint, client fetches ICE servers per call. The host still has to set up the domain and deploy. | — |
 | 2 | Self-generated identities | Client keygen + identity format v5 (adds an ECDSA signing key, drops `myUserNumber`); server `Member` table with public keys replacing `AllowedKey` hashes; admin keys in server config; signed QR codes with 3-minute expiry; admin-signed member directory with version check; key-change notices; retire `generate-20-identities.mjs`; hard cutover (wipe server, re-enroll everyone) | 0 |
-| 3 | Login, tokens and admin | Challenge-response login; RFC 9474 blind-token issuance, daily issuer-key rotation, key-consistency check, spent-token store; per-member token quotas; TURN credentials endpoint; no request/IP logging; Settings → Admin tab (enroll, remove + signed revocation list, server status) | 1, 2 |
+| 3 | Login, tokens and admin | Challenge-response login; RFC 9474 blind-token issuance, daily issuer-key rotation, key-consistency check, spent-token store; per-member token quotas; move the TURN credentials endpoint behind a token; no request/IP logging; Settings → Admin tab (enroll, remove + signed revocation list, server status) | 1, 2 |
 | 4 | Key storage | Identity in IndexedDB as non-extractable keys; in-app key generation; remove `public/identity/`, `/api/identity` and `.bin` export | 2 |
 | 5 | Protocol v2 | Sealed sender + recipient-blind blobs; `GET /blobs?since=` cursor; attachments as separate blobs; stable `messageId`; `mentions` field + mention picker, `@everyone`, highlight and badge; encrypted local cache + Settings → Storage tab; delete for me; linked devices (QR link, self-message sync, device list) | 3, 4 |
 | 6 | Call security | Seal offer/answer/ICE with pairwise keys; random room ids; attach media only to verified peers; tiles for members not in the call | 3 |

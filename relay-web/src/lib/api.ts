@@ -20,6 +20,14 @@ export async function getBlobs(recipientKeyHash: string): Promise<{ id: string; 
   return res.json();
 }
 
+/** Short-lived ICE servers (STUN + TURN credentials) from the relay. Empty if the relay has no TURN configured. */
+export async function getIceServers(keyHash: string): Promise<RTCIceServer[]> {
+  const res = await fetch(`${API}/api/turn/credentials?keyHash=${encodeURIComponent(keyHash)}`, { cache: "no-store" });
+  if (!res.ok) throw new Error(await res.text());
+  const data = await res.json();
+  return Array.isArray(data?.iceServers) ? data.iceServers : [];
+}
+
 export async function checkAllowed(keyHash: string): Promise<boolean> {
   const res = await fetch(`${API}/api/keys/allowed?keyHash=${encodeURIComponent(keyHash)}`);
   if (!res.ok) return false;

@@ -6,6 +6,7 @@ import { PrismaClient } from "@prisma/client";
 import { computeExpiresAt } from "./lib/expiry.js";
 import { blobRouter } from "./routes/blob.js";
 import { keysRouter } from "./routes/keys.js";
+import { turnRouter } from "./routes/turn.js";
 import { registerSocketHandlers } from "./socket.js";
 
 const prisma = new PrismaClient();
@@ -31,10 +32,13 @@ const io = new Server(httpServer, {
 app.get("/health", (_, res) => res.status(200).json({ ok: true }));
 app.use("/api/blobs", blobRouter(prisma, computeExpiresAt, io));
 app.use("/api/keys", keysRouter(prisma));
+app.use("/api/turn", turnRouter(prisma));
 
 registerSocketHandlers(io, prisma);
 
 const PORT = process.env.PORT || 4000;
-httpServer.listen(PORT, () => {
-  console.log(`Server listening on port ${PORT}`);
+// Behind a TLS reverse proxy, set HOST=127.0.0.1 so the plain-HTTP port isn't reachable from outside.
+const HOST = process.env.HOST || "0.0.0.0";
+httpServer.listen(PORT, HOST, () => {
+  console.log(`Server listening on ${HOST}:${PORT}`);
 });

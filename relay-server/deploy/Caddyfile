@@ -1,0 +1,22 @@
+# Caddy reverse proxy for the relay API + Socket.io.
+# Caddy gets and renews a Let's Encrypt certificate automatically; the domain's DNS A/AAAA record
+# must point at this host and ports 80 and 443 must be open.
+#
+# Install: https://caddyserver.com/docs/install  then copy this to /etc/caddy/Caddyfile and
+#   sudo systemctl reload caddy
+#
+# No `log` directive on purpose: Caddy writes no access logs (and so no client IPs) unless asked.
+
+relay.example.com {
+	encode gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	# The API listens on loopback only (HOST=127.0.0.1 in .env). WebSocket upgrades are proxied automatically.
+	reverse_proxy 127.0.0.1:4000
+}
