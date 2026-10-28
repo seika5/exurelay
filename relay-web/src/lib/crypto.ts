@@ -182,3 +182,21 @@ export async function importSymmetricKey(base64: string): Promise<CryptoKey> {
     ["encrypt", "decrypt"]
   );
 }
+
+/** ECDSA P-256 signing keypair: signs enrollment codes, profiles and (for admins) the member directory. */
+export async function generateSigningKeyPair(): Promise<CryptoKeyPair> {
+  return crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]) as Promise<CryptoKeyPair>;
+}
+
+export async function importSigningPublicKey(base64: string): Promise<CryptoKey> {
+  const bin = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+  return crypto.subtle.importKey("raw", bin, { name: "ECDSA", namedCurve: "P-256" }, true, ["verify"]);
+}
+
+export async function importSigningKeyPair(privateKeyJwk: JsonWebKey, publicKeyBase64: string): Promise<CryptoKeyPair> {
+  const [privateKey, publicKey] = await Promise.all([
+    crypto.subtle.importKey("jwk", privateKeyJwk, { name: "ECDSA", namedCurve: "P-256" }, true, ["sign"]),
+    importSigningPublicKey(publicKeyBase64),
+  ]);
+  return { privateKey, publicKey };
+}

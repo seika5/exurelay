@@ -2,7 +2,7 @@
  * Socket.io: signaling for WebRTC 1:1 and group (room-based).
  * No auth at transport; clients use key-derived identities in payloads.
  * Room authorization: only key hashes in the room's allowed set can join;
- * join_room and join_blob additionally validate keyHash against the AllowedKey DB table.
+ * join_room and join_blob additionally validate keyHash against the Member DB table.
  */
 const roomAllowedKeyHashes = new Map(); // roomId -> Set(keyHash)
 
@@ -41,8 +41,8 @@ export function registerSocketHandlers(io, prisma) {
           emitRoomJoinError(socket);
           return;
         }
-        // DB-validate that the joining keyHash is a registered allowed key
-        const dbAllowed = await prisma.allowedKey.findUnique({ where: { keyHash } });
+        // DB-validate that the joining keyHash is an enrolled member
+        const dbAllowed = await prisma.member.findUnique({ where: { keyHash } });
         if (!dbAllowed) {
           emitRoomJoinError(socket);
           return;
@@ -93,7 +93,7 @@ export function registerSocketHandlers(io, prisma) {
     socket.on("join_blob", async (keyHash) => {
       try {
         if (!keyHash) return;
-        const allowed = await prisma.allowedKey.findUnique({ where: { keyHash } });
+        const allowed = await prisma.member.findUnique({ where: { keyHash } });
         if (!allowed) return;
         socket.join(`blob:${keyHash}`);
       } catch (e) {

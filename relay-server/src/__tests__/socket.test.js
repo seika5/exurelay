@@ -54,7 +54,7 @@ describe("registerSocketHandlers (voice + blob)", () => {
       to: () => ({ emit: () => {} }),
     };
     const prisma = {
-      allowedKey: { findUnique: async () => ({ id: "1", keyHash: "abcKeyHash123" }) },
+      member: { findUnique: async () => ({ id: "1", keyHash: "abcKeyHash123" }) },
     };
     registerSocketHandlers(io, prisma);
 

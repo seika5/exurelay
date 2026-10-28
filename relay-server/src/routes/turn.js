@@ -13,7 +13,7 @@ export function turnRouter(prisma) {
     if (!keyHash || typeof keyHash !== "string") {
       return res.status(400).json({ error: "keyHash required" });
     }
-    const allowed = await prisma.allowedKey.findUnique({ where: { keyHash }, select: { id: true } });
+    const allowed = await prisma.member.findUnique({ where: { keyHash }, select: { keyHash: true } });
     if (!allowed) {
       return res.status(403).json({ error: "key not allowed" });
     }

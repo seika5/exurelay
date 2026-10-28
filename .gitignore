@@ -5,6 +5,9 @@ relay-web/.env.local
 relay-web/.next/
 relay-web/out/
 relay-web/node_modules/
+relay-web/*.tsbuildinfo
+# Holds your private keys: never commit it
+relay-web/public/identity/*.bin
 
 # Mobile build artifacts (covered by relay-mobile/ios/.gitignore but listed here for clarity)
 relay-mobile/node_modules/

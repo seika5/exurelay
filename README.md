@@ -17,7 +17,7 @@ See **[DESIGN.md](DESIGN.md)** for the threat model, crypto details, design deci
 
 ## Features
 
-- **Fixed 20 accounts**: A one-time script generates 20 identity binaries. The server is seeded with those key hashes. Only those keys can use the server.
+- **Self-made identities, admin enrollment**: Each person's app makes their own keys; nobody else ever holds them. The admin enrolls people in person from a signed code and publishes an admin-signed member list that every app verifies. Anyone on the list can message anyone else on it.
 - **E2EE messaging**: Text and files sent as uniform encrypted blobs (fixed 64 KB size, chunked when larger). The server only sees opaque blobs; no content, length, or file type is visible.
 - **Voice/video**: Room-based WebRTC with Socket.io signaling. Mute, deafen, camera, screen share.
 - **72-hour blob expiry with timestamp obfuscation**: Blobs expire in a random window around 72 hours. Exact send time is not stored. A background worker deletes expired blobs.
@@ -41,20 +41,13 @@ See **[DESIGN.md](DESIGN.md)** for the threat model, crypto details, design deci
 
 ## 1. Server setup (one-time, done by whoever hosts)
 
-This is done once. The person running the server generates the 20 identity files and deploys the backend.
+This is done once by the person running the server, who is also the first admin.
 
-### 1.1 Generate identities and the allowed-keys list
+### 1.1 Create the admin identity
 
-```bash
-cd relay-server
-npm i
-node scripts/generate-20-identities.mjs
-```
-
-This creates:
-
-- `identities/identity-01.bin` through `identity-20.bin` (give one to each person, ideally in person)
-- `allowed-keys-seed.json` (used to seed the database; keep it alongside the server)
+1. Set up the web app (section 2) with `NEXT_PUBLIC_ADMIN_SIGNING_KEYS` left empty, run it, and create your identity.
+2. On the "Waiting for enrollment" screen, open **Setting up a new server?** and copy your signing key.
+3. Put that key in `NEXT_PUBLIC_ADMIN_SIGNING_KEYS` (web app `.env.local`) and `ADMIN_SIGNING_KEYS` (server `.env`, below). More admins: comma-separate their keys.
 
 ### 1.2 Deploy the server
 
@@ -65,20 +58,22 @@ On the machine that will host the relay (e.g. a DigitalOcean droplet, VPS):
 3. Configure env:
   ```bash
    cp .env.example .env
-   # Edit .env: DATABASE_URL, PORT (4000), HOST=127.0.0.1, WEB_ORIGIN, and the TURN_* values (see 1.4)
+   # Edit .env: DATABASE_URL, PORT (4000), HOST=127.0.0.1, WEB_ORIGIN, ADMIN_SIGNING_KEYS, and the TURN_* values (see 1.4)
   ```
-4. Install deps, push schema, and seed keys:
+4. Install deps and create the schema:
   ```bash
    npm i
    npx prisma generate
    npx prisma db push
-   npm run seed
   ```
 5. Start the relay:
   ```bash
    npm run start    # API + Socket.io (use PM2 for production: pm2 start src/index.js --name relay-api)
    npm run worker   # Deletes expired blobs (pm2 start src/worker.js --name relay-worker)
   ```
+6. Rebuild and restart the web app with your admin key, open it, and press **Create member list**. You're now enrolled.
+
+**Upgrading from the fixed-20 setup:** this is a hard cutover. Old `identity-NN.bin` files no longer load. Wipe the database (`npx prisma db push --force-reset`), then everyone creates a new identity and gets enrolled again.
 
 ### 1.3 HTTPS (required)
 
@@ -126,17 +121,16 @@ Edit `.env.local`:
 
 ```env
 NEXT_PUBLIC_API_URL=https://relay.example.com
+NEXT_PUBLIC_ADMIN_SIGNING_KEYS=ADMIN_KEY_FROM_THE_HOST
 ```
 
-TURN settings come from the relay at call time, so there's nothing else to set.
+TURN settings come from the relay at call time. The admin keys are what your app uses to check the member list, so get them from the admin directly, not from the server.
 
-### 2.2 Add your identity file
+### 2.2 Create your identity and get enrolled
 
-Copy your `identity-NN.bin` (received from whoever runs the server) to:
+On first run the app asks for a display name and creates your keys. They're saved to `relay-web/public/identity/identity.bin` (git ignores it; don't share it). Then the app shows an enrollment QR and code that expire after 3 minutes. Meet the admin, give them the code (or let them read it off your screen), and check the fingerprint they see matches yours. The app moves on by itself once you're enrolled.
 
-```
-relay-web/public/identity/identity.bin
-```
+Admins enroll and remove people in **Settings → Members**.
 
 ### 2.3 Install and run
 
@@ -256,18 +250,9 @@ You now have `Relay.ipa` on your Desktop.
 4. SideStore signs and installs it.
 5. Trust the certificate: **Settings > General > VPN & Device Management > your Apple ID > Trust**.
 
-### 3.9 Import your identity file on iOS
+### 3.9 Create your identity on iOS
 
-**AirDrop method (recommended):**
-
-1. AirDrop your `identity-NN.bin` file to your iPhone.
-2. iOS will prompt "Open with Relay". Tap it.
-3. The app saves the identity and reloads automatically.
-
-**Files app method:**
-
-1. Copy `identity-NN.bin` to iCloud Drive or the Files app.
-2. Long-press the file, tap **Share**, then tap **Relay**.
+Open the app and create your identity, as in 2.2. It's saved in the app's Documents folder. **Settings → Save identity file** exports it; anyone with that file can act as you.
 
 ### 3.10 Certificate refresh
 
@@ -291,11 +276,9 @@ Then repeat steps 3.7 and 3.8 to build a new IPA and install via SideStore.
 
 | Task                       | Where           | Command / action                                      |
 | -------------------------- | --------------- | ----------------------------------------------------- |
-| Generate 20 identities     | `relay-server/` | `node scripts/generate-20-identities.mjs`             |
-| Seed allowed keys          | `relay-server/` | `npm run seed`                                        |
 | Run API server             | `relay-server/` | `npm run start`                                       |
 | Run expiry worker          | `relay-server/` | `npm run worker`                                      |
-| Run web app                | `relay-web/`    | `npm run dev` (after `.env.local` and `identity.bin`) |
+| Run web app                | `relay-web/`    | `npm run dev` (after `.env.local`)                    |
 | Build mobile static export | `relay-web/`    | `npm run build:mobile`                                |
 | Sync web assets to Xcode   | `relay-mobile/` | `npx cap sync ios` (or `npm run build` to do both)    |
 | Open Xcode                 | `relay-mobile/` | `npm run open`                                        |

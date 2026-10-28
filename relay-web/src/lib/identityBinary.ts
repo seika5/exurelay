@@ -1,167 +1,137 @@
 /**
- * Binary identity format:
- * - version (1B): 1 = no display names; 2 = displayName per contact; 3 = + myUserNumber (2B, 1-20); 4 = + volume per contact (2B, 0-100).
- * - keyHash len+bytes, publicKey len+bytes, privateKey JWK len+bytes, contacts count (2B).
- * - Per contact: keyHash len+bytes, publicKey len+bytes; if version >= 2: displayName len (2B) + utf8; if version >= 4: volume (2B, 0-100, default 100).
- * - If version >= 3: myUserNumber (2B big-endian, 1-20) so UI can show "Me (User nn)".
- * All multi-byte lengths big-endian.
+ * Binary identity format v5 (identity.bin). Versions 1–4 (host-generated, fixed 20 accounts) are not readable:
+ * the move to self-generated keys is a hard cutover.
+ *
+ * - version (1B) = 5
+ * - ECDH public key: len (2B) + raw bytes; ECDH private key: JWK len (4B) + utf8
+ * - ECDSA signing public key: len (2B) + raw bytes; ECDSA private key: JWK len (4B) + utf8
+ * - my display name: len (2B) + utf8
+ * - contact settings count (2B); per contact: keyHash len (2B) + utf8, nickname len (2B) + utf8 (0 = none), volume (2B, 0-100)
+ * All multi-byte lengths big-endian. Contacts themselves come from the signed member directory; the file only
+ * keeps this device's local settings for them.
  */
 
+/** A member as the UI sees it: directory keys + resolved name + local settings. */
 export type Contact = {
   keyHash: string;
   publicKey: string;
   displayName: string;
-  /** 0-100. Only present when version >= 4; default 100. */
+  /** 0-100, default 100. */
   volume?: number;
 };
 
-export type IdentityData = {
-  version: number;
+/** Per-contact settings stored locally. nickname overrides the member's own display name on this device. */
+export type ContactSettings = {
   keyHash: string;
-  publicKeyBase64: string;
-  privateKeyJwk: JsonWebKey;
-  contacts: Contact[];
-  /** 1-20 for "Me (User 01)" etc.; only present when version >= 3. */
-  myUserNumber?: number;
+  nickname?: string;
+  volume: number;
 };
 
-const VERSION = 4;
+export type IdentityData = {
+  publicKeyBase64: string;
+  privateKeyJwk: JsonWebKey;
+  signingPublicKeyBase64: string;
+  signingPrivateKeyJwk: JsonWebKey;
+  myName: string;
+  contactSettings: ContactSettings[];
+};
 
-function readU16(view: DataView, offset: number): number {
-  return view.getUint16(offset, false);
-}
+const VERSION = 5;
 
-function readU32(view: DataView, offset: number): number {
-  return view.getUint32(offset, false);
-}
-
-function readString(view: DataView, buf: Uint8Array, offset: { value: number }, len: number): string {
-  const s = new TextDecoder().decode(buf.subarray(offset.value, offset.value + len));
-  offset.value += len;
-  return s;
-}
-
-function readBytes(buf: Uint8Array, offset: { value: number }, len: number): Uint8Array {
-  const slice = buf.slice(offset.value, offset.value + len);
-  offset.value += len;
-  return slice;
-}
+const toB64 = (bytes: Uint8Array) => btoa(String.fromCharCode(...Array.from(bytes)));
+const fromB64 = (s: string) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 
 export function parseIdentityBinary(buf: ArrayBuffer): IdentityData {
   const view = new DataView(buf);
   const bytes = new Uint8Array(buf);
-  const o = { value: 0 };
-
-  const version = view.getUint8(o.value);
-  o.value += 1;
-  if (version < 1 || version > 4) throw new Error("Unsupported identity binary version");
-
-  const keyHashLen = readU16(view, o.value);
-  o.value += 2;
-  const keyHash = readString(view, bytes, o, keyHashLen);
-
-  const pubKeyLen = readU16(view, o.value);
-  o.value += 2;
-  const pubKeyBytes = readBytes(bytes, o, pubKeyLen);
-  const publicKeyBase64 = btoa(String.fromCharCode(...pubKeyBytes));
-
-  const privKeyLen = readU32(view, o.value);
-  o.value += 4;
-  const privKeyJson = readString(view, bytes, o, privKeyLen);
-  const privateKeyJwk = JSON.parse(privKeyJson) as JsonWebKey;
-
-  const contactsCount = readU16(view, o.value);
-  o.value += 2;
-  const contacts: Contact[] = [];
-  for (let i = 0; i < contactsCount; i++) {
-    const cKeyHashLen = readU16(view, o.value);
-    o.value += 2;
-    const cKeyHash = readString(view, bytes, o, cKeyHashLen);
-    const cPubLen = readU16(view, o.value);
-    o.value += 2;
-    const cPubBytes = readBytes(bytes, o, cPubLen);
-    const cPublicKey = btoa(String.fromCharCode(...cPubBytes));
-    let displayName = `User ${String(i + 1).padStart(2, "0")}`;
-    if (version >= 2) {
-      const dnLen = readU16(view, o.value);
-      o.value += 2;
-      displayName = readString(view, bytes, o, dnLen) || displayName;
-    }
-    let volume = 100;
-    if (version >= 4 && o.value + 2 <= bytes.length) {
-      volume = Math.min(100, Math.max(0, readU16(view, o.value)));
-      o.value += 2;
-    }
-    contacts.push({ keyHash: cKeyHash, publicKey: cPublicKey, displayName, volume });
-  }
-
-  let myUserNumber: number | undefined;
-  if (version >= 3 && o.value + 2 <= bytes.length) {
-    myUserNumber = view.getUint16(o.value, false);
-    if (myUserNumber < 1 || myUserNumber > 20) myUserNumber = undefined;
-  }
-
-  return {
-    version,
-    keyHash,
-    publicKeyBase64,
-    privateKeyJwk,
-    contacts,
-    myUserNumber,
+  let o = 0;
+  const need = (n: number) => {
+    if (o + n > bytes.length) throw new Error("Identity file is truncated");
   };
+  const u16 = () => {
+    need(2);
+    const v = view.getUint16(o, false);
+    o += 2;
+    return v;
+  };
+  const u32 = () => {
+    need(4);
+    const v = view.getUint32(o, false);
+    o += 4;
+    return v;
+  };
+  const raw = (len: number) => {
+    need(len);
+    const v = bytes.slice(o, o + len);
+    o += len;
+    return v;
+  };
+  const str = (len: number) => new TextDecoder().decode(raw(len));
+
+  need(1);
+  const version = view.getUint8(o);
+  o += 1;
+  if (version !== VERSION) {
+    throw new Error(
+      version >= 1 && version <= 4
+        ? "This is an old identity file from the fixed 20 accounts, which are no longer supported. Create a new identity."
+        : "Unsupported identity file version"
+    );
+  }
+
+  const publicKeyBase64 = toB64(raw(u16()));
+  const privateKeyJwk = JSON.parse(str(u32())) as JsonWebKey;
+  const signingPublicKeyBase64 = toB64(raw(u16()));
+  const signingPrivateKeyJwk = JSON.parse(str(u32())) as JsonWebKey;
+  const myName = str(u16());
+  const count = u16();
+  const contactSettings: ContactSettings[] = [];
+  for (let i = 0; i < count; i++) {
+    const keyHash = str(u16());
+    const nickname = str(u16()) || undefined;
+    const volume = Math.min(100, Math.max(0, u16()));
+    contactSettings.push({ keyHash, nickname, volume });
+  }
+  return { publicKeyBase64, privateKeyJwk, signingPublicKeyBase64, signingPrivateKeyJwk, myName, contactSettings };
 }
 
-/** Write identity to binary (for script or export). */
 export function writeIdentityBinary(data: IdentityData): Uint8Array {
-  const keyHashBytes = new TextEncoder().encode(data.keyHash);
-  const pubKeyBytes = Uint8Array.from(atob(data.publicKeyBase64), (c) => c.charCodeAt(0));
-  const privKeyJson = JSON.stringify(data.privateKeyJwk);
-  const privKeyBytes = new TextEncoder().encode(privKeyJson);
-
   const parts: Uint8Array[] = [];
-  const push = (arr: Uint8Array) => parts.push(arr);
-
-  const u8 = (n: number) => new Uint8Array([n]);
+  const enc = (s: string) => new TextEncoder().encode(s);
+  const u8 = (n: number) => parts.push(new Uint8Array([n]));
   const u16 = (n: number) => {
     const a = new Uint8Array(2);
     new DataView(a.buffer).setUint16(0, n, false);
-    return a;
+    parts.push(a);
   };
   const u32 = (n: number) => {
     const a = new Uint8Array(4);
     new DataView(a.buffer).setUint32(0, n, false);
-    return a;
+    parts.push(a);
+  };
+  const short = (b: Uint8Array) => {
+    u16(b.length);
+    parts.push(b);
+  };
+  const long = (b: Uint8Array) => {
+    u32(b.length);
+    parts.push(b);
   };
 
-  push(u8(VERSION));
-  push(u16(keyHashBytes.length));
-  push(keyHashBytes);
-  push(u16(pubKeyBytes.length));
-  push(pubKeyBytes);
-  push(u32(privKeyBytes.length));
-  push(privKeyBytes);
-  push(u16(data.contacts.length));
-
-  for (const c of data.contacts) {
-    const cKeyHashBytes = new TextEncoder().encode(c.keyHash);
-    const cPubBytes = Uint8Array.from(atob(c.publicKey), (ch) => ch.charCodeAt(0));
-    const displayName = c.displayName ?? `User 00`;
-    const dnBytes = new TextEncoder().encode(displayName);
-    const volume = Math.min(100, Math.max(0, c.volume ?? 100));
-    push(u16(cKeyHashBytes.length));
-    push(cKeyHashBytes);
-    push(u16(cPubBytes.length));
-    push(cPubBytes);
-    push(u16(dnBytes.length));
-    push(dnBytes);
-    push(u16(volume));
+  u8(VERSION);
+  short(fromB64(data.publicKeyBase64));
+  long(enc(JSON.stringify(data.privateKeyJwk)));
+  short(fromB64(data.signingPublicKeyBase64));
+  long(enc(JSON.stringify(data.signingPrivateKeyJwk)));
+  short(enc(data.myName));
+  u16(data.contactSettings.length);
+  for (const c of data.contactSettings) {
+    short(enc(c.keyHash));
+    short(enc(c.nickname ?? ""));
+    u16(Math.min(100, Math.max(0, Math.round(c.volume))));
   }
 
-  const myUserNumber = data.myUserNumber != null && data.myUserNumber >= 1 && data.myUserNumber <= 20 ? data.myUserNumber : undefined;
-  if (myUserNumber != null) push(u16(myUserNumber));
-
-  const total = parts.reduce((s, p) => s + p.length, 0);
-  const out = new Uint8Array(total);
+  const out = new Uint8Array(parts.reduce((s, p) => s + p.length, 0));
   let off = 0;
   for (const p of parts) {
     out.set(p, off);

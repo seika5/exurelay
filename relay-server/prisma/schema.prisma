@@ -10,10 +10,30 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// Allowed key hashes (onboarded peers). Only key hash, no identity.
-model AllowedKey {
-  id      String @id @default(cuid())
-  keyHash String @unique
+// Enrolled members, mirrored from the newest admin-signed directory (Directory below).
+// Public keys are kept so the server can check signatures (profiles now, logins in phase 3).
+model Member {
+  keyHash          String   @id
+  ecdhPublicKey    String
+  signingPublicKey String   @unique
+  enrolledAt       DateTime
+}
+
+// Admin-signed member directories. body is the exact signed JSON string; clients verify it themselves.
+// Only the newest is served, but older ones are kept so the version can only go up.
+model Directory {
+  version   Int      @id
+  body      String
+  signature String
+  createdAt DateTime @default(now())
+}
+
+// Each member's self-signed display name. Newest updatedAt wins.
+model Profile {
+  keyHash   String @id
+  body      String
+  signature String
+  updatedAt BigInt
 }
 
 // Encrypted blobs. Addressed by recipient key hash only; no sender or sentAt.

@@ -24,19 +24,13 @@ cp .env.local.example .env.local
 Edit `.env.local`:
 
 ```env
-NEXT_PUBLIC_API_URL=http://YOUR_SERVER_IP:4000
-NEXT_PUBLIC_TURN_URL=turn:YOUR_SERVER_IP:3478
-NEXT_PUBLIC_TURN_USERNAME=relay_turn
-NEXT_PUBLIC_TURN_CREDENTIAL=YOUR_STRONG_TURN_PASSWORD
+NEXT_PUBLIC_API_URL=https://relay.example.com
+NEXT_PUBLIC_ADMIN_SIGNING_KEYS=ADMIN_KEY_FROM_THE_HOST
 ```
 
-### 2. Add your identity file
+### 2. Create your identity
 
-Copy your `identity-NN.bin` (from whoever runs the server) to:
-
-```
-public/identity/identity.bin
-```
+On first run the app creates your keys and saves them to `public/identity/identity.bin`. Then show the admin your enrollment code (see the main README, 2.2).
 
 ### 3. Install and run
 

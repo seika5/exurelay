@@ -24,7 +24,7 @@ export function blobRouter(prisma, computeExpiresAt, io) {
         if (buffer.length !== BLOB_SIZE) {
           return res.status(400).json({ error: `Payload must be exactly ${BLOB_SIZE} bytes` });
         }
-        const allowed = await prisma.allowedKey.findUnique({ where: { keyHash: recipientKeyHash } });
+        const allowed = await prisma.member.findUnique({ where: { keyHash: recipientKeyHash } });
         if (!allowed) {
           return res.status(403).json({ error: "recipient key not allowed" });
         }
@@ -54,7 +54,7 @@ export function blobRouter(prisma, computeExpiresAt, io) {
       if (!recipientKeyHash) {
         return res.status(400).json({ error: "recipientKeyHash required" });
       }
-      const allowed = await prisma.allowedKey.findUnique({ where: { keyHash: recipientKeyHash } });
+      const allowed = await prisma.member.findUnique({ where: { keyHash: recipientKeyHash } });
       if (!allowed) {
         return res.status(403).json({ error: "recipient key not allowed" });
       }

@@ -13,7 +13,7 @@ Each decision has a status:
 
 ## 1. Goals and threat model
 
-Relay is messaging and calls for a closed, invite-only group. It started with a fixed set of 20 accounts and is moving to any number of enrolled members (§4).
+Relay is messaging and calls for a closed, invite-only group. It started with a fixed set of 20 accounts and now has any number of enrolled members (§4).
 
 | Party | What they should learn | What they should be able to do |
 | --- | --- | --- |
@@ -78,12 +78,12 @@ Any measure that only hides something from the second kind of adversary *without
 
 | Decision | Status |
 | --- | --- |
-| The host runs `generate-20-identities.mjs`, so **the host holds every private key** and can decrypt everything. | **Current, being replaced** |
-| Each user generates their own keypair on their own device. Only the public key/hash is shared, in person. | **Decided** |
-| Move off the fixed 20 accounts to any number of enrolled members. The identity file's `myUserNumber` (1–20) goes away. | **Decided** |
-| `identity.bin` is a custom binary file (v4) holding: your key hash, public key and private key (JWK); every contact's key hash, public key, display name and call volume; and your user number (1–20). Losing it means losing the account and the contact list. | Current |
+| The host ran `generate-20-identities.mjs`, so **the host held every private key** and could decrypt everything. | **Replaced** (phase 2; script deleted) |
+| Each user generates their own keypair on their own device. Only the public keys are shared, in person, via a signed enrollment code. | **Done** (phase 2) |
+| Move off the fixed 20 accounts to any number of enrolled members. The identity file's `myUserNumber` (1–20) goes away. | **Done** (phase 2) |
+| `identity.bin` is a custom binary file, **v5**: your ECDH keypair, your ECDSA signing keypair, your display name, and per-contact local settings (nickname, call volume). Contacts' keys are no longer in it: they come from the signed directory. v1–v4 files are refused. Losing it means losing the account. | Current (until phase 4 moves keys to IndexedDB) |
 | Group names aren't in the file. They come from `group_rename` messages, so today they disappear when those blobs expire. | Current → kept in the local cache (§5) |
-| Contacts are exchanged in person to prevent MITM, one pair at a time (n² meetings for n people). | **Current → Decided: replace** with the admin-signed directory (below) |
+| Contacts are exchanged in person to prevent MITM, one pair at a time (n² meetings for n people). | **Replaced** with the admin-signed directory (below; phase 2) |
 | Who enrolls and removes members: the **host (admin)**, from an admin tab in Settings. | **Decided** (below) |
 
 ### Decided: no backups
@@ -126,6 +126,16 @@ Pairwise QR exchange needs a meeting for every pair. Instead, the in-person step
 **Trust:** the admin is fully trusted. A compromised admin, or a compromised member device, is game over for whatever it can reach, and no extra verification tiers or cross-checks are built for that. The admin key lives on the admin's device, not on the server, so **hacking the server alone** still can't add or swap keys.
 
 Enrollment: the new user's app generates keys and shows a QR/short code containing its public key, a timestamp, and a signature over both. The admin scans it in person, and the server adds the key to the member list. **All QR codes** (enrollment, device linking) **expire after 3 minutes**: a photographed or leaked code can't be replayed later, and the signature proves the presenter holds the key. The server stores **public keys** (not just hashes) so it can verify logins (§6).
+
+### As built (phase 2)
+
+- **Signed records** travel as `{ body, signature }`, where `body` is the exact JSON string that was signed (ECDSA P-256 / SHA-256, raw signature, base64). Verifiers never re-serialize, so client and server can't disagree about canonical form. Code: `relay-web/src/lib/signed.ts`, `relay-server/src/lib/signed.js` and `directory.js`.
+- **Admin keys come from the build, not the server.** The web app is built with `NEXT_PUBLIC_ADMIN_SIGNING_KEYS` and the server is configured with `ADMIN_SIGNING_KEYS`. The client only trusts the admin keys built into it, so a hacked relay can't swap them. The first admin creates their identity in the app, copies the signing key shown on the "Waiting for enrollment" screen into both settings, rebuilds, then presses **Create member list**.
+- **Display names are separate profiles.** Each member signs `{ keyHash, name, updatedAt }` with their own key, and the server and clients check it against that member's directory entry. Renaming yourself doesn't need the admin. A hacked server can withhold or replay an older name, but can't forge one. (This differs from the original plan of putting names inside the admin-signed list.)
+- **Publishing needs no login.** `POST /api/directory` is authorized by the admin signature itself, and the server also refuses a version that isn't newer. The server mirrors the newest directory into its `Member` table, which gates blobs, calls and TURN credentials (still by key hash until phase 3).
+- **Rollback protection:** each device stores the newest directory version it has accepted (`localStorage` for now; IndexedDB in phase 4) and refuses anything older.
+- **Enrollment:** the newcomer's app shows a QR plus a copyable code with a key fingerprint, renewed every 3 minutes. The admin pastes the code in Settings → Members, checks the fingerprint against the newcomer's screen, and can mark the newcomer as replacing an existing member's lost key. Camera scanning comes with the phase 3 admin tab.
+- **Key changes and removals:** a re-enrolled member's conversation shows a notice naming the key they replaced. A removed member's conversation is greyed out, with no composer or Call button.
 
 ---
 
@@ -387,8 +397,8 @@ Ordered by dependency. Each phase should land as its own reviewed change.
 | --- | --- | --- | --- |
 | 0 | Land current fixes | **Done**: security fixes, `tsc`/`next build` clean, lockfiles for web and server | — |
 | 1 | TLS and TURN | **Done in code and config**: Caddy and coturn configs in `relay-server/deploy/`, short-lived TURN credentials endpoint, client fetches ICE servers per call. The host still has to set up the domain and deploy. | — |
-| 2 | Self-generated identities | Client keygen + identity format v5 (adds an ECDSA signing key, drops `myUserNumber`); server `Member` table with public keys replacing `AllowedKey` hashes; admin keys in server config; signed QR codes with 3-minute expiry; admin-signed member directory with version check; key-change notices; retire `generate-20-identities.mjs`; hard cutover (wipe server, re-enroll everyone) | 0 |
-| 3 | Login, tokens and admin | Challenge-response login; RFC 9474 blind-token issuance, daily issuer-key rotation, key-consistency check, spent-token store; per-member token quotas; move the TURN credentials endpoint behind a token; no request/IP logging; Settings → Admin tab (enroll, remove + signed revocation list, server status) | 1, 2 |
+| 2 | Self-generated identities | **Done**: client keygen + identity format v5 (adds an ECDSA signing key, drops `myUserNumber`); server `Member` table with public keys replacing `AllowedKey` hashes; admin keys in server config; signed QR codes with 3-minute expiry; admin-signed member directory with version check; key-change notices; retire `generate-20-identities.mjs`; hard cutover (wipe server, re-enroll everyone) | 0 |
+| 3 | Login, tokens and admin | Challenge-response login; RFC 9474 blind-token issuance, daily issuer-key rotation, key-consistency check, spent-token store; per-member token quotas; move the TURN credentials endpoint behind a token; no request/IP logging; Settings → Admin tab (admin labels, camera QR scan, signed revocation list, server status; basic enroll/remove already shipped in phase 2) | 1, 2 |
 | 4 | Key storage | Identity in IndexedDB as non-extractable keys; in-app key generation; remove `public/identity/`, `/api/identity` and `.bin` export | 2 |
 | 5 | Protocol v2 | Sealed sender + recipient-blind blobs; `GET /blobs?since=` cursor; attachments as separate blobs; stable `messageId`; `mentions` field + mention picker, `@everyone`, highlight and badge; encrypted local cache + Settings → Storage tab; delete for me; linked devices (QR link, self-message sync, device list) | 3, 4 |
 | 6 | Call security | Seal offer/answer/ICE with pairwise keys; random room ids; attach media only to verified peers; tiles for members not in the call | 3 |

@@ -9,6 +9,8 @@ import { useCall } from "@/context/CallContext";
 import { CompactCallTile } from "@/components/CallTile";
 import { InlineCallView } from "@/components/InlineCallView";
 import { RemoteCallAudio } from "@/components/RemoteCallAudio";
+import { CreateIdentity, NotEnrolled } from "@/components/Onboarding";
+import { SettingsModal } from "@/components/SettingsModal";
 import {
   useMessages,
   type Conversation,
@@ -118,7 +120,10 @@ async function downloadFile(base64Body: string, rawFilename: string): Promise<vo
 }
 
 export default function Home() {
-  const { identity, loading, error: identityError, getDisplayName, getMyDisplayName, setDisplayName } = useIdentity();
+  const {
+    identity, loading, needsSetup, enrolled, directoryLoaded, error: identityError,
+    getDisplayName, getMyDisplayName, setDisplayName, getMember, isRemoved,
+  } = useIdentity();
   const {
     inCall, callExpanded, muted, deafened, cameraOn, screenSharing,
     currentCallConversation, setMuted, setDeafened, setCameraOn,
@@ -138,6 +143,7 @@ export default function Home() {
   const [displayNameValue, setDisplayNameValue] = useState("");
   const [displayNameSaveError, setDisplayNameSaveError] = useState<string | null>(null);
   const [displayNameSaving, setDisplayNameSaving] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [groupRenameModal, setGroupRenameModal] = useState<Conversation | null>(null);
   const [groupRenameValue, setGroupRenameValue] = useState("");
   const [callRoomId, setCallRoomId] = useState<string | null>(null);
@@ -346,7 +352,13 @@ export default function Home() {
     }
   };
 
+  /** A DM partner who is no longer in the member directory (removed, or re-enrolled with a new key). */
+  const isInactive = (conv: Conversation | null) => conv?.type === "dm" && directoryLoaded && !getMember(conv.otherKeyHash);
+  const selectedInactive = isInactive(selected);
+
   if (loading) return <main className="min-h-screen bg-[var(--bg)]" />;
+
+  if (needsSetup) return <CreateIdentity />;
 
   if (!identity) {
     const message = identityError ?? "Something went wrong.";
@@ -376,6 +388,10 @@ export default function Home() {
     );
   }
 
+  if (!directoryLoaded) return <main className="min-h-screen bg-[var(--bg)]" />;
+
+  if (!enrolled) return <NotEnrolled />;
+
   return (
     <main className="flex h-screen overflow-hidden bg-[var(--bg)] text-[var(--text)]">
 
@@ -390,13 +406,22 @@ export default function Home() {
           style={safeTop}
         >
           <span className="font-semibold text-sm">Chats</span>
-          <button
-            type="button"
-            onClick={() => setNewGroupOpen(true)}
-            className="text-xs text-[var(--accent)] hover:opacity-80"
-          >
-            + Group
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setNewGroupOpen(true)}
+              className="text-xs text-[var(--accent)] hover:opacity-80"
+            >
+              + Group
+            </button>
+            <button
+              type="button"
+              onClick={() => setSettingsOpen(true)}
+              className="text-xs text-[var(--accent)] hover:opacity-80"
+            >
+              Settings
+            </button>
+          </div>
         </div>
 
         {/* Conversation + contact list */}
@@ -448,7 +473,7 @@ export default function Home() {
                   onPointerUp={endLongPress}
                   onPointerLeave={endLongPress}
                   onPointerCancel={endLongPress}
-                  className={`w-full text-left px-3 py-2.5 text-sm truncate transition-colors ${isSelected ? "bg-[var(--accent)]/30" : "hover:bg-[var(--border)] active:bg-[var(--border)]"}`}
+                  className={`w-full text-left px-3 py-2.5 text-sm truncate transition-colors ${isSelected ? "bg-[var(--accent)]/30" : "hover:bg-[var(--border)] active:bg-[var(--border)]"} ${isInactive(conv) ? "opacity-50" : ""}`}
                 >
                   {conversationLabel(conv, identity.keyHash, getDisplayName, groupNamesFromMessages)}
                 </button>
@@ -575,7 +600,7 @@ export default function Home() {
               <span className="flex-1 text-sm font-medium truncate">
                 {conversationLabel(selected, identity.keyHash, getDisplayName, groupNamesFromMessages)}
               </span>
-              {callRoomId && !inCall && (
+              {callRoomId && !inCall && !selectedInactive && (
                 <button
                   type="button"
                   onClick={handleStartCall}
@@ -585,6 +610,8 @@ export default function Home() {
                 </button>
               )}
             </div>
+
+            {selected.type === "dm" && <MemberNotice keyHash={selected.otherKeyHash} getMember={getMember} isRemoved={isRemoved} getDisplayName={getDisplayName} />}
 
             {/* Message list */}
             <ul
@@ -654,7 +681,7 @@ export default function Home() {
 
             {/* Compose bar — bottom padding respects iOS home indicator unless keyboard is up */}
             <div
-              className="px-2 pt-2 border-t border-[var(--border)] flex flex-col gap-2"
+              className={`px-2 pt-2 border-t border-[var(--border)] flex-col gap-2 ${selectedInactive ? "hidden" : "flex"}`}
               style={keyboardVisible ? { paddingBottom: "0.5rem" } : safeBottom}
               onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
               onDrop={(e) => {
@@ -740,6 +767,8 @@ export default function Home() {
 
       {/* ── Modals ─────────────────────────────────────────────────────────── */}
 
+      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
+
       {newGroupOpen && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-20 p-4">
           <div className="bg-[var(--surface)] border border-[var(--border)] rounded-lg p-4 w-full max-w-sm">
@@ -785,7 +814,8 @@ export default function Home() {
       {displayNameModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-20 p-4">
           <div className="bg-[var(--surface)] border border-[var(--border)] rounded-lg p-4 w-full max-w-sm">
-            <h2 className="font-semibold mb-2">Set display name</h2>
+            <h2 className="font-semibold mb-1">Set nickname</h2>
+            <p className="text-xs text-[var(--muted)] mb-2">Only you see this. Leave empty to use their own name.</p>
             <input
               type="text"
               value={displayNameValue}
@@ -873,4 +903,28 @@ export default function Home() {
       )}
     </main>
   );
+}
+
+/** Key-change and removal notices for a DM, from the signed member directory. */
+function MemberNotice({
+  keyHash,
+  getMember,
+  isRemoved,
+  getDisplayName,
+}: {
+  keyHash: string;
+  getMember: (keyHash: string) => { replaces?: string; enrolledAt: number } | undefined;
+  isRemoved: (keyHash: string) => boolean;
+  getDisplayName: (keyHash: string) => string | undefined;
+}) {
+  const member = getMember(keyHash);
+  let text: string | null = null;
+  if (!member && isRemoved(keyHash)) {
+    text = "This member was removed or got a new key. You can't message them here any more.";
+  } else if (member?.replaces) {
+    const old = getDisplayName(member.replaces) || member.replaces.slice(0, 8);
+    text = `New key since ${new Date(member.enrolledAt).toLocaleDateString()}: the admin re-enrolled this member, replacing ${old}'s old key. Older messages are in that conversation.`;
+  }
+  if (!text) return null;
+  return <div className="px-3 py-2 text-xs bg-amber-900/30 text-amber-200 border-b border-[var(--border)]">{text}</div>;
 }

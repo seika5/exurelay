@@ -5,8 +5,8 @@ import cors from "cors";
 import { PrismaClient } from "@prisma/client";
 import { computeExpiresAt } from "./lib/expiry.js";
 import { blobRouter } from "./routes/blob.js";
-import { keysRouter } from "./routes/keys.js";
 import { turnRouter } from "./routes/turn.js";
+import { directoryRouter } from "./routes/directory.js";
 import { registerSocketHandlers } from "./socket.js";
 
 const prisma = new PrismaClient();
@@ -23,7 +23,7 @@ const corsOrigin = (origin, cb) => {
   return cb(null, false);
 };
 app.use(cors({ origin: corsOrigin, credentials: true }));
-// No JSON body parser: no route accepts JSON, and the old 50mb limit was a memory-DoS vector.
+// No global JSON body parser: only the directory routes take JSON, with their own small limit.
 
 const io = new Server(httpServer, {
   cors: { origin: corsOrigin, credentials: true },
@@ -31,8 +31,8 @@ const io = new Server(httpServer, {
 
 app.get("/health", (_, res) => res.status(200).json({ ok: true }));
 app.use("/api/blobs", blobRouter(prisma, computeExpiresAt, io));
-app.use("/api/keys", keysRouter(prisma));
 app.use("/api/turn", turnRouter(prisma));
+app.use("/api/directory", directoryRouter(prisma, io));
 
 registerSocketHandlers(io, prisma);
 

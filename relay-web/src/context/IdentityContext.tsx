@@ -1,13 +1,36 @@
 "use client";
 
-import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
-import { Filesystem, Directory } from "@capacitor/filesystem";
+import { Filesystem, Directory as FsDirectory } from "@capacitor/filesystem";
 import { Share } from "@capacitor/share";
-import { importKeyPair, exportPrivateKey } from "@/lib/crypto";
+import {
+  importKeyPair,
+  exportPrivateKey,
+  exportPublicKey,
+  generateKeyPair,
+  generateSigningKeyPair,
+  importSigningKeyPair,
+} from "@/lib/crypto";
 import { getKeyHashFromKeyPair } from "@/lib/e2ee";
-import { checkAllowed } from "@/lib/api";
-import { parseIdentityBinary, writeIdentityBinary, type Contact } from "@/lib/identityBinary";
+import { getDirectory, publishDirectory, publishProfile } from "@/lib/api";
+import {
+  parseIdentityBinary,
+  writeIdentityBinary,
+  type Contact,
+  type ContactSettings,
+} from "@/lib/identityBinary";
+import {
+  builtInAdminKeys,
+  createEnrollmentCode as buildEnrollmentCode,
+  MAX_NAME_LENGTH,
+  signRecord,
+  verifyDirectory,
+  verifyProfiles,
+  type Directory,
+  type DirectoryMember,
+  type Profile,
+} from "@/lib/signed";
 
 const IS_NATIVE = Capacitor.isNativePlatform();
 
@@ -17,34 +40,56 @@ const NATIVE_IDENTITY_FILE = "identity.bin";
 const WEB_IDENTITY_PATH = "/identity/identity.bin";
 /** Web API route for auto-save (web only, localhost-gated). */
 const IDENTITY_API_PATH = "/api/identity";
+/** Newest directory version this device has accepted (rollback protection). */
+const DIRECTORY_VERSION_KEY = "relay.directoryVersion";
+const DIRECTORY_POLL_MS = 60_000;
 
 type IdentityState = {
   keyPair: CryptoKeyPair;
+  signingKeyPair: CryptoKeyPair;
   keyHash: string;
   publicKeyBase64: string;
+  signingPublicKeyBase64: string;
+  myName: string;
+  contactSettings: ContactSettings[];
+  /** Active directory members other than me, with resolved names. Derived from the verified directory. */
   contacts: Contact[];
-  /** 1-20 for "Me (User 01)" display; from identity binary v3. */
-  myUserNumber?: number;
 };
 
 type IdentityContextValue = {
   identity: IdentityState | null;
-  /** True until the initial identity fetch (identity.bin) has completed. */
+  /** True until the initial identity load has completed. */
   loading: boolean;
+  /** No identity on this device yet: show the create-identity screen. */
+  needsSetup: boolean;
   error: string | null;
   dismissError: () => void;
+  createIdentity: (name: string) => Promise<void>;
   loadIdentityFromBytes: (buffer: ArrayBuffer) => Promise<void>;
-  addContact: (contact: Contact) => void;
-  removeContact: (keyHash: string) => void;
+  /** Verified member directory, or null before the first admin publishes one. */
+  directory: Directory | null;
+  directoryLoaded: boolean;
+  directoryError: string | null;
+  refreshDirectory: () => Promise<void>;
+  /** I'm an active member of the verified directory. */
+  enrolled: boolean;
+  /** My signing key is one of the admin keys built into this app. */
+  isAdmin: boolean;
+  /** Admin only: sign and publish the next directory version. */
+  publishSignedDirectory: (next: Directory) => Promise<void>;
+  getMember: (keyHash: string) => DirectoryMember | undefined;
+  isRemoved: (keyHash: string) => boolean;
+  /** For others: a local nickname. For me: my display name, signed and published to the directory. */
   setDisplayName: (keyHash: string, displayName: string) => Promise<void>;
   getDisplayName: (keyHash: string) => string | undefined;
-  /** 0-100. Stored in identity binary (v4); in-memory updates until identity file is replaced. */
   getContactVolume: (keyHash: string) => number;
   setContactVolume: (keyHash: string, volume: number) => void;
-  /** Label shown in parentheses for "Me (...)" e.g. "User 01". */
+  /** Label shown in parentheses for "Me (...)". */
   getMyDisplayName: () => string;
+  /** Fresh signed enrollment code (valid 3 minutes) for the admin to paste or scan. */
+  createEnrollmentCode: () => Promise<string>;
   /**
-   * Web: downloads updated identity.bin via browser anchor.
+   * Web: downloads identity.bin via browser anchor.
    * Native: saves to Documents directory and opens the iOS share sheet.
    */
   saveIdentityBinary: () => Promise<void>;
@@ -59,23 +104,22 @@ const IdentityContext = createContext<IdentityContextValue | null>(null);
 
 /** Build the raw identity bytes from the current in-memory state. */
 async function buildIdentityBytes(identity: IdentityState): Promise<Uint8Array> {
-  const privateKeyJwk = await exportPrivateKey(identity.keyPair.privateKey);
   return writeIdentityBinary({
-    version: 4,
-    keyHash: identity.keyHash,
     publicKeyBase64: identity.publicKeyBase64,
-    privateKeyJwk,
-    contacts: identity.contacts,
-    myUserNumber: identity.myUserNumber,
+    privateKeyJwk: await exportPrivateKey(identity.keyPair.privateKey),
+    signingPublicKeyBase64: identity.signingPublicKeyBase64,
+    signingPrivateKeyJwk: await exportPrivateKey(identity.signingKeyPair.privateKey),
+    myName: identity.myName,
+    contactSettings: identity.contactSettings,
   });
 }
 
 /**
- * Persist identity to disk.
+ * Persist identity to disk. Returns false if it couldn't be saved (web app not served from localhost).
  * Native: writes to the app Documents directory via @capacitor/filesystem.
- * Web:    PUTs to /api/identity (localhost-only; 403 on remote hosts is silently ignored).
+ * Web:    PUTs to /api/identity (localhost-only).
  */
-async function persistIdentityBinary(identity: IdentityState): Promise<void> {
+async function persistIdentityBinary(identity: IdentityState): Promise<boolean> {
   const bytes = await buildIdentityBytes(identity);
 
   if (IS_NATIVE) {
@@ -83,24 +127,30 @@ async function persistIdentityBinary(identity: IdentityState): Promise<void> {
     await Filesystem.writeFile({
       path: NATIVE_IDENTITY_FILE,
       data: base64,
-      directory: Directory.Documents,
+      directory: FsDirectory.Documents,
     });
-    return;
+    return true;
   }
 
-  // Web path: PUT to localhost-gated API route
   try {
     const res = await fetch(IDENTITY_API_PATH, {
       method: "PUT",
       body: bytes.buffer as ArrayBuffer,
       headers: { "Content-Type": "application/octet-stream" },
     });
-    if (!res.ok && res.status !== 403) {
-      console.warn("identity persist failed:", res.status);
-    }
+    return res.ok;
   } catch {
-    // network error or non-localhost — silently ignore
+    return false;
   }
+}
+
+function downloadBytes(bytes: Uint8Array, filename: string) {
+  const blob = new Blob([bytes.buffer as ArrayBuffer], { type: "application/octet-stream" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
 }
 
 /** Convert a base64 string (from Filesystem.readFile on native) to an ArrayBuffer. */
@@ -113,6 +163,22 @@ function base64ToArrayBuffer(b64: string): ArrayBuffer {
   return bytes.buffer as ArrayBuffer;
 }
 
+function readMinDirectoryVersion(): number {
+  try {
+    return Number(localStorage.getItem(DIRECTORY_VERSION_KEY)) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+function writeMinDirectoryVersion(version: number) {
+  try {
+    localStorage.setItem(DIRECTORY_VERSION_KEY, String(version));
+  } catch {
+    // Storage unavailable: rollback protection only lasts for this session.
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Native identity scan
 // ---------------------------------------------------------------------------
@@ -120,15 +186,14 @@ function base64ToArrayBuffer(b64: string): ArrayBuffer {
 /**
  * Load the identity binary from the app Documents directory.
  * Tries NATIVE_IDENTITY_FILE ("identity.bin") first; if not present, scans for
- * the first .bin file the user dragged in (e.g. "identity-01.bin").
+ * the first .bin file the user dragged in.
  * On success, the accepted file is saved as "identity.bin" for subsequent launches.
  */
 async function loadNativeIdentity(): Promise<ArrayBuffer> {
-  // Fast path: already saved as identity.bin
   try {
     const result = await Filesystem.readFile({
       path: NATIVE_IDENTITY_FILE,
-      directory: Directory.Documents,
+      directory: FsDirectory.Documents,
     });
     const buf = base64ToArrayBuffer(result.data as string);
     if (buf.byteLength > 0) return buf;
@@ -136,23 +201,21 @@ async function loadNativeIdentity(): Promise<ArrayBuffer> {
     // Not present yet — fall through to scan.
   }
 
-  // Scan Documents for any .bin file dropped in by the user.
-  const dir = await Filesystem.readdir({ path: "", directory: Directory.Documents });
+  const dir = await Filesystem.readdir({ path: "", directory: FsDirectory.Documents });
   const binEntry = dir.files.find((f) => f.name.endsWith(".bin"));
   if (!binEntry) throw new Error("no .bin file found");
 
   const result = await Filesystem.readFile({
     path: binEntry.name,
-    directory: Directory.Documents,
+    directory: FsDirectory.Documents,
   });
   const buf = base64ToArrayBuffer(result.data as string);
   if (buf.byteLength === 0) throw new Error("empty .bin file");
 
-  // Canonicalise to identity.bin so future launches hit the fast path.
   await Filesystem.rename({
     from: binEntry.name,
     to: NATIVE_IDENTITY_FILE,
-    directory: Directory.Documents,
+    directory: FsDirectory.Documents,
   });
 
   return buf;
@@ -162,185 +225,288 @@ async function loadNativeIdentity(): Promise<ArrayBuffer> {
 // Provider
 // ---------------------------------------------------------------------------
 
+type BaseIdentity = Omit<IdentityState, "contacts">;
+
 export function IdentityProvider({ children }: { children: React.ReactNode }) {
-  const [identity, setIdentity] = useState<IdentityState | null>(null);
+  const [base, setBase] = useState<BaseIdentity | null>(null);
   const [loading, setLoading] = useState(true);
+  const [needsSetup, setNeedsSetup] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [directory, setDirectory] = useState<Directory | null>(null);
+  const [profiles, setProfiles] = useState<Map<string, Profile>>(new Map());
+  const [directoryLoaded, setDirectoryLoaded] = useState(false);
+  const [directoryError, setDirectoryError] = useState<string | null>(null);
+  const profilePublishedFor = useRef<string | null>(null);
+
+  const adminKeys = useMemo(() => builtInAdminKeys(), []);
+
+  const adopt = useCallback(async (next: BaseIdentity, save: boolean) => {
+    setBase(next);
+    setNeedsSetup(false);
+    if (save && !(await persistIdentityBinary(next as IdentityState))) {
+      // Not on localhost: nowhere to save it automatically, so hand the file to the user.
+      downloadBytes(await buildIdentityBytes(next as IdentityState), "identity.bin");
+      setError(
+        "Couldn't save your identity automatically, so it was downloaded instead.\n\nPut identity.bin in relay-web/public/identity/ or you'll lose this account when the page reloads."
+      );
+    }
+  }, []);
 
   const loadIdentityFromBytes = useCallback(async (buffer: ArrayBuffer) => {
     setError(null);
     try {
       const data = parseIdentityBinary(buffer);
       const keyPair = await importKeyPair(data.privateKeyJwk, data.publicKeyBase64);
-      if (data.keyHash !== (await getKeyHashFromKeyPair(keyPair))) {
-        throw new Error("Identity key hash does not match keypair");
-      }
-      const allowed = await checkAllowed(data.keyHash);
-      if (!allowed) {
-        throw new Error("This identity is not registered. Only pre-distributed identities can use this server.");
-      }
-      const next: IdentityState = {
-        keyPair,
-        keyHash: data.keyHash,
-        publicKeyBase64: data.publicKeyBase64,
-        contacts: data.contacts,
-        myUserNumber: data.myUserNumber,
-      };
-      setIdentity(next);
-      // On native: persist accepted identity to Documents so it loads automatically next launch.
-      if (IS_NATIVE) {
-        await persistIdentityBinary(next).catch(() => {});
-      }
-    } catch (e) {
-      const message = e instanceof Error ? e.message : "Something went wrong.";
-      // "Failed to fetch" = browser/CORS network error
-      // "Load failed"    = iOS WKWebView error (ATS block or unreachable host)
-      // "NetworkError …" = Firefox equivalent
-      const isNetworkError = [
-        "Failed to fetch",
-        "Load failed",
-        "NetworkError when attempting to fetch resource.",
-      ].includes(message);
-      const serverUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
-      setError(
-        isNetworkError
-          ? `Cannot reach the server (${serverUrl}).\n\nMake sure:\n• The relay server is running\n• This device is on the same network as the server\n• The server URL in the build is correct`
-          : message
+      const signingKeyPair = await importSigningKeyPair(data.signingPrivateKeyJwk, data.signingPublicKeyBase64);
+      await adopt(
+        {
+          keyPair,
+          signingKeyPair,
+          keyHash: await getKeyHashFromKeyPair(keyPair),
+          publicKeyBase64: data.publicKeyBase64,
+          signingPublicKeyBase64: data.signingPublicKeyBase64,
+          myName: data.myName,
+          contactSettings: data.contactSettings,
+        },
+        IS_NATIVE
       );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Something went wrong.");
       throw e;
     }
-  }, []);
+  }, [adopt]);
+
+  const createIdentity = useCallback(async (name: string) => {
+    setError(null);
+    const trimmed = name.trim().slice(0, MAX_NAME_LENGTH);
+    if (!trimmed) throw new Error("Enter a name");
+    const keyPair = await generateKeyPair();
+    const signingKeyPair = await generateSigningKeyPair();
+    await adopt(
+      {
+        keyPair,
+        signingKeyPair,
+        keyHash: await getKeyHashFromKeyPair(keyPair),
+        publicKeyBase64: await exportPublicKey(keyPair.publicKey),
+        signingPublicKeyBase64: await exportPublicKey(signingKeyPair.publicKey),
+        myName: trimmed,
+        contactSettings: [],
+      },
+      true
+    );
+  }, [adopt]);
 
   const dismissError = useCallback(() => setError(null), []);
 
-  // Initial identity load
+  // Initial identity load. A missing file means "set up a new identity", not an error.
   useEffect(() => {
     setError(null);
 
     if (IS_NATIVE) {
-      // Native: try identity.bin first; if missing, scan Documents for any .bin file
-      // (supports the Files-app drag-in workflow where the file retains its original name).
       loadNativeIdentity()
         .then(
-          // Success: file found — hand off to identity validation.
-          // loadIdentityFromBytes sets its own errors; don't catch them here.
           (buf) => loadIdentityFromBytes(buf).catch(() => {}),
-          // Failure: no .bin file in Documents — show the "where to put it" message.
-          () => {
-            setError(
-              "No identity found. Share your identity file to Relay: in Files, tap the .bin file and choose \u201cOpen with Relay\u201d."
-            );
-          }
+          () => setNeedsSetup(true)
         )
         .finally(() => setLoading(false));
       return;
     }
 
-    // Web: fetch from the static public/identity/ path.
     fetch(WEB_IDENTITY_PATH)
       .then((r) => (r.ok ? r.arrayBuffer() : null))
-      .then((buf) => {
-        if (buf && buf.byteLength > 0) {
-          loadIdentityFromBytes(buf).catch(() => {});
-        } else {
-          setError("Identity file not found or empty.");
-        }
+      .then(async (buf) => {
+        if (buf && buf.byteLength > 0) await loadIdentityFromBytes(buf).catch(() => {});
+        else setNeedsSetup(true);
       })
-      .catch(() => {
-        setError("Identity file not found or could not be loaded.");
-      })
-      .finally(() => {
-        setLoading(false);
-      });
+      .catch(() => setNeedsSetup(true))
+      .finally(() => setLoading(false));
   }, [loadIdentityFromBytes]);
 
-  // Native only: when "Open with Relay" is used (AirDrop / Files app),
-  // AppDelegate.swift writes the file to Documents/identity.bin then calls webView.reload().
-  // The page re-mounts and loadNativeIdentity picks up the file automatically.
-  // No additional JS listener needed here.
+  // ---------------------------------------------------------------------------
+  // Directory
+  // ---------------------------------------------------------------------------
 
-  const addContact = useCallback((contact: Contact) => {
-    setIdentity((prev) => {
-      if (!prev) return prev;
-      if (prev.contacts.some((c) => c.keyHash === contact.keyHash)) return prev;
-      const displayName = contact.displayName?.trim() || `User ${String(prev.contacts.length + 1).padStart(2, "0")}`;
-      return { ...prev, contacts: [...prev.contacts, { ...contact, displayName, volume: contact.volume ?? 100 }] };
+  const refreshDirectory = useCallback(async () => {
+    try {
+      const res = await getDirectory();
+      if (!res.directory) {
+        setDirectory(null);
+        setProfiles(new Map());
+        setDirectoryError(null);
+        return;
+      }
+      if (adminKeys.length === 0) {
+        setDirectoryError("This build has no admin keys (NEXT_PUBLIC_ADMIN_SIGNING_KEYS), so it can't verify the member list.");
+        return;
+      }
+      const result = await verifyDirectory(res.directory, adminKeys, readMinDirectoryVersion());
+      if (!result.ok) {
+        // Keep the last good directory; never fall back to an unverified or older one.
+        setDirectoryError(result.error);
+        return;
+      }
+      writeMinDirectoryVersion(result.directory.version);
+      setDirectory(result.directory);
+      setProfiles(await verifyProfiles(res.profiles ?? [], result.directory.members));
+      setDirectoryError(null);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "";
+      const serverUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
+      setDirectoryError(
+        ["Failed to fetch", "Load failed", "NetworkError when attempting to fetch resource."].includes(message)
+          ? `Cannot reach the server (${serverUrl}).`
+          : message || "Couldn't load the member list."
+      );
+    } finally {
+      setDirectoryLoaded(true);
+    }
+  }, [adminKeys]);
+
+  useEffect(() => {
+    if (!base) return;
+    refreshDirectory();
+    const timer = setInterval(refreshDirectory, DIRECTORY_POLL_MS);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") refreshDirectory();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [base, refreshDirectory]);
+
+  const enrolled = !!base && !!directory?.members.some((m) => m.keyHash === base.keyHash);
+  const isAdmin = !!base && adminKeys.includes(base.signingPublicKeyBase64);
+
+  const signAndPublishProfile = useCallback(async (identity: BaseIdentity, name: string) => {
+    const env = await signRecord(identity.signingKeyPair.privateKey, {
+      type: "relay-profile",
+      keyHash: identity.keyHash,
+      name,
+      updatedAt: Date.now(),
     });
+    await publishProfile(env);
   }, []);
 
-  const removeContact = useCallback((keyHash: string) => {
-    setIdentity((prev) => (prev ? { ...prev, contacts: prev.contacts.filter((c) => c.keyHash !== keyHash) } : prev));
-  }, []);
-
-  const setDisplayName = useCallback((keyHash: string, displayName: string): Promise<void> => {
-    return new Promise((resolve, reject) => {
-      setIdentity((prev) => {
-        if (!prev) {
-          reject(new Error("No identity"));
-          return prev;
-        }
-        const trimmed = displayName.trim() || undefined;
-        const contacts = prev.contacts.map((c) =>
-          c.keyHash === keyHash ? { ...c, displayName: trimmed || c.displayName } : c
-        );
-        const next = { ...prev, contacts };
-        queueMicrotask(() => {
-          persistIdentityBinary(next)
-            .then(resolve)
-            .catch((e) => {
-              setError(e instanceof Error ? e.message : "Failed to save name");
-              reject(e);
-            });
-        });
-        return next;
+  // Once enrolled, publish my display name if the directory doesn't have it yet.
+  useEffect(() => {
+    if (!base || !enrolled || !directoryLoaded) return;
+    if (profiles.get(base.keyHash)?.name === base.myName) return;
+    if (profilePublishedFor.current === base.myName) return;
+    profilePublishedFor.current = base.myName;
+    signAndPublishProfile(base, base.myName)
+      .then(refreshDirectory)
+      .catch(() => {
+        profilePublishedFor.current = null;
       });
-    });
-  }, []);
+  }, [base, enrolled, directoryLoaded, profiles, signAndPublishProfile, refreshDirectory]);
+
+  const publishSignedDirectory = useCallback(async (next: Directory) => {
+    if (!base || !isAdmin) throw new Error("Only an admin can change the member list");
+    if (next.signer !== base.signingPublicKeyBase64) throw new Error("Directory signer must be this admin");
+    await publishDirectory(await signRecord(base.signingKeyPair.privateKey, next));
+    await refreshDirectory();
+  }, [base, isAdmin, refreshDirectory]);
+
+  const getMember = useCallback(
+    (keyHash: string) => directory?.members.find((m) => m.keyHash === keyHash),
+    [directory]
+  );
+  const isRemoved = useCallback(
+    (keyHash: string) => !!directory?.removed.some((r) => r.keyHash === keyHash),
+    [directory]
+  );
+
+  // ---------------------------------------------------------------------------
+  // Names and local settings
+  // ---------------------------------------------------------------------------
+
+  const resolveName = useCallback(
+    (keyHash: string, settings: ContactSettings[]): string | undefined =>
+      settings.find((c) => c.keyHash === keyHash)?.nickname || profiles.get(keyHash)?.name,
+    [profiles]
+  );
+
+  const identity = useMemo<IdentityState | null>(() => {
+    if (!base) return null;
+    const contacts: Contact[] = (directory?.members ?? [])
+      .filter((m) => m.keyHash !== base.keyHash)
+      .map((m) => ({
+        keyHash: m.keyHash,
+        publicKey: m.ecdh,
+        displayName: resolveName(m.keyHash, base.contactSettings) ?? m.keyHash.slice(0, 8),
+        volume: base.contactSettings.find((c) => c.keyHash === m.keyHash)?.volume ?? 100,
+      }));
+    return { ...base, contacts };
+  }, [base, directory, resolveName]);
+
+  const updateSettings = useCallback((keyHash: string, change: Partial<ContactSettings>): BaseIdentity | null => {
+    if (!base) return null;
+    const existing = base.contactSettings.find((c) => c.keyHash === keyHash) ?? { keyHash, volume: 100 };
+    const next = {
+      ...base,
+      contactSettings: [...base.contactSettings.filter((c) => c.keyHash !== keyHash), { ...existing, ...change }],
+    };
+    setBase(next);
+    return next;
+  }, [base]);
+
+  const setDisplayName = useCallback(async (keyHash: string, displayName: string): Promise<void> => {
+    if (!base) throw new Error("No identity");
+    const trimmed = displayName.trim().slice(0, MAX_NAME_LENGTH);
+    if (keyHash === base.keyHash) {
+      if (!trimmed) throw new Error("Enter a name");
+      const next = { ...base, myName: trimmed };
+      setBase(next);
+      profilePublishedFor.current = trimmed;
+      await persistIdentityBinary(next as IdentityState);
+      if (enrolled) {
+        await signAndPublishProfile(next, trimmed);
+        await refreshDirectory();
+      }
+      return;
+    }
+    const next = updateSettings(keyHash, { nickname: trimmed || undefined });
+    if (next) await persistIdentityBinary(next as IdentityState);
+  }, [base, enrolled, signAndPublishProfile, refreshDirectory, updateSettings]);
 
   const getDisplayName = useCallback(
-    (keyHash: string): string | undefined => identity?.contacts.find((c) => c.keyHash === keyHash)?.displayName,
-    [identity?.contacts]
+    (keyHash: string): string | undefined =>
+      base && keyHash === base.keyHash ? base.myName : resolveName(keyHash, base?.contactSettings ?? []),
+    [base, resolveName]
   );
 
   const getContactVolume = useCallback(
     (keyHash: string): number => {
-      const v = identity?.contacts.find((c) => c.keyHash === keyHash)?.volume;
+      const v = base?.contactSettings.find((c) => c.keyHash === keyHash)?.volume;
       return typeof v === "number" ? Math.min(100, Math.max(0, v)) : 100;
     },
-    [identity?.contacts]
+    [base?.contactSettings]
   );
 
   const setContactVolume = useCallback((keyHash: string, volume: number) => {
-    const v = Math.min(100, Math.max(0, Math.round(volume)));
-    let next: IdentityState | null = null;
-    setIdentity((prev) => {
-      if (!prev) return prev;
-      const contacts = prev.contacts.map((c) =>
-        c.keyHash === keyHash ? { ...c, volume: v } : c
-      );
-      next = { ...prev, contacts };
-      return next;
-    });
-    if (next) persistIdentityBinary(next).catch((e) => setError(e instanceof Error ? e.message : "Failed to save volume"));
-  }, []);
+    const next = updateSettings(keyHash, { volume: Math.min(100, Math.max(0, Math.round(volume))) });
+    if (next) persistIdentityBinary(next as IdentityState).catch((e) => setError(e instanceof Error ? e.message : "Failed to save volume"));
+  }, [updateSettings]);
 
-  const getMyDisplayName = useCallback((): string => {
-    const n = identity?.myUserNumber;
-    if (n != null && n >= 1 && n <= 20) return `User ${String(n).padStart(2, "0")}`;
-    return "Me";
-  }, [identity?.myUserNumber]);
+  const getMyDisplayName = useCallback((): string => base?.myName || "Me", [base?.myName]);
+
+  const createEnrollmentCode = useCallback(async () => {
+    if (!base) throw new Error("No identity");
+    return buildEnrollmentCode(base.keyPair.publicKey, base.signingKeyPair, base.myName);
+  }, [base]);
 
   const saveIdentityBinary = useCallback(async (): Promise<void> => {
     if (!identity) throw new Error("No identity loaded");
     const bytes = await buildIdentityBytes(identity);
 
     if (IS_NATIVE) {
-      // Save updated file to Documents, then open the share sheet.
       const base64 = btoa(String.fromCharCode(...Array.from(bytes)));
       const writeResult = await Filesystem.writeFile({
         path: NATIVE_IDENTITY_FILE,
         data: base64,
-        directory: Directory.Documents,
+        directory: FsDirectory.Documents,
       });
       await Share.share({
         title: "identity.bin",
@@ -350,32 +516,36 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    // Web: trigger browser download.
-    const blob = new Blob([bytes.buffer as ArrayBuffer], { type: "application/octet-stream" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "identity.bin";
-    a.click();
-    URL.revokeObjectURL(a.href);
+    downloadBytes(bytes, "identity.bin");
   }, [identity]);
 
-  const logout = useCallback(() => setIdentity(null), []);
+  const logout = useCallback(() => setBase(null), []);
 
   return (
     <IdentityContext.Provider
       value={{
         identity,
         loading,
+        needsSetup,
         error,
         dismissError,
+        createIdentity,
         loadIdentityFromBytes,
-        addContact,
-        removeContact,
+        directory,
+        directoryLoaded,
+        directoryError,
+        refreshDirectory,
+        enrolled,
+        isAdmin,
+        publishSignedDirectory,
+        getMember,
+        isRemoved,
         setDisplayName,
         getDisplayName,
         getContactVolume,
         setContactVolume,
         getMyDisplayName,
+        createEnrollmentCode,
         saveIdentityBinary,
         logout,
       }}
