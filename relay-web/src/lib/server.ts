@@ -127,12 +127,6 @@ export function serverScopedKey(name: string): string {
   return `${name}:${getServerUrl()}`;
 }
 
-/** Short id for per-server files (identity files): the first 16 hex chars of SHA-256(url). */
-export async function identityFileId(url: string): Promise<string> {
-  const hash = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(url)));
-  return Array.from(hash.slice(0, 8), (b) => b.toString(16).padStart(2, "0")).join("");
-}
-
 /** https only, except for local testing. Returns origin + path without a trailing slash. */
 export function normalizeServerUrl(input: string): string {
   const raw = input.trim();

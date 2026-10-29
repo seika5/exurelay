@@ -11,7 +11,7 @@ import {
   type DecryptedChunk,
 } from "@/lib/blobChunk";
 import type { DecryptedMessage } from "@/lib/blobPayload";
-import type { Contact } from "@/lib/identityBinary";
+import type { Contact } from "@/lib/keystore";
 
 /** Several "refresh" pings in a row (e.g. a multi-blob message) cost one sync, and so one token. */
 const REFRESH_DEBOUNCE_MS = 1500;

@@ -2,19 +2,23 @@
 
 import { useState } from "react";
 import { useIdentity } from "@/context/IdentityContext";
+import { normalizeServerUrl } from "@/lib/server";
 import { EnrollmentCode } from "@/components/EnrollmentCode";
 import { MembersAdmin } from "@/components/MembersAdmin";
 import { QrScanner } from "@/components/QrScanner";
 import { ServerSwitcher, serverLabel } from "@/components/ServerSwitcher";
+import { StorageSetup } from "@/components/StorageSetup";
+import { WrongPassphraseError } from "@/lib/identityFile";
+import { folderStorageSupported, pickFolder } from "@/lib/keystore";
 
 const screen = "min-h-screen flex flex-col items-center justify-center p-6 gap-4 bg-[var(--bg)] text-[var(--text)]";
 const safeTop = { paddingTop: "max(1.5rem, env(safe-area-inset-top, 0px))" };
 
 /** Joined a server with no identity for it yet: generate keys for it. Nothing leaves the device until the admin enrolls you. */
 export function CreateIdentity() {
-  const { createIdentity, error, server, servers, leaveServer } = useIdentity();
+  const { createIdentity, openIdentityFolder, error, server, servers, leaveServer } = useIdentity();
   const [name, setName] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [choosing, setChoosing] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
 
   return (
@@ -22,22 +26,16 @@ export function CreateIdentity() {
       <h1 className="text-xl font-semibold">Your identity on {server ? serverLabel(server.url) : "this server"}</h1>
       <p className="text-sm text-[var(--muted)] text-center max-w-sm">
         Each server gets its own identity, so servers can&apos;t tell that you&apos;re the same person. Your keys are made on
-        this device and never leave it. Then meet the admin in person to get enrolled.
+        this device and never sent anywhere. Then meet the admin in person to get enrolled.
       </p>
       {error && <p className="text-sm text-red-500 text-center max-w-sm whitespace-pre-wrap">{error}</p>}
+      {choosing && <StorageSetup onCancel={() => setChoosing(false)} onConfirm={(storage) => createIdentity(name, storage)} />}
       <form
         className="flex flex-col gap-2 w-full max-w-xs"
-        onSubmit={async (e) => {
+        onSubmit={(e) => {
           e.preventDefault();
-          setBusy(true);
           setLocalError(null);
-          try {
-            await createIdentity(name);
-          } catch (err) {
-            setLocalError(err instanceof Error ? err.message : "Couldn't create identity");
-          } finally {
-            setBusy(false);
-          }
+          setChoosing(true);
         }}
       >
         <input
@@ -51,12 +49,28 @@ export function CreateIdentity() {
         {localError && <p className="text-sm text-red-500">{localError}</p>}
         <button
           type="submit"
-          disabled={busy || !name.trim()}
+          disabled={!name.trim()}
           className="py-2 rounded bg-[var(--accent)] text-white text-sm disabled:opacity-50"
         >
-          {busy ? "Creating…" : "Create identity"}
+          Create identity
         </button>
       </form>
+      {folderStorageSupported() && (
+        <button
+          type="button"
+          onClick={async () => {
+            setLocalError(null);
+            try {
+              await openIdentityFolder(await pickFolder());
+            } catch (e) {
+              if (!(e instanceof DOMException && e.name === "AbortError")) setLocalError(e instanceof Error ? e.message : "Couldn't open that folder.");
+            }
+          }}
+          className="text-xs text-[var(--muted)] underline"
+        >
+          I already have an identity file for this server
+        </button>
+      )}
       <ServerSwitcher />
       <button type="button" onClick={() => leaveServer().catch(() => {})} className="text-xs text-[var(--muted)] underline">
         {servers.length > 1 ? "Leave this server" : "Use a different server"}
@@ -76,7 +90,7 @@ export function JoinServer({ onClose }: { onClose?: () => void } = {}) {
   const [newServer, setNewServer] = useState(false);
   const [url, setUrl] = useState(process.env.NEXT_PUBLIC_API_URL ?? "");
   const [name, setName] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [choosing, setChoosing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const tryJoin = (text: string) => {
@@ -141,20 +155,26 @@ export function JoinServer({ onClose }: { onClose?: () => void } = {}) {
       ) : (
         <form
           className="flex flex-col gap-2 w-full max-w-xs"
-          onSubmit={async (e) => {
+          onSubmit={(e) => {
             e.preventDefault();
             setError(null);
-            setBusy(true);
             try {
-              await setUpNewServer(url, name);
-              onClose?.();
+              normalizeServerUrl(url);
+              setChoosing(true);
             } catch (err) {
               setError(err instanceof Error ? err.message : "Invalid address");
-            } finally {
-              setBusy(false);
             }
           }}
         >
+          {choosing && (
+            <StorageSetup
+              onCancel={() => setChoosing(false)}
+              onConfirm={async (storage) => {
+                await setUpNewServer(url, name, storage);
+                onClose?.();
+              }}
+            />
+          )}
           <p className="text-sm text-[var(--muted)]">
             Enter your server&apos;s address and your name there. This creates your identity for that server; you&apos;ll
             be its first admin, and the next screen shows the key to put in the server&apos;s settings.
@@ -175,14 +195,90 @@ export function JoinServer({ onClose }: { onClose?: () => void } = {}) {
             className="px-3 py-2 rounded bg-[var(--surface)] border border-[var(--border)] text-sm"
           />
           {error && <p className="text-sm text-red-500">{error}</p>}
-          <button type="submit" disabled={busy || !url.trim() || !name.trim()} className="py-2 rounded bg-[var(--accent)] text-white text-sm disabled:opacity-50">
-            {busy ? "Creating…" : "Continue"}
+          <button type="submit" disabled={!url.trim() || !name.trim()} className="py-2 rounded bg-[var(--accent)] text-white text-sm disabled:opacity-50">
+            Continue
           </button>
           <button type="button" onClick={() => setNewServer(false)} className="text-xs text-[var(--muted)] underline">
             Back
           </button>
         </form>
       )}
+    </main>
+  );
+}
+
+/** The active server's identity is a passphrase-encrypted file in a folder: unlock it. */
+export function UnlockIdentity() {
+  const { lockedFile, unlockIdentity, openIdentityFolder, server, leaveServer } = useIdentity();
+  const [passphrase, setPassphrase] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [missing, setMissing] = useState(false);
+  if (!lockedFile) return null;
+
+  const chooseFolder = async () => {
+    setError(null);
+    try {
+      await openIdentityFolder(await pickFolder());
+      setMissing(false);
+    } catch (e) {
+      if (!(e instanceof DOMException && e.name === "AbortError")) setError(e instanceof Error ? e.message : "Couldn't open that folder.");
+    }
+  };
+
+  return (
+    <main className={screen} style={safeTop}>
+      <h1 className="text-xl font-semibold">Unlock {server ? serverLabel(server.url) : "Relay"}</h1>
+      <p className="text-sm text-[var(--muted)] text-center max-w-sm">
+        Your identity is in <code>{lockedFile.fileName}</code> in the folder &ldquo;{lockedFile.folder}&rdquo;. Enter its passphrase. The
+        browser may ask to let Relay use that folder.
+      </p>
+      <form
+        className="flex flex-col gap-2 w-full max-w-xs"
+        onSubmit={async (e) => {
+          e.preventDefault();
+          setBusy(true);
+          setError(null);
+          try {
+            await unlockIdentity(passphrase);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : "Couldn't unlock.";
+            setMissing(!(err instanceof WrongPassphraseError) && message.includes("isn't in the folder"));
+            setError(message);
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        <input
+          type="password"
+          autoComplete="current-password"
+          autoFocus
+          value={passphrase}
+          onChange={(e) => setPassphrase(e.target.value)}
+          placeholder="Passphrase"
+          className="px-3 py-2 rounded bg-[var(--surface)] border border-[var(--border)] text-sm"
+        />
+        {error && <p className="text-sm text-red-500">{error}</p>}
+        <button type="submit" disabled={busy || !passphrase} className="py-2 rounded bg-[var(--accent)] text-white text-sm disabled:opacity-50">
+          {busy ? "Unlocking…" : "Unlock"}
+        </button>
+      </form>
+      <button type="button" onClick={chooseFolder} className={`text-xs underline ${missing ? "text-[var(--accent)]" : "text-[var(--muted)]"}`}>
+        The file moved? Choose its folder
+      </button>
+      <ServerSwitcher />
+      <button
+        type="button"
+        onClick={() => {
+          if (window.confirm("Forget this server on this device? Your identity file stays where it is, and you stay a member: to leave the server, unlock first and use Settings → Leave server.")) {
+            leaveServer().catch(() => {});
+          }
+        }}
+        className="text-xs text-[var(--muted)] underline"
+      >
+        Forget this server on this device
+      </button>
     </main>
   );
 }

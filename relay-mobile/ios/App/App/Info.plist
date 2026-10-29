@@ -55,10 +55,6 @@
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>
-	<!-- Expose the app's Documents folder in Files app → On My iPhone → Relay.
-	     Users can drag identity files here directly. -->
-	<key>UIFileSharingEnabled</key>
-	<true/>
 	<!-- Privacy usage descriptions required by iOS for WebRTC and notifications. -->
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Required for voice calls.</string>
@@ -66,45 +62,5 @@
 	<string>Required for video calls.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Used for WebRTC peer-to-peer call connectivity via STUN.</string>
-	<!-- Do not open files in-place; always copy into app Documents (identity.bin is sensitive). -->
-	<key>LSSupportsOpeningDocumentsInPlace</key>
-	<false/>
-	<!-- Declare .bin as an openable document type so iOS offers "Open with Relay" for identity files. -->
-	<key>CFBundleDocumentTypes</key>
-	<array>
-		<dict>
-			<key>CFBundleTypeName</key>
-			<string>Relay Identity File</string>
-			<key>CFBundleTypeRole</key>
-			<string>Editor</string>
-			<key>LSItemContentTypes</key>
-			<array>
-				<string>public.data</string>
-			</array>
-			<key>LSHandlerRank</key>
-			<string>Alternate</string>
-		</dict>
-	</array>
-	<!-- Declare the .bin extension mapping under the public.data UTI. -->
-	<key>UTImportedTypeDeclarations</key>
-	<array>
-		<dict>
-			<key>UTTypeIdentifier</key>
-			<string>com.relay.identity-file</string>
-			<key>UTTypeDescription</key>
-			<string>Relay Identity File</string>
-			<key>UTTypeConformsTo</key>
-			<array>
-				<string>public.data</string>
-			</array>
-			<key>UTTypeTagSpecification</key>
-			<dict>
-				<key>public.filename-extension</key>
-				<array>
-					<string>bin</string>
-				</array>
-			</dict>
-		</dict>
-	</array>
 </dict>
 </plist>

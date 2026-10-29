@@ -23,7 +23,7 @@ See **[DESIGN.md](DESIGN.md)** for the threat model, crypto details, design deci
 - **E2EE messaging**: Text and files sent as uniform encrypted blobs (fixed 64 KB size, chunked when larger). The server only sees opaque blobs; no content, length, or file type is visible.
 - **Voice/video**: Room-based WebRTC with Socket.io signaling. Mute, deafen, camera, screen share.
 - **72-hour blob expiry with timestamp obfuscation**: Blobs expire in a random window around 72 hours. Exact send time is not stored. A background worker deletes expired blobs.
-- **Identity**: Binary file only. In-person distribution is strongly recommended.
+- **Identity**: Keys are made on your device. On desktop Chrome/Edge they're saved to a passphrase-encrypted file in a folder you choose; elsewhere they stay in the app and can't be exported. Enrollment happens in person.
 - **Customizable**: The UI runs locally. Edit it, rebuild, and your changes are live. The server is unaffected.
 - **User-facing note:** Message *content* is intended to stay opaque to the relay. *Metadata* (who contacts whom, when, call participation, IPs from ICE) is still visible to the relay. Best mitigation: keep identity distribution off the public web, use a relay you trust, and verify contact keys out-of-band.
 
@@ -36,7 +36,7 @@ See **[DESIGN.md](DESIGN.md)** for the threat model, crypto details, design deci
 | ---------------- | ------------------------------------------------------------------------------------- |
 | **relay-web**    | Node.js v18+ (v20+ recommended), npm                                                  |
 | **relay-mobile** | macOS, Xcode 15+, Node.js v18+, npm, free Apple ID                                    |
-| **relay-server** | Node.js v18+, npm, PostgreSQL. Node.js v19+ for identity generation (Web Crypto API). |
+| **relay-server** | Node.js v18+, npm, PostgreSQL.                                                                           |
 
 
 ---
@@ -78,7 +78,7 @@ On the machine that will host the relay (e.g. a DigitalOcean droplet, VPS):
 
 `PUBLIC_URL` must match the address in your join code exactly: logins signed for any other address are refused. `TOKEN_RATE_PER_MINUTE` (default 30, after a burst of `TOKEN_BURST`, default 200) limits how fast each member gets anonymous tokens; one token pays for one send, sync or call setup. There's no daily cap.
 
-**Upgrading:** each phase so far is a hard cutover (phase 3 identity files are v6, one per server; older files are refused). Wipe the database (`npx prisma db push --force-reset`), then everyone creates a new identity, joins with the join code, and gets enrolled again.
+**Upgrading:** each phase so far is a hard cutover. Phase 4 replaced the plain `.bin` files with an encrypted `.relayid` file (desktop Chrome/Edge) or the app's own storage, and old files aren't read. Wipe the database (`npx prisma db push --force-reset`), then everyone joins with the join code, creates a new identity and gets enrolled again. Old `relay-web/public/identity/*.bin` files can be deleted.
 
 ### 1.3 HTTPS (required)
 
@@ -113,7 +113,7 @@ openssl rand -hex 32   # the shared secret
 
 ## 2. Web app setup (each user)
 
-Each person sets up their own local copy of `relay-web`. Your identity file stays on your machine.
+Each person sets up their own local copy of `relay-web`. Use Chrome or Edge on desktop to keep your identity as an encrypted file in a folder you choose.
 
 ### 2.1 Configure env (optional)
 
@@ -129,7 +129,9 @@ TURN settings come from the relay at call time.
 ### 2.2 Join, create your identity, and get enrolled
 
 1. **Join a server**: scan the admin's join QR, open their join link, or paste the code. Get it from the admin directly: it carries the admin keys your app will use to check the member list.
-2. The app asks for a display name and creates your keys for that server. Each server gets its own identity, so servers can't link you. They're saved to `relay-web/public/identity/<id>.bin`, one file per server (git ignores them; don't share them).
+2. The app asks for a display name and creates your keys for that server. Each server gets its own identity, so servers can't link you. A popup explains where they're kept:
+   - **Desktop Chrome/Edge:** pick a folder and a passphrase. Your identity is saved there as `relay-<server>.relayid`, encrypted with the passphrase, and the app asks for the passphrase each time it opens. Pick a local folder (not iCloud, Dropbox, OneDrive or a git repo) and keep a copy on a USB stick: losing the file or the passphrase means being enrolled again. On another computer, choose **I already have an identity file for this server**.
+   - **Other browsers and phones:** the keys stay in the app's storage and can't be exported. Clearing the site's data or switching browsers loses them.
 3. The app shows an enrollment QR and code that expire after 3 minutes. Meet the admin, let them scan it (or give them the code), and check the fingerprint they see matches yours. The app moves on by itself once you're enrolled.
 
 Admins enroll, label and remove people, choose other admins, and see server status in **Settings → Admin**.
@@ -256,7 +258,7 @@ You now have `Relay.ipa` on your Desktop.
 
 ### 3.9 Create your identity on iOS
 
-Open the app, join and create your identity, as in 2.2. It's saved in the app's Documents folder. **Settings → Save identity file** exports the active server's identity; anyone with that file can act as you there.
+Open the app, join and create your identity, as in 2.2. It's kept in the app's own storage and can't be exported; deleting the app deletes it.
 
 ### 3.10 Certificate refresh
 

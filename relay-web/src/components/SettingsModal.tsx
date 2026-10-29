@@ -8,7 +8,7 @@ import { fingerprint } from "@/lib/signed";
 import { ApiError } from "@/lib/api";
 
 export function SettingsModal({ onClose }: { onClose: () => void }) {
-  const { identity, isAdmin, directory, directoryError, setDisplayName, saveIdentityBinary, server, servers, leaveServer } = useIdentity();
+  const { identity, isAdmin, directory, directoryError, setDisplayName, server, servers, leaveServer, identityStorage } = useIdentity();
   const [tab, setTab] = useState<"general" | "admin">("general");
   const [name, setName] = useState(identity?.myName ?? "");
   const [saving, setSaving] = useState(false);
@@ -146,18 +146,19 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
           {leaveError && <p className="text-xs text-red-500">{leaveError}</p>}
         </section>
 
-        <section className="flex flex-col gap-2">
-          <h3 className="text-sm font-medium">Identity file</h3>
-          <p className="text-xs text-[var(--muted)]">
-            Your private keys for this server only. Anyone with this file can read your messages here and act as you.
-          </p>
-          <button
-            type="button"
-            onClick={() => saveIdentityBinary().catch(() => {})}
-            className="self-start px-3 py-1.5 rounded border border-[var(--border)] text-sm"
-          >
-            Save identity file
-          </button>
+        <section className="flex flex-col gap-1">
+          <h3 className="text-sm font-medium">Your keys</h3>
+          {identityStorage?.kind === "folder" ? (
+            <p className="text-xs text-[var(--muted)]">
+              In <code>{identityStorage.fileName}</code> in the folder &ldquo;{identityStorage.folder}&rdquo;, encrypted with your passphrase.
+              Keep a copy somewhere safe: if you lose the file or forget the passphrase, ask your admin to enroll you again.
+            </p>
+          ) : (
+            <p className="text-xs text-[var(--muted)]">
+              Made on this device and kept only in this app. They can&apos;t be exported or backed up. If you lose this
+              device or clear the app&apos;s data, ask your admin to enroll you again.
+            </p>
+          )}
         </section>
           </>
         )}

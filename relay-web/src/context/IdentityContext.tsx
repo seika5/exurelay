@@ -1,25 +1,27 @@
 "use client";
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { Capacitor } from "@capacitor/core";
-import { Filesystem, Directory as FsDirectory } from "@capacitor/filesystem";
-import { Share } from "@capacitor/share";
-import {
-  importKeyPair,
-  exportPrivateKey,
-  exportPublicKey,
-  generateKeyPair,
-  generateSigningKeyPair,
-  importSigningKeyPair,
-} from "@/lib/crypto";
+import { exportPrivateKey, exportPublicKey, generateKeyPair, generateSigningKeyPair, importIdentityKeys } from "@/lib/crypto";
+import { createIdentityFile, openIdentityFile, rewriteSettings, type FileSession } from "@/lib/identityFile";
 import { getKeyHashFromKeyPair } from "@/lib/e2ee";
 import { ApiError, getDirectory, postLeave, publishDirectory, publishProfile } from "@/lib/api";
 import {
-  parseIdentityBinary,
-  writeIdentityBinary,
+  deleteFolderRef,
+  deleteIdentity,
+  ensureFolderAccess,
+  identityFileName,
+  loadFolderRef,
+  loadIdentity,
+  readFolderFile,
+  removeFolderFile,
+  requestPersistentStorage,
+  saveFolderRef,
+  saveIdentity,
+  writeFolderFile,
   type Contact,
   type ContactSettings,
-} from "@/lib/identityBinary";
+  type FolderRef,
+} from "@/lib/keystore";
 import {
   createEnrollmentCode as buildEnrollmentCode,
   directoryWithoutMembers,
@@ -33,7 +35,6 @@ import {
   type Profile,
 } from "@/lib/signed";
 import {
-  identityFileId,
   listServers,
   loadServerConfig,
   normalizeServerUrl,
@@ -48,18 +49,6 @@ import {
 import { setSigner } from "@/lib/session";
 import { clearWallet, resetWalletMemory, setTokenDirectory } from "@/lib/tokens";
 
-const IS_NATIVE = Capacitor.isNativePlatform();
-
-/**
- * One identity per server, so servers can't link a member across servers by key. Each lives in its own file,
- * named by a hash of the server URL; the file also records its server, so a file can't be used for the wrong one.
- */
-/** Identity file in the app Documents directory (native only). */
-const nativeIdentityFile = (id: string) => `identity-${id}.bin`;
-/** Identity served statically (web only). */
-const webIdentityPath = (id: string) => `/identity/${id}.bin`;
-/** Web API route for auto-save (web only, localhost-gated). */
-const IDENTITY_API_PATH = "/api/identity";
 /** Newest directory version this device has accepted for the current server (rollback protection). */
 const DIRECTORY_VERSION_KEY = "relay.directoryVersion";
 const DIRECTORY_POLL_MS = 60_000;
@@ -78,16 +67,31 @@ type IdentityState = {
   contacts: Contact[];
 };
 
+/**
+ * Where a new identity is kept: in a folder the user picked, as a passphrase-encrypted file (desktop Chrome/Edge),
+ * or in the app's own storage (everywhere else).
+ */
+export type StorageChoice = { kind: "app" } | { kind: "folder"; dir: FileSystemDirectoryHandle; passphrase: string };
+
+/** Where the active identity lives, for Settings. */
+export type IdentityStorage = { kind: "app" } | { kind: "folder"; folder: string; fileName: string };
+
 type IdentityContextValue = {
   identity: IdentityState | null;
   /** True until the initial identity load has completed. */
   loading: boolean;
   /** No identity for the active server on this device yet: show the create-identity screen. */
   needsSetup: boolean;
+  /** The active server's identity is in a folder: show the unlock screen (passphrase). */
+  lockedFile: { folder: string; fileName: string } | null;
+  /** Decrypt the locked identity file. Call from a submit/click: the browser may ask for folder access. */
+  unlockIdentity: (passphrase: string) => Promise<void>;
+  /** Point this server at a folder holding its identity file (after the folder moved, or site data was cleared). */
+  openIdentityFolder: (dir: FileSystemDirectoryHandle) => Promise<void>;
+  identityStorage: IdentityStorage | null;
   error: string | null;
   dismissError: () => void;
-  createIdentity: (name: string) => Promise<void>;
-  loadIdentityFromBytes: (buffer: ArrayBuffer, serverUrl: string) => Promise<void>;
+  createIdentity: (name: string, storage: StorageChoice) => Promise<void>;
   /** Verified member directory, or null before the first admin publishes one. */
   directory: Directory | null;
   directoryLoaded: boolean;
@@ -102,7 +106,7 @@ type IdentityContextValue = {
   /** Join with a RELAY-JOIN: code or link. Throws with a readable message if it's invalid. */
   joinServer: (codeOrLink: string) => void;
   /** First admin of a brand-new server: create an identity for it and pin its signing key as the admin. */
-  setUpNewServer: (url: string, name: string) => Promise<void>;
+  setUpNewServer: (url: string, name: string, storage: StorageChoice) => Promise<void>;
   /** Every server this app has joined; `server` is the active one. */
   servers: ServerConfig[];
   /** Make another joined server active. Each server keeps its own tokens and state. */
@@ -126,11 +130,6 @@ type IdentityContextValue = {
   getMyDisplayName: () => string;
   /** Fresh signed enrollment code (valid 3 minutes) for the admin to paste or scan. */
   createEnrollmentCode: () => Promise<string>;
-  /**
-   * Web: downloads identity.bin via browser anchor.
-   * Native: saves to Documents directory and opens the iOS share sheet.
-   */
-  saveIdentityBinary: () => Promise<void>;
   logout: () => void;
 };
 
@@ -139,83 +138,6 @@ const IdentityContext = createContext<IdentityContextValue | null>(null);
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/** Build the raw identity bytes from the current in-memory state. */
-async function buildIdentityBytes(identity: IdentityState): Promise<Uint8Array> {
-  return writeIdentityBinary({
-    server: identity.server,
-    publicKeyBase64: identity.publicKeyBase64,
-    privateKeyJwk: await exportPrivateKey(identity.keyPair.privateKey),
-    signingPublicKeyBase64: identity.signingPublicKeyBase64,
-    signingPrivateKeyJwk: await exportPrivateKey(identity.signingKeyPair.privateKey),
-    myName: identity.myName,
-    contactSettings: identity.contactSettings,
-  });
-}
-
-/**
- * Persist identity to disk. Returns false if it couldn't be saved (web app not served from localhost).
- * Native: writes to the app Documents directory via @capacitor/filesystem.
- * Web:    PUTs to /api/identity (localhost-only).
- */
-async function persistIdentityBinary(identity: IdentityState): Promise<boolean> {
-  const bytes = await buildIdentityBytes(identity);
-  const id = await identityFileId(identity.server);
-
-  if (IS_NATIVE) {
-    const base64 = btoa(String.fromCharCode(...Array.from(bytes)));
-    await Filesystem.writeFile({
-      path: nativeIdentityFile(id),
-      data: base64,
-      directory: FsDirectory.Documents,
-    });
-    return true;
-  }
-
-  try {
-    const res = await fetch(`${IDENTITY_API_PATH}?id=${id}`, {
-      method: "PUT",
-      body: bytes.buffer as ArrayBuffer,
-      headers: { "Content-Type": "application/octet-stream" },
-    });
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
-
-/** Delete a server's identity file (when leaving it). Best effort: a leftover file is no longer a member. */
-async function deleteIdentityFile(serverUrl: string): Promise<void> {
-  const id = await identityFileId(serverUrl);
-  try {
-    if (IS_NATIVE) {
-      await Filesystem.deleteFile({ path: nativeIdentityFile(id), directory: FsDirectory.Documents });
-    } else {
-      await fetch(`${IDENTITY_API_PATH}?id=${id}`, { method: "DELETE" });
-    }
-  } catch {
-    // Already gone, or nowhere it could have been saved.
-  }
-}
-
-function downloadBytes(bytes: Uint8Array, filename: string) {
-  const blob = new Blob([bytes.buffer as ArrayBuffer], { type: "application/octet-stream" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(a.href);
-}
-
-/** Convert a base64 string (from Filesystem.readFile on native) to an ArrayBuffer. */
-function base64ToArrayBuffer(b64: string): ArrayBuffer {
-  const binary = atob(b64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes.buffer as ArrayBuffer;
-}
 
 function readMinDirectoryVersion(): number {
   try {
@@ -234,39 +156,6 @@ function writeMinDirectoryVersion(version: number) {
 }
 
 // ---------------------------------------------------------------------------
-// Native identity scan
-// ---------------------------------------------------------------------------
-
-/**
- * Load this server's identity from the app Documents directory. If its own file isn't there, look for a .bin file
- * the user dragged in that belongs to this server, and rename it for subsequent launches. Null if there's none.
- */
-async function loadNativeIdentity(serverUrl: string): Promise<ArrayBuffer | null> {
-  const path = nativeIdentityFile(await identityFileId(serverUrl));
-  try {
-    const result = await Filesystem.readFile({ path, directory: FsDirectory.Documents });
-    const buf = base64ToArrayBuffer(result.data as string);
-    if (buf.byteLength > 0) return buf;
-  } catch {
-    // Not present yet — fall through to scan.
-  }
-
-  const dir = await Filesystem.readdir({ path: "", directory: FsDirectory.Documents });
-  for (const f of dir.files.filter((f) => f.name.endsWith(".bin") && f.name !== path)) {
-    try {
-      const result = await Filesystem.readFile({ path: f.name, directory: FsDirectory.Documents });
-      const buf = base64ToArrayBuffer(result.data as string);
-      if (parseIdentityBinary(buf).server !== serverUrl) continue;
-      await Filesystem.rename({ from: f.name, to: path, directory: FsDirectory.Documents });
-      return buf;
-    } catch {
-      // Not an identity file (or an old one): skip it.
-    }
-  }
-  return null;
-}
-
-// ---------------------------------------------------------------------------
 // Provider
 // ---------------------------------------------------------------------------
 
@@ -276,6 +165,8 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
   const [base, setBase] = useState<BaseIdentity | null>(null);
   const [loading, setLoading] = useState(true);
   const [needsSetup, setNeedsSetup] = useState(false);
+  // Folder identity for the active server, waiting for its passphrase.
+  const [locked, setLocked] = useState<FolderRef | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [directory, setDirectory] = useState<Directory | null>(null);
   const [profiles, setProfiles] = useState<Map<string, Profile>>(new Map());
@@ -351,71 +242,123 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
   const identities = useRef(new Map<string, BaseIdentity>());
   const activeUrl = useRef<string | null>(null);
 
-  const adopt = useCallback(async (next: BaseIdentity, save: boolean) => {
+  // Folder identities unlocked this session, by server: enough to save settings back, without the passphrase.
+  const fileSessions = useRef(new Map<string, { ref: FolderRef; session: FileSession }>());
+
+  const adopt = useCallback((next: BaseIdentity) => {
     identities.current.set(next.server, next);
     if (next.server === activeUrl.current) {
       setBase(next);
       setNeedsSetup(false);
-    }
-    if (save && !(await persistIdentityBinary(next as IdentityState))) {
-      // Not on localhost: nowhere to save it automatically, so hand the file to the user.
-      const id = await identityFileId(next.server);
-      downloadBytes(await buildIdentityBytes(next as IdentityState), `${id}.bin`);
-      setError(
-        `Couldn't save your identity automatically, so it was downloaded instead.\n\nPut ${id}.bin in relay-web/public/identity/ or you'll lose this account when the page reloads.`
-      );
+      setLocked(null);
     }
   }, []);
 
-  const loadIdentityFromBytes = useCallback(async (buffer: ArrayBuffer, serverUrl: string) => {
-    setError(null);
-    try {
-      const data = parseIdentityBinary(buffer);
-      if (data.server !== serverUrl) throw new Error(`This identity file belongs to ${data.server}, not ${serverUrl}.`);
-      const keyPair = await importKeyPair(data.privateKeyJwk, data.publicKeyBase64);
-      const signingKeyPair = await importSigningKeyPair(data.signingPrivateKeyJwk, data.signingPublicKeyBase64);
-      await adopt(
-        {
-          server: data.server,
-          keyPair,
-          signingKeyPair,
-          keyHash: await getKeyHashFromKeyPair(keyPair),
-          publicKeyBase64: data.publicKeyBase64,
-          signingPublicKeyBase64: data.signingPublicKeyBase64,
-          myName: data.myName,
-          contactSettings: data.contactSettings,
-        },
-        IS_NATIVE
-      );
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Something went wrong.");
-      throw e;
+  /** Save name and contact settings wherever this identity lives. */
+  const persist = useCallback(async (next: BaseIdentity) => {
+    const f = fileSessions.current.get(next.server);
+    if (f) {
+      const bytes = await rewriteSettings(f.session, { myName: next.myName, contactSettings: next.contactSettings });
+      await writeFolderFile(f.ref.dir, f.ref.fileName, bytes);
+    } else {
+      await saveIdentity(next);
     }
-  }, [adopt]);
+  }, []);
 
-  const newIdentity = async (serverUrl: string, name: string): Promise<BaseIdentity> => {
+  /**
+   * Make and store a new identity. It's saved before it's used: one that only existed in memory would be gone on
+   * reload, after the admin had enrolled it.
+   */
+  const newIdentity = async (serverUrl: string, name: string, storage: StorageChoice): Promise<BaseIdentity> => {
     const trimmed = name.trim().slice(0, MAX_NAME_LENGTH);
     if (!trimmed) throw new Error("Enter a name");
-    const keyPair = await generateKeyPair();
-    const signingKeyPair = await generateSigningKeyPair();
-    return {
+    const folder = storage.kind === "folder";
+    // Folder mode: extractable only long enough to write the encrypted file, then re-imported non-extractable.
+    const ecdh = await generateKeyPair(folder);
+    const signing = await generateSigningKeyPair(folder);
+    const publicKeyBase64 = await exportPublicKey(ecdh.publicKey);
+    const signingPublicKeyBase64 = await exportPublicKey(signing.publicKey);
+    let keys = { keyPair: ecdh, signingKeyPair: signing };
+    if (storage.kind === "folder") {
+      const fileName = identityFileName(serverUrl);
+      if (!(await ensureFolderAccess(storage.dir))) throw new Error("Relay needs access to that folder to save your identity.");
+      if (await readFolderFile(storage.dir, fileName)) {
+        throw new Error(`That folder already has an identity for this server (${fileName}). Use "I already have an identity file", or pick another folder.`);
+      }
+      const { bytes, session } = await createIdentityFile(
+        {
+          server: serverUrl,
+          ecdhPublic: publicKeyBase64,
+          ecdhPrivate: await exportPrivateKey(ecdh.privateKey),
+          signingPublic: signingPublicKeyBase64,
+          signingPrivate: await exportPrivateKey(signing.privateKey),
+        },
+        { myName: trimmed, contactSettings: [] },
+        storage.passphrase
+      );
+      await writeFolderFile(storage.dir, fileName, bytes);
+      const ref = { server: serverUrl, dir: storage.dir, fileName };
+      await saveFolderRef(ref);
+      fileSessions.current.set(serverUrl, { ref, session });
+      keys = await importIdentityKeys({
+        ecdhPublic: publicKeyBase64,
+        ecdhPrivate: await exportPrivateKey(ecdh.privateKey),
+        signingPublic: signingPublicKeyBase64,
+        signingPrivate: await exportPrivateKey(signing.privateKey),
+      });
+    }
+    const next: BaseIdentity = {
       server: serverUrl,
-      keyPair,
-      signingKeyPair,
-      keyHash: await getKeyHashFromKeyPair(keyPair),
-      publicKeyBase64: await exportPublicKey(keyPair.publicKey),
-      signingPublicKeyBase64: await exportPublicKey(signingKeyPair.publicKey),
+      ...keys,
+      keyHash: await getKeyHashFromKeyPair(keys.keyPair),
+      publicKeyBase64,
+      signingPublicKeyBase64,
       myName: trimmed,
       contactSettings: [],
     };
+    if (storage.kind === "app") {
+      await saveIdentity(next);
+      requestPersistentStorage();
+    }
+    return next;
   };
 
   /** A new identity for the active server. */
-  const createIdentity = useCallback(async (name: string) => {
+  const createIdentity = useCallback(async (name: string, storage: StorageChoice) => {
     setError(null);
     if (!server) throw new Error("Join a server first");
-    await adopt(await newIdentity(server.url, name), true);
+    adopt(await newIdentity(server.url, name, storage));
   }, [server, adopt]);
+
+  const unlockIdentity = useCallback(async (passphrase: string) => {
+    if (!locked) return;
+    if (!(await ensureFolderAccess(locked.dir))) throw new Error("Relay needs access to the folder to read your identity.");
+    const bytes = await readFolderFile(locked.dir, locked.fileName);
+    if (!bytes) throw new Error(`${locked.fileName} isn't in the folder "${locked.dir.name}" any more. Choose the folder it's in now.`);
+    const { keys, settings, session } = await openIdentityFile(bytes, passphrase);
+    if (keys.server !== locked.server) throw new Error(`That file is the identity for ${keys.server}, not this server.`);
+    const pairs = await importIdentityKeys(keys);
+    fileSessions.current.set(locked.server, { ref: locked, session });
+    adopt({
+      server: keys.server,
+      ...pairs,
+      keyHash: await getKeyHashFromKeyPair(pairs.keyPair),
+      publicKeyBase64: keys.ecdhPublic,
+      signingPublicKeyBase64: keys.signingPublic,
+      myName: settings.myName,
+      contactSettings: settings.contactSettings ?? [],
+    });
+  }, [locked, adopt]);
+
+  const openIdentityFolder = useCallback(async (dir: FileSystemDirectoryHandle) => {
+    if (!server) return;
+    const fileName = identityFileName(server.url);
+    if (!(await readFolderFile(dir, fileName))) throw new Error(`There's no ${fileName} in "${dir.name}".`);
+    const ref = { server: server.url, dir, fileName };
+    await saveFolderRef(ref);
+    setNeedsSetup(false);
+    setLocked(ref);
+  }, [server]);
 
   const dismissError = useCallback(() => setError(null), []);
 
@@ -425,6 +368,7 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
     activeUrl.current = server?.url ?? null;
     setError(null);
     setNeedsSetup(false);
+    setLocked(null);
     const url = server?.url;
     const cached = url ? identities.current.get(url) : undefined;
     setBase(cached ?? null);
@@ -434,17 +378,17 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
     }
     setLoading(true);
     let cancelled = false;
-    const load = IS_NATIVE
-      ? loadNativeIdentity(url).catch(() => null)
-      : identityFileId(url)
-          .then((id) => fetch(webIdentityPath(id), { cache: "no-store" }))
-          .then((r) => (r.ok ? r.arrayBuffer() : null))
-          .catch(() => null);
-    load
-      .then(async (buf) => {
-        if (cancelled) return;
-        if (buf && buf.byteLength > 0) await loadIdentityFromBytes(buf, url).catch(() => {});
-        else setNeedsSetup(true);
+    (async () => {
+      const ref = await loadFolderRef(url);
+      if (cancelled) return;
+      if (ref) return setLocked(ref);
+      const stored = await loadIdentity(url);
+      if (cancelled) return;
+      if (stored) adopt(stored);
+      else setNeedsSetup(true);
+    })()
+      .catch((e) => {
+        if (!cancelled) setError(`Couldn't open this device's key storage: ${e instanceof Error ? e.message : e}`);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -452,17 +396,17 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [serverReady, server?.url, loadIdentityFromBytes]);
+  }, [serverReady, server?.url, adopt]);
 
   /** First admin of a brand-new server: a new identity for it, whose signing key is pinned as the admin. */
-  const setUpNewServer = useCallback(async (url: string, name: string) => {
+  const setUpNewServer = useCallback(async (url: string, name: string, storage: StorageChoice) => {
     const normalized = normalizeServerUrl(url);
-    const next = await newIdentity(normalized, name);
+    const next = await newIdentity(normalized, name, storage);
     const config: ServerConfig = { url: normalized, admins: [next.signingPublicKeyBase64] };
     identities.current.set(normalized, next);
     saveServerConfig(config);
     activate(config);
-    await adopt(next, true);
+    adopt(next);
   }, [activate, adopt]);
 
   // Logins (for tokens, admin requests and the socket) sign with this identity.
@@ -561,8 +505,23 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
       // ignore
     }
     identities.current.delete(server.url);
-    await deleteIdentityFile(server.url);
+    // The identity file goes too once we've left (it's useless after); while locked we couldn't sign the leave,
+    // so the file stays and only this device forgets the server.
+    const file = fileSessions.current.get(server.url)?.ref ?? (await loadFolderRef(server.url).catch(() => null));
+    if (file) {
+      if (base) {
+        try {
+          if (await ensureFolderAccess(file.dir)) await removeFolderFile(file.dir, file.fileName);
+        } catch {
+          // Couldn't delete it: it's no longer a member's key either way.
+        }
+      }
+      await deleteFolderRef(server.url).catch(() => {});
+    }
+    fileSessions.current.delete(server.url);
+    await deleteIdentity(server.url);
     setBase(null);
+    setLocked(null);
     activate(removeServerConfig(server.url));
   }, [server, base, enrolled, activate]);
 
@@ -659,7 +618,7 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
       const next = { ...base, myName: trimmed };
       setBase(next);
       profilePublishedFor.current = trimmed;
-      await persistIdentityBinary(next as IdentityState);
+      await persist(next);
       if (enrolled) {
         await signAndPublishProfile(next, trimmed);
         await refreshDirectory();
@@ -667,8 +626,8 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
       return;
     }
     const next = updateSettings(keyHash, { nickname: trimmed || undefined });
-    if (next) await persistIdentityBinary(next as IdentityState);
-  }, [base, enrolled, signAndPublishProfile, refreshDirectory, updateSettings]);
+    if (next) await persist(next);
+  }, [base, enrolled, signAndPublishProfile, refreshDirectory, updateSettings, persist]);
 
   const getDisplayName = useCallback(
     (keyHash: string): string | undefined =>
@@ -686,8 +645,8 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
 
   const setContactVolume = useCallback((keyHash: string, volume: number) => {
     const next = updateSettings(keyHash, { volume: Math.min(100, Math.max(0, Math.round(volume))) });
-    if (next) persistIdentityBinary(next as IdentityState).catch((e) => setError(e instanceof Error ? e.message : "Failed to save volume"));
-  }, [updateSettings]);
+    if (next) persist(next).catch((e) => setError(e instanceof Error ? e.message : "Failed to save volume"));
+  }, [updateSettings, persist]);
 
   const getMyDisplayName = useCallback((): string => base?.myName || "Me", [base?.myName]);
 
@@ -696,34 +655,17 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
     return buildEnrollmentCode(base.keyPair.publicKey, base.signingKeyPair, base.myName);
   }, [base]);
 
-  const saveIdentityBinary = useCallback(async (): Promise<void> => {
-    if (!identity) throw new Error("No identity loaded");
-    const bytes = await buildIdentityBytes(identity);
-    const file = nativeIdentityFile(await identityFileId(identity.server));
-
-    if (IS_NATIVE) {
-      const base64 = btoa(String.fromCharCode(...Array.from(bytes)));
-      const writeResult = await Filesystem.writeFile({
-        path: file,
-        data: base64,
-        directory: FsDirectory.Documents,
-      });
-      await Share.share({
-        title: file,
-        text: "Relay identity file",
-        url: writeResult.uri,
-      });
-      return;
-    }
-
-    // Named as relay-web/public/identity/ expects it.
-    downloadBytes(bytes, `${await identityFileId(identity.server)}.bin`);
-  }, [identity]);
+  const identityStorage = useMemo<IdentityStorage | null>(() => {
+    if (!base) return null;
+    const f = fileSessions.current.get(base.server);
+    return f ? { kind: "folder", folder: f.ref.dir.name, fileName: f.ref.fileName } : { kind: "app" };
+  }, [base]);
 
   const logout = useCallback(() => {
     if (server) {
       clearWallet();
       identities.current.delete(server.url);
+      fileSessions.current.delete(server.url);
     }
     setBase(null);
   }, [server]);
@@ -734,10 +676,13 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
         identity,
         loading: loading || !serverReady,
         needsSetup,
+        lockedFile: locked && !base ? { folder: locked.dir.name, fileName: locked.fileName } : null,
+        unlockIdentity,
+        openIdentityFolder,
+        identityStorage,
         error,
         dismissError,
         createIdentity,
-        loadIdentityFromBytes,
         directory,
         directoryLoaded,
         directoryError,
@@ -759,7 +704,6 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
         setContactVolume,
         getMyDisplayName,
         createEnrollmentCode,
-        saveIdentityBinary,
         logout,
       }}
     >

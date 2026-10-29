@@ -9,7 +9,7 @@ import { useCall } from "@/context/CallContext";
 import { CompactCallTile } from "@/components/CallTile";
 import { InlineCallView } from "@/components/InlineCallView";
 import { RemoteCallAudio } from "@/components/RemoteCallAudio";
-import { CreateIdentity, JoinServer, NotEnrolled } from "@/components/Onboarding";
+import { CreateIdentity, JoinServer, NotEnrolled, UnlockIdentity } from "@/components/Onboarding";
 import { TokenWarning } from "@/components/TokenWarning";
 import { SettingsModal } from "@/components/SettingsModal";
 import { ServerSwitcher } from "@/components/ServerSwitcher";
@@ -160,7 +160,7 @@ export default function Home() {
 
 function Chat() {
   const {
-    identity, loading, needsSetup, enrolled, directoryLoaded, error: identityError, server,
+    identity, loading, needsSetup, lockedFile, enrolled, directoryLoaded, error: identityError, server,
     getDisplayName, getMyDisplayName, setDisplayName, getMember, isRemoved,
   } = useIdentity();
   const {
@@ -405,6 +405,8 @@ function Chat() {
   if (!loading && (!server || addingServer)) return <JoinServer onClose={server ? () => setAddingServer(false) : undefined} />;
 
   if (loading) return <main className="min-h-screen bg-[var(--bg)]" />;
+
+  if (lockedFile) return <UnlockIdentity />;
 
   if (needsSetup) return <CreateIdentity />;
 

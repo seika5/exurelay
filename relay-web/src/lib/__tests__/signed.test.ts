@@ -1,9 +1,9 @@
 /**
- * Enrollment codes, admin-signed directories, member profiles and the v5 identity file.
+ * Enrollment codes, admin-signed directories, member profiles and departures.
  */
 
 import { describe, it, expect } from "vitest";
-import { exportPrivateKey, exportPublicKey, generateKeyPair, generateSigningKeyPair } from "../crypto";
+import { exportPublicKey, generateKeyPair, generateSigningKeyPair } from "../crypto";
 import {
   createEnrollmentCode,
   directoryWithMember,
@@ -18,7 +18,6 @@ import {
   ENROLLMENT_CODE_TTL_MS,
   type DirectoryMember,
 } from "../signed";
-import { parseIdentityBinary, writeIdentityBinary } from "../identityBinary";
 
 async function newMember(): Promise<{ ecdh: CryptoKeyPair; signing: CryptoKeyPair; entry: DirectoryMember }> {
   const ecdh = await generateKeyPair();
@@ -129,27 +128,5 @@ describe("departures", () => {
     expect(next.members.map((m) => m.keyHash)).toEqual([admin.entry.keyHash, b.entry.keyHash]);
     expect(next.removed).toEqual([{ keyHash: a.entry.keyHash, removedAt: 5 }]);
     expect(next.admins).toEqual([admin.entry.sig]);
-  });
-});
-
-describe("identity file v6", () => {
-  it("round-trips its server, keys, name and contact settings", async () => {
-    const m = await newMember();
-    const data = {
-      server: "https://relay.example.com",
-      publicKeyBase64: m.entry.ecdh,
-      privateKeyJwk: await exportPrivateKey(m.ecdh.privateKey),
-      signingPublicKeyBase64: m.entry.sig,
-      signingPrivateKeyJwk: await exportPrivateKey(m.signing.privateKey),
-      myName: "Ana ✨",
-      contactSettings: [{ keyHash: "bb", nickname: "Bobby", volume: 40 }, { keyHash: "cc", volume: 100 }],
-    };
-    const parsed = parseIdentityBinary(writeIdentityBinary(data).buffer as ArrayBuffer);
-    expect(parsed).toEqual({ ...data, contactSettings: [data.contactSettings[0], { keyHash: "cc", nickname: undefined, volume: 100 }] });
-  });
-
-  it("refuses older identity files", () => {
-    expect(() => parseIdentityBinary(new Uint8Array([4, 0, 0]).buffer)).toThrow(/old identity file/);
-    expect(() => parseIdentityBinary(new Uint8Array([5, 0, 0]).buffer)).toThrow(/old identity file/);
   });
 });

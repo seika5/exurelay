@@ -16,12 +16,37 @@ export async function sha256Hex(data: ArrayBuffer | string): Promise<string> {
     .join("");
 }
 
-export async function generateKeyPair(): Promise<CryptoKeyPair> {
+/**
+ * ECDH P-256 identity keypair. Non-extractable by default: usable, but its bytes can never be read out.
+ * extractable is only for writing a new identity file; the app then re-imports the keys non-extractable.
+ */
+export async function generateKeyPair(extractable = false): Promise<CryptoKeyPair> {
   return crypto.subtle.generateKey(
     { name: "ECDH", namedCurve: "P-256" },
-    true,
+    extractable,
     ["deriveBits", "deriveKey"]
   ) as Promise<CryptoKeyPair>;
+}
+
+/** Private key as JWK, only for writing a new identity file. Throws for non-extractable keys. */
+export async function exportPrivateKey(key: CryptoKey): Promise<JsonWebKey> {
+  return crypto.subtle.exportKey("jwk", key) as Promise<JsonWebKey>;
+}
+
+/** Identity keys read from an identity file, imported non-extractable. */
+export async function importIdentityKeys(k: {
+  ecdhPublic: string;
+  ecdhPrivate: JsonWebKey;
+  signingPublic: string;
+  signingPrivate: JsonWebKey;
+}): Promise<{ keyPair: CryptoKeyPair; signingKeyPair: CryptoKeyPair }> {
+  const [ecdhPriv, ecdhPub, sigPriv, sigPub] = await Promise.all([
+    crypto.subtle.importKey("jwk", k.ecdhPrivate, { name: "ECDH", namedCurve: "P-256" }, false, ["deriveBits", "deriveKey"]),
+    importPublicKey(k.ecdhPublic),
+    crypto.subtle.importKey("jwk", k.signingPrivate, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]),
+    importSigningPublicKey(k.signingPublic),
+  ]);
+  return { keyPair: { privateKey: ecdhPriv, publicKey: ecdhPub }, signingKeyPair: { privateKey: sigPriv, publicKey: sigPub } };
 }
 
 export async function exportPublicKey(key: CryptoKey): Promise<string> {
@@ -38,31 +63,6 @@ export async function importPublicKey(base64: string): Promise<CryptoKey> {
     true, // extractable: needed for getKeyHashFromKeyPair and senderPublicKey in payloads
     [] // public key: no usages; deriveKey/deriveBits apply to private key
   );
-}
-
-/** Export private key as JWK for identity file storage. */
-export async function exportPrivateKey(key: CryptoKey): Promise<JsonWebKey> {
-  return crypto.subtle.exportKey("jwk", key) as Promise<JsonWebKey>;
-}
-
-/** Import private key from JWK (identity file). */
-export async function importPrivateKey(jwk: JsonWebKey): Promise<CryptoKey> {
-  return crypto.subtle.importKey(
-    "jwk",
-    jwk,
-    { name: "ECDH", namedCurve: "P-256" },
-    true,
-    ["deriveBits", "deriveKey"]
-  );
-}
-
-/** Import full keypair from identity file data. */
-export async function importKeyPair(privateKeyJwk: JsonWebKey, publicKeyBase64: string): Promise<CryptoKeyPair> {
-  const [privateKey, publicKey] = await Promise.all([
-    importPrivateKey(privateKeyJwk),
-    importPublicKey(publicKeyBase64),
-  ]);
-  return { privateKey, publicKey };
 }
 
 /** Derive AES key from ECDH shared secret for a recipient's public key. */
@@ -183,9 +183,12 @@ export async function importSymmetricKey(base64: string): Promise<CryptoKey> {
   );
 }
 
-/** ECDSA P-256 signing keypair: signs enrollment codes, profiles and (for admins) the member directory. */
-export async function generateSigningKeyPair(): Promise<CryptoKeyPair> {
-  return crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]) as Promise<CryptoKeyPair>;
+/**
+ * ECDSA P-256 signing keypair: signs enrollment codes, profiles, logins and (for admins) the member directory.
+ * Non-extractable, like the identity key.
+ */
+export async function generateSigningKeyPair(extractable = false): Promise<CryptoKeyPair> {
+  return crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, extractable, ["sign", "verify"]) as Promise<CryptoKeyPair>;
 }
 
 export async function importSigningPublicKey(base64: string): Promise<CryptoKey> {
@@ -193,10 +196,3 @@ export async function importSigningPublicKey(base64: string): Promise<CryptoKey>
   return crypto.subtle.importKey("raw", bin, { name: "ECDSA", namedCurve: "P-256" }, true, ["verify"]);
 }
 
-export async function importSigningKeyPair(privateKeyJwk: JsonWebKey, publicKeyBase64: string): Promise<CryptoKeyPair> {
-  const [privateKey, publicKey] = await Promise.all([
-    crypto.subtle.importKey("jwk", privateKeyJwk, { name: "ECDSA", namedCurve: "P-256" }, true, ["sign"]),
-    importSigningPublicKey(publicKeyBase64),
-  ]);
-  return { privateKey, publicKey };
-}
