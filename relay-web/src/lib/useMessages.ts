@@ -13,7 +13,7 @@ import {
   deleteMessages,
   expired,
   loadCache,
-  saveCursor,
+  saveMeta,
   saveMessages,
   wipeCache,
   type CachedMessage,
@@ -126,6 +126,11 @@ export function useMessages(
   /** Settles once the cache is loaded; syncing waits for it so it resumes from the cached cursor. */
   const cacheLoaded = useRef<Promise<void>>(Promise.resolve());
   const [retentionDays, setRetentionState] = useState(DEFAULT_RETENTION_DAYS);
+  // Per conversation id, the newest sentAt seen there (saved with the cursor in the encrypted cache).
+  const readRef = useRef<Record<string, number>>({});
+  /** The cursor last saved: safe to resume from (cursor.current may be past a send still waiting for pieces). */
+  const savedCursor = useRef("0");
+  const [readMarks, setReadMarks] = useState<Record<string, number>>({});
   const syncing = useRef<Promise<void> | null>(null);
   const syncAgain = useRef(false);
   const [outbox, setOutboxState] = useState<OutboxEntry[]>([]);
@@ -212,7 +217,8 @@ export function useMessages(
         let safe = BigInt(cursor.current);
         const pending = opener.current.oldestPendingSeq();
         if (pending !== null && BigInt(pending) - BigInt(1) < safe) safe = BigInt(pending) - BigInt(1);
-        await saveCursor(owner, cacheKey, safe.toString());
+        savedCursor.current = safe.toString();
+        await saveMeta(owner, cacheKey, { cursor: savedCursor.current, read: readRef.current });
       }
     }
     if (fresh.length === 0) return;
@@ -409,15 +415,21 @@ export function useMessages(
     cursor.current = "0";
     opener.current = null;
     received.current = new Map();
+    savedCursor.current = "0";
+    readRef.current = {};
+    setReadMarks({});
     setRetentionState(readRetention());
     if (!owner || !cacheKey) {
       cacheLoaded.current = Promise.resolve();
       return;
     }
     cacheLoaded.current = loadCache(owner, cacheKey).then(
-      async ({ messages: kept, cursor: from }) => {
+      async ({ messages: kept, cursor: from, read }) => {
         for (const c of kept) received.current.set(c.message.messageId, c);
         cursor.current = from;
+        savedCursor.current = from;
+        readRef.current = read;
+        setReadMarks(read);
         await publish();
       },
       () => {} // unreadable cache: sync from the start
@@ -480,16 +492,32 @@ export function useMessages(
   const resync = useCallback(async () => {
     received.current = new Map();
     cursor.current = "0";
+    savedCursor.current = "0";
     opener.current = null;
     if (owner) await wipeCache(owner, "sync");
+    // Keep what you've read, so old mentions don't light up again.
+    if (owner && cacheKey) await saveMeta(owner, cacheKey, { cursor: "0", read: readRef.current });
     await publish();
     await loadBlobs();
-  }, [owner, publish, loadBlobs]);
+  }, [owner, cacheKey, publish, loadBlobs]);
+
+  /** You've seen this conversation up to `upTo` (a sentAt): clears its mention badge. */
+  const markRead = useCallback(
+    (conv: Conversation, upTo: number) => {
+      if (!identity) return;
+      const id = conversationId(conv, identity.keyHash);
+      if ((readRef.current[id] ?? 0) >= upTo) return;
+      readRef.current = { ...readRef.current, [id]: upTo };
+      setReadMarks(readRef.current);
+      if (owner && cacheKey) saveMeta(owner, cacheKey, { cursor: savedCursor.current, read: readRef.current }).catch(() => {});
+    },
+    [identity, owner, cacheKey]
+  );
 
   const storage = useMemo(
     () => ({ stats: storageStats(receivedMessages), retentionDays, setRetentionDays, clearFiles, clearConversation, clearAll, resync }),
     [receivedMessages, retentionDays, setRetentionDays, clearFiles, clearConversation, clearAll, resync]
   );
 
-  return { messages, conversations, loadBlobs, sendMessage, retrySend, cancelSend, storage, error };
+  return { messages, conversations, loadBlobs, sendMessage, retrySend, cancelSend, storage, readMarks, markRead, error };
 }

@@ -22,6 +22,8 @@ import {
 import { getRoomIdForConversation } from "@/lib/callRoom";
 import type { DecryptedMessage } from "@/lib/blobPayload";
 import { blobSettings } from "@/lib/signed";
+import { activeMentionQuery, encodeDraft, mentionsMe, EVERYONE, type PickedMention } from "@/lib/mentions";
+import { MentionPicker, MessageText, type MentionCandidate } from "@/components/Mentions";
 
 const GROUP_BREAK_MS = 10 * 60 * 1000;
 
@@ -171,7 +173,7 @@ function Chat() {
   } = useCall();
   // Messages need a login, which needs membership: nothing is fetched until we're enrolled on a server.
   // Wait for the cache key too, so the first sync resumes from the cached cursor instead of starting over.
-  const { messages, conversations, sendMessage, retrySend, cancelSend, storage, error } = useMessages(
+  const { messages, conversations, sendMessage, retrySend, cancelSend, storage, readMarks, markRead, error } = useMessages(
     enrolled && server && cacheKey !== undefined ? identity : null,
     useMemo(() => blobSettings(directory), [directory]),
     cacheKey ?? null
@@ -182,6 +184,11 @@ function Chat() {
   // On desktop (md+) both are always visible, so this is ignored.
   const [sidebarVisible, setSidebarVisible] = useState(true);
   const [input, setInput] = useState("");
+  // Mentions picked in this draft (shown as "@name", sent as tokens), and the "@…" being typed, if any.
+  const [picked, setPicked] = useState<PickedMention[]>([]);
+  const [mentionQuery, setMentionQuery] = useState<{ start: number; query: string } | null>(null);
+  const [mentionActive, setMentionActive] = useState(0);
+  const composerRef = useRef<HTMLInputElement>(null);
   const [newGroupOpen, setNewGroupOpen] = useState(false);
   const [newGroupSelected, setNewGroupSelected] = useState<Set<string>>(new Set());
   const [displayNameModal, setDisplayNameModal] = useState<{ keyHash: string } | null>(null);
@@ -239,6 +246,57 @@ function Chat() {
     if (!selected || !identity) return [];
     return messages.filter((m) => messageBelongsToConversation(m, selected, identity.keyHash));
   }, [messages, selected, identity?.keyHash]);
+
+  /** Display name for a member as this viewer knows them. */
+  const nameFor = useCallback(
+    (k: string) => (k === identity?.keyHash ? getMyDisplayName() : getDisplayName(k) || k.slice(0, 8)),
+    [identity?.keyHash, getMyDisplayName, getDisplayName]
+  );
+
+  // "@…" suggestions: the conversation's other members by your names for them, and @everyone in groups.
+  const mentionCandidates = useMemo<MentionCandidate[]>(() => {
+    if (!mentionQuery || !selected || !identity) return [];
+    const others = selected.type === "dm" ? [selected.otherKeyHash] : selected.memberKeyHashes.filter((k) => k !== identity.keyHash);
+    const all: MentionCandidate[] = others.map((k) => ({ keyHash: k, label: nameFor(k) }));
+    if (selected.type === "group") all.push({ keyHash: EVERYONE, label: EVERYONE });
+    const q = mentionQuery.query.toLowerCase();
+    return all.filter((c) => c.label.toLowerCase().includes(q)).slice(0, 8);
+  }, [mentionQuery, selected, identity, nameFor]);
+
+  const pickMention = (c: MentionCandidate) => {
+    if (!mentionQuery) return;
+    const el = composerRef.current;
+    const caret = el?.selectionStart ?? input.length;
+    const next = `${input.slice(0, mentionQuery.start)}@${c.label} ${input.slice(caret)}`;
+    setInput(next);
+    setPicked((p) => [...p.filter((x) => x.keyHash !== c.keyHash), { label: c.label, keyHash: c.keyHash }]);
+    setMentionQuery(null);
+    const pos = mentionQuery.start + c.label.length + 2;
+    requestAnimationFrame(() => el?.setSelectionRange(pos, pos));
+  };
+
+  // Seeing a conversation (open, app in front) clears its mention badge up to its newest message.
+  useEffect(() => {
+    if (!selected) return;
+    const mark = () => {
+      if (document.visibilityState !== "visible") return;
+      const newest = filteredMessages.reduce((n, m) => Math.max(n, m.sentAt), 0);
+      if (newest) markRead(selected, newest);
+    };
+    mark();
+    document.addEventListener("visibilitychange", mark);
+    return () => document.removeEventListener("visibilitychange", mark);
+  }, [selected, filteredMessages, markRead]);
+
+  /** Unread mentions of me per conversation, for the sidebar badge. */
+  const unreadMentions = useCallback(
+    (conv: Conversation) => {
+      if (!identity) return 0;
+      const seen = readMarks[conversationId(conv, identity.keyHash)] ?? 0;
+      return messages.filter((m) => m.sentAt > seen && mentionsMe(m, identity.keyHash) && messageBelongsToConversation(m, conv, identity.keyHash)).length;
+    },
+    [identity, readMarks, messages]
+  );
 
   const groupNamesFromMessages = useMemo(() => {
     const map = new Map<string, string>();
@@ -305,21 +363,24 @@ function Chat() {
           : [];
 
     // The composer clears at once; the message shows faded until the server has it (see useMessages' outbox).
-    const text = input.trim();
+    const { body: text, mentions } = encodeDraft(input.trim(), picked);
     const files = pendingFiles;
     setInput("");
+    setPicked([]);
+    setMentionQuery(null);
     setPendingFiles([]);
+    const sentMentions = mentions.length ? mentions : undefined;
 
     if (text) {
       if (selected?.type === "dm") {
         await sendMessage(
-          { type: "text", body: text } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
+          { type: "text", body: text, mentions: sentMentions } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
           recipients,
           { recipientKeyHash: selected.otherKeyHash }
         );
       } else if (selected?.type === "group") {
         await sendMessage(
-          { type: "text", body: text, groupMemberKeyHashes: selected.memberKeyHashes } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
+          { type: "text", body: text, groupMemberKeyHashes: selected.memberKeyHashes, mentions: sentMentions } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
           recipients
         );
       }
@@ -536,7 +597,17 @@ function Chat() {
                   onPointerCancel={endLongPress}
                   className={`w-full text-left px-3 py-2.5 text-sm truncate transition-colors ${isSelected ? "bg-[var(--accent)]/30" : "hover:bg-[var(--border)] active:bg-[var(--border)]"} ${isInactive(conv) ? "opacity-50" : ""}`}
                 >
-                  {conversationLabel(conv, identity.keyHash, getDisplayName, groupNamesFromMessages)}
+                  <span className="flex items-center gap-2">
+                    <span className="truncate">{conversationLabel(conv, identity.keyHash, getDisplayName, groupNamesFromMessages)}</span>
+                    {unreadMentions(conv) > 0 && (
+                      <span
+                        className="ml-auto shrink-0 px-1.5 rounded-full bg-amber-500 text-black text-xs font-semibold"
+                        aria-label={`${unreadMentions(conv)} unread mentions`}
+                      >
+                        @{unreadMentions(conv)}
+                      </span>
+                    )}
+                  </span>
                 </button>
               </li>
             );
@@ -707,8 +778,12 @@ function Chat() {
 
                 // Regular message
                 const grouped = isGroupedWithPrev(m, prev);
+                const forMe = mentionsMe(m, identity.keyHash);
                 return (
-                  <li key={i} className={grouped ? "mt-0.5" : "mt-3"}>
+                  <li
+                    key={i}
+                    className={`${grouped ? "mt-0.5" : "mt-3"} ${forMe ? "border-l-2 border-amber-400 bg-amber-500/5 pl-2 -ml-2" : ""}`}
+                  >
                     {!grouped && (
                       <div className="flex items-baseline gap-2 mb-0.5">
                         <span className="text-xs font-semibold text-[var(--text)]">
@@ -720,7 +795,15 @@ function Chat() {
                       </div>
                     )}
                     <div className={`text-sm ${m.outbox?.status === "sending" ? "opacity-50" : ""}`}>
-                      {m.type === "text" && <span>{m.body}</span>}
+                      {m.type === "text" && (
+                        <MessageText
+                          body={m.body}
+                          myKeyHash={identity.keyHash}
+                          nameFor={nameFor}
+                          inGroup={!!m.groupMemberKeyHashes}
+                          fromMe={m.senderKeyHash === identity.keyHash}
+                        />
+                      )}
                       {m.type === "file" && (
                         <span className="inline-flex items-center gap-2">
                           <span className="text-[var(--muted)]">[File: {m.filename || "file"}]</span>
@@ -796,6 +879,7 @@ function Chat() {
                   ))}
                 </div>
               )}
+              <MentionPicker candidates={mentionCandidates} active={mentionActive} onPick={pickMention} />
               <div className="flex gap-2">
                 {/*
                   sr-only keeps the input in the DOM (not display:none) so iOS WKWebView
@@ -821,11 +905,36 @@ function Chat() {
                   📎
                 </label>
                 <input
+                  ref={composerRef}
                   type="text"
                   value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && handleSend()}
-                  placeholder="Message..."
+                  onChange={(e) => {
+                    setInput(e.target.value);
+                    setMentionQuery(activeMentionQuery(e.target.value, e.target.selectionStart ?? e.target.value.length));
+                    setMentionActive(0);
+                  }}
+                  onKeyDown={(e) => {
+                    if (mentionCandidates.length > 0) {
+                      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                        e.preventDefault();
+                        const n = mentionCandidates.length;
+                        setMentionActive((a) => (a + (e.key === "ArrowDown" ? 1 : n - 1)) % n);
+                        return;
+                      }
+                      if (e.key === "Enter" || e.key === "Tab") {
+                        e.preventDefault();
+                        pickMention(mentionCandidates[Math.min(mentionActive, mentionCandidates.length - 1)]);
+                        return;
+                      }
+                      if (e.key === "Escape") {
+                        setMentionQuery(null);
+                        return;
+                      }
+                    }
+                    if (e.key === "Enter") handleSend();
+                  }}
+                  onBlur={() => setMentionQuery(null)}
+                  placeholder="Message... (@ to mention)"
                   className="flex-1 min-w-0 px-3 py-2 rounded bg-[var(--surface)] border border-[var(--border)] text-[var(--text)] placeholder-[var(--muted)]"
                 />
                 <button

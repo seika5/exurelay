@@ -13,6 +13,9 @@ import { CACHE_KEYS, CACHE_MESSAGES, CACHE_META, run } from "./keystore";
 /** A kept message and its blob's server expiry (retention counts from that, not from sentAt). */
 export type CachedMessage = { message: DecryptedMessage; expiresAt: number };
 
+/** Sync position, and per conversation the newest sentAt you've seen there (for the mention badge). */
+export type CacheMeta = { cursor: string; read: Record<string, number> };
+
 type Sealed = { iv: Uint8Array; ct: Uint8Array };
 type MessageRecord = Sealed & { id: string; owner: string };
 type MetaRecord = Sealed & { owner: string };
@@ -49,7 +52,7 @@ export async function appCacheKey(owner: string): Promise<CryptoKey> {
 }
 
 /** Everything cached for this identity. Records that don't decrypt (another key, damaged) are skipped. */
-export async function loadCache(owner: string, key: CryptoKey): Promise<{ messages: CachedMessage[]; cursor: string }> {
+export async function loadCache(owner: string, key: CryptoKey): Promise<{ messages: CachedMessage[] } & CacheMeta> {
   const records = await run<MessageRecord[]>("readonly", (s) => s.index("owner").getAll(owner), CACHE_MESSAGES);
   const messages: CachedMessage[] = [];
   for (const r of records) {
@@ -59,16 +62,17 @@ export async function loadCache(owner: string, key: CryptoKey): Promise<{ messag
       // Not readable with this key: leave it for wipeCache.
     }
   }
-  let cursor = "0";
-  const meta = await run<MetaRecord | undefined>("readonly", (s) => s.get(owner), CACHE_META);
-  if (meta) {
+  let meta: CacheMeta = { cursor: "0", read: {} };
+  const record = await run<MetaRecord | undefined>("readonly", (s) => s.get(owner), CACHE_META);
+  if (record) {
     try {
-      cursor = (await open<{ cursor: string }>(key, `${owner}|meta`, meta)).cursor;
+      const m = await open<Partial<CacheMeta>>(key, `${owner}|meta`, record);
+      meta = { cursor: typeof m.cursor === "string" ? m.cursor : "0", read: m.read ?? {} };
     } catch {
       // Unreadable sync state: start over (messages already here are deduplicated by messageId).
     }
   }
-  return { messages, cursor };
+  return { messages, ...meta };
 }
 
 export async function saveMessages(owner: string, key: CryptoKey, items: CachedMessage[]): Promise<void> {
@@ -79,8 +83,8 @@ export async function saveMessages(owner: string, key: CryptoKey, items: CachedM
   }
 }
 
-export async function saveCursor(owner: string, key: CryptoKey, cursor: string): Promise<void> {
-  const record: MetaRecord = { owner, ...(await seal(key, `${owner}|meta`, { cursor })) };
+export async function saveMeta(owner: string, key: CryptoKey, meta: CacheMeta): Promise<void> {
+  const record: MetaRecord = { owner, ...(await seal(key, `${owner}|meta`, meta)) };
   await run("readwrite", (s) => s.put(record), CACHE_META);
 }
 

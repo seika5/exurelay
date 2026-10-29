@@ -4,7 +4,7 @@
  */
 
 export type DecryptedMessageBody =
-  | { senderKeyHash: string; sentAt: number; recipientKeyHash?: string; type: "text"; body: string; groupMemberKeyHashes?: string[] }
+  | { senderKeyHash: string; sentAt: number; recipientKeyHash?: string; type: "text"; body: string; groupMemberKeyHashes?: string[]; mentions?: string[] }
   | { senderKeyHash: string; sentAt: number; recipientKeyHash?: string; type: "file"; body: string; filename?: string; fileSize?: number; groupMemberKeyHashes?: string[]; removed?: boolean }
   | { senderKeyHash: string; sentAt: number; recipientKeyHash?: string; type: "contact"; keyHash: string; publicKey: string; name?: string; groupMemberKeyHashes?: string[] }
   | { senderKeyHash: string; sentAt: number; type: "call_event"; event: "started" | "ended"; recipientKeyHash?: string; groupMemberKeyHashes?: string[] }

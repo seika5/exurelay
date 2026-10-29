@@ -4,7 +4,7 @@
 
 import "fake-indexeddb/auto";
 import { describe, it, expect } from "vitest";
-import { appCacheKey, deleteMessages, expired, loadCache, saveCursor, saveMessages, wipeCache, type CachedMessage } from "../messageCache";
+import { appCacheKey, deleteMessages, expired, loadCache, saveMeta, saveMessages, wipeCache, type CachedMessage } from "../messageCache";
 import { CACHE_MESSAGES, run } from "../keystore";
 
 const msg = (id: string, expiresAt = Date.now() + 86_400_000): CachedMessage => ({
@@ -24,9 +24,10 @@ describe("message cache", () => {
     const key = await appCacheKey("ana");
     expect(await sameKey(await appCacheKey("ana"), key)).toBe(true);
     await saveMessages("ana", key, [msg("m1"), msg("m2")]);
-    await saveCursor("ana", key, "42");
+    await saveMeta("ana", key, { cursor: "42", read: { "dm:x": 5 } });
     const loaded = await loadCache("ana", key);
     expect(loaded.cursor).toBe("42");
+    expect(loaded.read).toEqual({ "dm:x": 5 });
     expect(loaded.messages.map((m) => m.message.messageId).sort()).toEqual(["m1", "m2"]);
 
     // Nothing readable at rest: no plaintext in the stored records.
@@ -44,7 +45,7 @@ describe("message cache", () => {
   it("clears one message, everything, or everything plus sync state and key", async () => {
     const key = await appCacheKey("cleo");
     await saveMessages("cleo", key, [msg("a"), msg("b"), msg("c")]);
-    await saveCursor("cleo", key, "7");
+    await saveMeta("cleo", key, { cursor: "7", read: {} });
     await deleteMessages("cleo", ["a"]);
     expect((await loadCache("cleo", key)).messages).toHaveLength(2);
 
