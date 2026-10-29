@@ -1,4 +1,5 @@
 import type { SignedEnvelope } from "./signed";
+import type { StoredBlob } from "./sealed";
 import { getServerUrl } from "./server";
 import { sessionFetch } from "./session";
 import { tokenFetch } from "./tokens";
@@ -16,29 +17,42 @@ async function errorFrom(res: Response): Promise<ApiError> {
 }
 
 /**
- * Post blobs (each exactly 65536 bytes) in one request, paid for with one anonymous token.
- * recipients[i] is the recipient key hash for blobs[i].
+ * Post one batch of blobs (each exactly the server's blob size), in order, paid for with one anonymous token.
+ * Protocol v2: no recipients; every member downloads every blob (sealed.ts).
  */
-export async function postBlobs(recipients: string[], blobs: ArrayBuffer[]): Promise<{ ids: string[]; expiresAt: string }> {
-  const body = new Uint8Array(blobs.reduce((n, b) => n + b.byteLength, 0));
+export async function postBlobs(blobs: Uint8Array[]): Promise<void> {
+  const body = new Uint8Array(blobs.reduce((n, b) => n + b.length, 0));
   let offset = 0;
   for (const b of blobs) {
-    body.set(new Uint8Array(b), offset);
-    offset += b.byteLength;
+    body.set(b, offset);
+    offset += b.length;
   }
-  const res = await tokenFetch(`/api/blobs?to=${recipients.map(encodeURIComponent).join(",")}`, {
+  const res = await tokenFetch("/api/blobs", {
     method: "POST",
     headers: { "Content-Type": "application/octet-stream" },
     body,
   });
   if (!res.ok) throw await errorFrom(res);
-  return res.json();
 }
 
-export async function getBlobs(recipientKeyHash: string): Promise<{ id: string; payload: string; expiresAt: string }[]> {
-  const res = await tokenFetch(`/api/blobs?recipientKeyHash=${encodeURIComponent(recipientKeyHash)}`, { cache: "no-store" });
+/** The next page of blobs after a cursor (a blob seq; "0" from the start). Binary format: see relay-server blob.js. */
+export async function getBlobsSince(since: string): Promise<{ blobs: StoredBlob[]; more: boolean }> {
+  const res = await tokenFetch(`/api/blobs?since=${encodeURIComponent(since)}`, { cache: "no-store" });
   if (!res.ok) throw await errorFrom(res);
-  return res.json();
+  const buf = new Uint8Array(await res.arrayBuffer());
+  const v = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  const count = v.getUint32(0);
+  const more = buf[4] === 1;
+  const blobs: StoredBlob[] = [];
+  let o = 5;
+  for (let i = 0; i < count; i++) {
+    const seq = v.getBigUint64(o).toString();
+    const expiresAt = Number(v.getBigUint64(o + 8));
+    const len = v.getUint32(o + 16);
+    blobs.push({ seq, expiresAt, payload: buf.slice(o + 20, o + 20 + len) });
+    o += 20 + len;
+  }
+  return { blobs, more };
 }
 
 /** Short-lived ICE servers (STUN + TURN credentials) from the relay. Empty if the relay has no TURN configured. */

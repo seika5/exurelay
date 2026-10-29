@@ -20,7 +20,7 @@ See **[DESIGN.md](DESIGN.md)** for the threat model, crypto details, design deci
 - **Self-made identities, admin enrollment**: Each person's app makes their own keys; nobody else ever holds them. The admin enrolls people in person from a signed code and publishes an admin-signed member list that every app verifies. Anyone on the list can message anyone else on it.
 - **One app, any server**: The app isn't tied to a server. Members join with a join code (QR or link) from their admin, which pins the server address and the admin keys the app will trust. One app can join several servers and switch between them.
 - **Anonymous requests**: Members log in only to collect blind-signed tokens (RFC 9474). Sending, syncing and call setup each spend a token, so the server can tell a member is asking but not which one. The server keeps no request or IP logs.
-- **E2EE messaging**: Text and files sent as uniform encrypted blobs (fixed 64 KB size, chunked when larger). The server only sees opaque blobs; no content, length, or file type is visible.
+- **E2EE messaging, sender and recipient hidden**: Each message or file is encrypted once and stored as blobs of one fixed size (64 KB by default; the admin can set 16–256 KB and up to how many random decoy blobs each send adds). Blobs carry no sender or recipient: every member downloads every blob and keeps what decrypts for them, so the server can't tell who wrote to whom, or text from files.
 - **Voice/video**: Room-based WebRTC with Socket.io signaling. Mute, deafen, camera, screen share.
 - **72-hour blob expiry with timestamp obfuscation**: Blobs expire in a random window around 72 hours. Exact send time is not stored. A background worker deletes expired blobs.
 - **Identity**: Keys are made on your device. On desktop Chrome/Edge they're saved to a passphrase-encrypted file in a folder you choose; elsewhere they stay in the app and can't be exported. Enrollment happens in person.
@@ -78,7 +78,7 @@ On the machine that will host the relay (e.g. a DigitalOcean droplet, VPS):
 
 `PUBLIC_URL` must match the address in your join code exactly: logins signed for any other address are refused. `TOKEN_RATE_PER_MINUTE` (default 30, after a burst of `TOKEN_BURST`, default 200) limits how fast each member gets anonymous tokens; one token pays for one send, sync or call setup. There's no daily cap.
 
-**Upgrading:** each phase so far is a hard cutover. Phase 4 replaced the plain `.bin` files with an encrypted `.relayid` file (desktop Chrome/Edge) or the app's own storage, and old files aren't read. Wipe the database (`npx prisma db push --force-reset`), then everyone joins with the join code, creates a new identity and gets enrolled again. Old `relay-web/public/identity/*.bin` files can be deleted.
+**Upgrading:** each phase so far is a hard cutover (phase 5's message format can't read older blobs). Phase 4 replaced the plain `.bin` files with an encrypted `.relayid` file (desktop Chrome/Edge) or the app's own storage, and old files aren't read. Wipe the database (`npx prisma db push --force-reset`), then everyone joins with the join code, creates a new identity and gets enrolled again. Old `relay-web/public/identity/*.bin` files can be deleted.
 
 ### 1.3 HTTPS (required)
 
@@ -134,7 +134,7 @@ TURN settings come from the relay at call time.
    - **Other browsers and phones:** the keys stay in the app's storage and can't be exported. Clearing the site's data or switching browsers loses them.
 3. The app shows an enrollment QR and code that expire after 3 minutes. Meet the admin, let them scan it (or give them the code), and check the fingerprint they see matches yours. The app moves on by itself once you're enrolled.
 
-Admins enroll, label and remove people, choose other admins, and see server status in **Settings → Admin**.
+Admins enroll, label and remove people, choose other admins, set the message blob size and decoys, and see server status in **Settings → Admin**.
 
 To join another server, pick **+ Join another server…** in the server menu above your chats; the same menu switches between them. Each server has its own identity and tokens. **Settings → Leave server** removes you as a member right away and deletes that server's identity from the device; to come back you need a new join code and approval. The last admin can't leave.
 

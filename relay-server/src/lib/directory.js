@@ -1,6 +1,12 @@
 import { keyHashOf, parseBody, verifySigned } from "./signed.js";
 
 export const MAX_NAME_LENGTH = 64;
+/** Blob size and decoy count are admin settings in the signed directory (DESIGN.md §5, protocol v2). */
+export const DEFAULT_BLOB_SIZE = 65536;
+export const MIN_BLOB_SIZE = 16384;
+export const MAX_BLOB_SIZE = 262144;
+export const DEFAULT_DECOYS = 3;
+export const MAX_DECOYS = 16;
 const MAX_MEMBERS = 1000;
 
 const isB64 = (s) => typeof s === "string" && s.length > 0 && s.length < 200 && /^[A-Za-z0-9+/]+=*$/.test(s);
@@ -25,6 +31,16 @@ export function trustedAdmins(latestBody, envKeys = adminKeysFromEnv()) {
     }
   }
   return envKeys;
+}
+
+/** The blob size every blob must have, from the newest directory (default before one sets it). */
+export function blobSizeOf(latestBody) {
+  try {
+    const n = JSON.parse(latestBody ?? "null")?.blobSize;
+    return Number.isSafeInteger(n) ? n : DEFAULT_BLOB_SIZE;
+  } catch {
+    return DEFAULT_BLOB_SIZE;
+  }
 }
 
 /**
@@ -56,6 +72,12 @@ export async function validateDirectory(envelope, adminKeys, currentVersion = 0)
   if (d.admins != null) {
     if (!Array.isArray(d.admins) || d.admins.length === 0 || d.admins.length > 20) return { ok: false, error: "malformed admins" };
     if (!d.admins.every((a) => isB64(a) && sigKeys.has(a))) return { ok: false, error: "every admin must be a member" };
+  }
+  if (d.blobSize != null && !(Number.isSafeInteger(d.blobSize) && d.blobSize % 1024 === 0 && d.blobSize >= MIN_BLOB_SIZE && d.blobSize <= MAX_BLOB_SIZE)) {
+    return { ok: false, error: `blobSize must be a multiple of 1024 from ${MIN_BLOB_SIZE} to ${MAX_BLOB_SIZE}` };
+  }
+  if (d.decoys != null && !(Number.isSafeInteger(d.decoys) && d.decoys >= 0 && d.decoys <= MAX_DECOYS)) {
+    return { ok: false, error: `decoys must be 0-${MAX_DECOYS}` };
   }
   for (const r of d.removed) {
     if (!r || typeof r.keyHash !== "string" || !isTime(r.removedAt)) return { ok: false, error: "malformed removal" };

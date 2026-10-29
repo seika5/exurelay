@@ -115,3 +115,20 @@ describe("validateLeave", () => {
     assert.match((await validateLeave(forged, member, [other.pub], opts)).error, /bad signature/);
   });
 });
+
+describe("blob settings", () => {
+  it("accepts blobSize and decoys in range and reads the size from the newest directory", async () => {
+    const { blobSizeOf, DEFAULT_BLOB_SIZE } = await import("../directory.js");
+    const admin = await signingKeyPair();
+    const ecdh = await ecdhPub();
+    const member = { keyHash: keyHashOf(ecdh), ecdh, sig: admin.pub, enrolledAt: 1 };
+    const dir = (extra) =>
+      sign(admin.pair.privateKey, { type: "relay-directory", version: 1, issuedAt: 1, signer: admin.pub, members: [member], removed: [], admins: [admin.pub], ...extra });
+    assert.strictEqual((await validateDirectory(await dir({ blobSize: 32768, decoys: 0 }), [admin.pub])).ok, true);
+    assert.match((await validateDirectory(await dir({ blobSize: 1000 }), [admin.pub])).error, /blobSize/);
+    assert.match((await validateDirectory(await dir({ blobSize: 1 << 20 }), [admin.pub])).error, /blobSize/);
+    assert.match((await validateDirectory(await dir({ decoys: 17 }), [admin.pub])).error, /decoys/);
+    assert.strictEqual(blobSizeOf(JSON.stringify({ blobSize: 32768 })), 32768);
+    assert.strictEqual(blobSizeOf(undefined), DEFAULT_BLOB_SIZE);
+  });
+});

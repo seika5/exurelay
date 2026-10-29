@@ -1,5 +1,6 @@
 /**
- * Socket.io: signaling for WebRTC 1:1 and group (room-based), plus "new blob" pings.
+ * Socket.io: signaling for WebRTC 1:1 and group (room-based), plus "blobs" pings. Blobs carry no recipient, so the
+ * ping goes to every socket (every logged-in member) after each upload, and each client syncs from its cursor.
  * Each socket must present a login session (handshake auth.session), which fixes its keyHash:
  * a socket can only listen for its own blobs and join calls as itself.
  * Room authorization: only key hashes in the room's allowed set can join, and they must be members.
@@ -104,21 +105,6 @@ export function registerSocketHandlers(io, prisma, auth) {
       }
     });
 
-    socket.on("join_blob", async (keyHash) => {
-      try {
-        if (!keyHash) return;
-        if (socket.data?.keyHash && keyHash !== socket.data.keyHash) return;
-        const allowed = await prisma.member.findUnique({ where: { keyHash } });
-        if (!allowed) return;
-        socket.join(`blob:${keyHash}`);
-      } catch (e) {
-        console.error("join_blob error:", e?.message);
-      }
-    });
-
-    socket.on("leave_blob", (keyHash) => {
-      if (keyHash) socket.leave(`blob:${keyHash}`);
-    });
   });
 }
 

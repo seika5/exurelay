@@ -21,6 +21,7 @@ import {
 } from "@/lib/useMessages";
 import { getRoomIdForConversation } from "@/lib/callRoom";
 import type { DecryptedMessage } from "@/lib/blobPayload";
+import { blobSettings } from "@/lib/signed";
 
 const GROUP_BREAK_MS = 10 * 60 * 1000;
 
@@ -49,12 +50,11 @@ function RetryIcon() {
   );
 }
 
-function DiscardIcon() {
+function CancelIcon() {
   return (
     <svg {...iconProps}>
-      <path d="M3 6h18" />
-      <path d="M8 6V4h8v2" />
-      <path d="M6 6l1 14h10l1-14" />
+      <path d="M6 6l12 12" />
+      <path d="M18 6L6 18" />
     </svg>
   );
 }
@@ -160,7 +160,7 @@ export default function Home() {
 
 function Chat() {
   const {
-    identity, loading, needsSetup, lockedFile, enrolled, directoryLoaded, error: identityError, server,
+    identity, loading, needsSetup, lockedFile, enrolled, directory, directoryLoaded, error: identityError, server,
     getDisplayName, getMyDisplayName, setDisplayName, getMember, isRemoved,
   } = useIdentity();
   const {
@@ -170,7 +170,10 @@ function Chat() {
     startOrJoinCall, roomJoinError, dismissRoomJoinError,
   } = useCall();
   // Messages need a login, which needs membership: nothing is fetched until we're enrolled on a server.
-  const { messages, conversations, sendMessage, retrySend, discardSend, error } = useMessages(enrolled && server ? identity : null);
+  const { messages, conversations, sendMessage, retrySend, cancelSend, error } = useMessages(
+    enrolled && server ? identity : null,
+    useMemo(() => blobSettings(directory), [directory])
+  );
 
   const [selected, setSelected] = useState<Conversation | null>(null);
   // On mobile: controls whether the sidebar or the chat panel is visible.
@@ -308,13 +311,13 @@ function Chat() {
     if (text) {
       if (selected?.type === "dm") {
         await sendMessage(
-          { type: "text", body: text } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt">,
+          { type: "text", body: text } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
           recipients,
           { recipientKeyHash: selected.otherKeyHash }
         );
       } else if (selected?.type === "group") {
         await sendMessage(
-          { type: "text", body: text, groupMemberKeyHashes: selected.memberKeyHashes } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt">,
+          { type: "text", body: text, groupMemberKeyHashes: selected.memberKeyHashes } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
           recipients
         );
       }
@@ -331,12 +334,12 @@ function Chat() {
       };
       if (selected?.type === "dm") {
         await sendMessage(
-          fileMsg as Omit<DecryptedMessage, "senderKeyHash" | "sentAt">,
+          fileMsg as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
           recipients,
           { recipientKeyHash: selected.otherKeyHash }
         );
       } else if (selected?.type === "group") {
-        await sendMessage(fileMsg as Omit<DecryptedMessage, "senderKeyHash" | "sentAt">, recipients);
+        await sendMessage(fileMsg as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">, recipients);
       }
     }
   };
@@ -364,13 +367,13 @@ function Chat() {
       if (!selected || !identity) return;
       if (selected.type === "dm") {
         await sendMessage(
-          { type: "call_event", event: "started", recipientKeyHash: selected.otherKeyHash } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt">,
+          { type: "call_event", event: "started", recipientKeyHash: selected.otherKeyHash } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
           [selected.otherKeyHash],
           { recipientKeyHash: selected.otherKeyHash }
         );
       } else {
         await sendMessage(
-          { type: "call_event", event: "started", groupMemberKeyHashes: selected.memberKeyHashes } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt">,
+          { type: "call_event", event: "started", groupMemberKeyHashes: selected.memberKeyHashes } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
           selected.memberKeyHashes.filter((k) => k !== identity.keyHash)
         );
       }
@@ -384,13 +387,13 @@ function Chat() {
     if (wasLast && identity && conv) {
       if (conv.type === "dm") {
         await sendMessage(
-          { type: "call_event", event: "ended", recipientKeyHash: conv.otherKeyHash } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt">,
+          { type: "call_event", event: "ended", recipientKeyHash: conv.otherKeyHash } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
           [conv.otherKeyHash],
           { recipientKeyHash: conv.otherKeyHash }
         );
       } else {
         await sendMessage(
-          { type: "call_event", event: "ended", groupMemberKeyHashes: conv.memberKeyHashes } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt">,
+          { type: "call_event", event: "ended", groupMemberKeyHashes: conv.memberKeyHashes } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
           conv.memberKeyHashes.filter((k) => k !== identity.keyHash)
         );
       }
@@ -744,12 +747,12 @@ function Chat() {
                         </button>
                         <button
                           type="button"
-                          aria-label="Discard message"
-                          title="Discard"
+                          aria-label="Cancel sending"
+                          title="Cancel"
                           className="p-1 rounded hover:bg-[var(--border)] text-[var(--muted)]"
-                          onClick={() => discardSend(m.outbox!.id)}
+                          onClick={() => cancelSend(m.outbox!.id)}
                         >
-                          <DiscardIcon />
+                          <CancelIcon />
                         </button>
                       </div>
                     )}
@@ -966,7 +969,7 @@ function Chat() {
                       type: "group_rename",
                       newName,
                       groupMemberKeyHashes: groupRenameModal.memberKeyHashes,
-                    } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt">,
+                    } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
                     groupRenameModal.memberKeyHashes.filter((k) => k !== identity.keyHash)
                   );
                   setGroupRenameModal(null);

@@ -9,6 +9,7 @@
  */
 
 import { exportPublicKey, importSigningPublicKey, sha256Hex } from "./crypto";
+import { DEFAULT_BLOB_SIZE, DEFAULT_DECOYS, MAX_BLOB_SIZE, MAX_DECOYS, MIN_BLOB_SIZE } from "./sealed";
 
 export type SignedEnvelope = { body: string; signature: string };
 
@@ -32,7 +33,23 @@ export type Directory = {
   removed: { keyHash: string; removedAt: number }[];
   /** Signing keys of the admins trusted for the next version. Clients re-pin to this list. */
   admins?: string[];
+  /** Admin settings for protocol v2 blobs (sealed.ts): every blob's size in bytes, and the most decoys per send. */
+  blobSize?: number;
+  decoys?: number;
 };
+
+/** The directory's blob settings, or the defaults where it doesn't set them (or sets something out of range). */
+export function blobSettings(d: Directory | null): { blobSize: number; decoys: number } {
+  const size = d?.blobSize;
+  const decoys = d?.decoys;
+  return {
+    blobSize:
+      typeof size === "number" && Number.isInteger(size) && size % 1024 === 0 && size >= MIN_BLOB_SIZE && size <= MAX_BLOB_SIZE
+        ? size
+        : DEFAULT_BLOB_SIZE,
+    decoys: typeof decoys === "number" && Number.isInteger(decoys) && decoys >= 0 && decoys <= MAX_DECOYS ? decoys : DEFAULT_DECOYS,
+  };
+}
 
 export type Profile = { type: "relay-profile"; keyHash: string; name: string; updatedAt: number };
 
@@ -211,6 +228,8 @@ export function directoryWithMember(
     members: [...members, member],
     removed,
     admins,
+    blobSize: current?.blobSize,
+    decoys: current?.decoys,
   };
 }
 
@@ -234,6 +253,8 @@ export function directoryWithoutMembers(current: Directory, signer: string, keyH
       ...keyHashes.map((keyHash) => ({ keyHash, removedAt: now })),
     ],
     admins,
+    blobSize: current.blobSize,
+    decoys: current.decoys,
   };
 }
 
@@ -249,4 +270,11 @@ export function directoryWithAdmins(current: Directory, signer: string, admins: 
 export async function fingerprint(publicKeyBase64: string): Promise<string> {
   const hex = await sha256Hex(publicKeyBase64);
   return hex.slice(0, 16).match(/.{4}/g)!.join(" ");
+}
+
+/** Next directory version with new blob settings (admin setting, protocol v2). */
+export function directoryWithBlobSettings(current: Directory, signer: string, blobSize: number, decoys: number, now = Date.now()): Directory {
+  if (blobSettings({ ...current, blobSize, decoys }).blobSize !== blobSize) throw new Error("Blob size must be 16-256 KB in 1 KB steps");
+  if (blobSettings({ ...current, blobSize, decoys }).decoys !== decoys) throw new Error(`Decoys must be 0-${MAX_DECOYS}`);
+  return { ...current, version: current.version + 1, issuedAt: now, signer, blobSize, decoys };
 }

@@ -1,5 +1,5 @@
 // Zero-knowledge: no senderId, recipientId, or sentAt.
-// Server stores only encrypted blobs and expiry; addressing by public key hash.
+// Server stores only encrypted blobs and expiry; every member downloads every blob (protocol v2, DESIGN.md §5).
 
 generator client {
   provider = "prisma-client-js"
@@ -36,14 +36,12 @@ model Profile {
   updatedAt BigInt
 }
 
-// Encrypted blobs. Addressed by recipient key hash only; no sender or sentAt.
+// Encrypted blobs: no sender, no recipient, no sentAt. seq is the sync cursor (GET /api/blobs?since=).
 model Blob {
-  id               String   @id @default(cuid())
-  recipientKeyHash String
-  payload          Bytes
-  expiresAt        DateTime
+  seq       BigInt   @id @default(autoincrement())
+  payload   Bytes
+  expiresAt DateTime
 
-  @@index([recipientKeyHash])
   @@index([expiresAt])
 }
 

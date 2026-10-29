@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useIdentity } from "@/context/IdentityContext";
 import { MembersAdmin } from "@/components/MembersAdmin";
-import { JoinCodePanel, ServerStatusPanel } from "@/components/AdminPanels";
+import { BlobSettingsPanel, JoinCodePanel, ServerStatusPanel } from "@/components/AdminPanels";
 import { fingerprint } from "@/lib/signed";
 import { ApiError } from "@/lib/api";
 
@@ -57,6 +57,10 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
             <section className="flex flex-col gap-2">
               <h3 className="text-sm font-medium">Members</h3>
               <MembersAdmin />
+            </section>
+            <section className="flex flex-col gap-2">
+              <h3 className="text-sm font-medium">Message blobs</h3>
+              <BlobSettingsPanel />
             </section>
             <section className="flex flex-col gap-2">
               <h3 className="text-sm font-medium">Server status</h3>
@@ -121,7 +125,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
             type="button"
             disabled={leaving}
             onClick={async () => {
-              if (!window.confirm("Leave this server? You're removed as a member right away, and your identity, unspent tokens and unread messages for it are deleted. To come back you'd need a new join code and the admin's approval.")) return;
+              if (!window.confirm("Leave this server? You're removed as a member right away, and your identity and unspent tokens for it are deleted. To come back you'd need a new join code and the admin's approval.")) return;
               setLeaving(true);
               setLeaveError(null);
               try {

@@ -1,12 +1,12 @@
 /**
- * Unit tests for Socket.io handlers: blob rooms (refresh) and voice (signal, join_room, etc.).
+ * Unit tests for Socket.io handlers: voice (signal, join_room, etc.). Blob pings go to every socket (no rooms).
  * Run: cd server && node --test src/__tests__/socket.test.js
  */
 import { describe, it } from "node:test";
 import assert from "node:assert";
 import { registerSocketHandlers } from "../socket.js";
 
-describe("registerSocketHandlers (voice + blob)", () => {
+describe("registerSocketHandlers (voice)", () => {
   it("registers connection and expected event handlers on socket", () => {
     let connectionCb;
     const io = {
@@ -32,48 +32,14 @@ describe("registerSocketHandlers (voice + blob)", () => {
     connectionCb(socket);
 
     const events = onCalls.map((c) => c.event).sort();
-    assert.ok(events.includes("join_blob"), "should register join_blob (blob refresh)");
-    assert.ok(events.includes("leave_blob"), "should register leave_blob");
+    // Protocol v2: blobs have no recipient, so there are no per-member blob rooms to join.
+    assert.ok(!events.includes("join_blob"), "blob rooms are gone");
     assert.ok(events.includes("join_room"), "should register join_room (voice group)");
     assert.ok(events.includes("leave_room"), "should register leave_room");
     assert.ok(events.includes("signal"), "should register signal (voice 1:1)");
     // Raw join/leave would let any socket enter any room (call or blob) without checks.
     assert.ok(!events.includes("join"), "must not register unchecked join");
     assert.ok(!events.includes("leave"), "must not register unchecked leave");
-  });
-
-  it("join_blob adds socket to blob:keyHash room", async () => {
-    const rooms = new Map();
-    let connectionCb;
-    const io = {
-      on: (_, cb) => { connectionCb = cb; },
-      sockets: {
-        adapter: { rooms: { get: (id) => rooms.get(id) ?? null } },
-        sockets: new Map(),
-      },
-      to: () => ({ emit: () => {} }),
-    };
-    const prisma = {
-      member: { findUnique: async () => ({ id: "1", keyHash: "abcKeyHash123" }) },
-    };
-    registerSocketHandlers(io, prisma);
-
-    const joined = [];
-    let joinBlobHandler;
-    const socket = {
-      id: "s1",
-      rooms: new Set(["s1"]),
-      join: (room) => joined.push(room),
-      leave: () => {},
-      emit: () => {},
-      to: () => ({ emit: () => {} }),
-      on: (event, handler) => {
-        if (event === "join_blob") joinBlobHandler = handler;
-      },
-    };
-    connectionCb(socket);
-    await joinBlobHandler("abcKeyHash123");
-    assert.strictEqual(joined[0], "blob:abcKeyHash123");
   });
 
   it("signal forwards payload to target with from when they share a room", () => {

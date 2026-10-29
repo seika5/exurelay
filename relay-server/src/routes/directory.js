@@ -12,7 +12,7 @@ const jsonBody = express.json({ limit: "512kb" });
  * and ends their sessions and sockets. onLeft(keyHash) runs when a member leaves on their own: it ends their
  * sessions and sockets (no key rotation: they deleted their own tokens).
  *
- * A member who leaves is deleted at once and their signed leave is kept as a Departure until an admin's
+ * A member who leaves is deleted at once (their pending messages can't be: blobs carry no recipient, DESIGN.md §5) and their signed leave is kept as a Departure until an admin's
  * directory drops them. Until then, clients verify the departure and treat them as gone, and the server
  * never re-adds them from an older-looking directory that still lists them.
  */
@@ -92,7 +92,6 @@ export function directoryRouter(prisma, io, { envAdmins, onRemoved, onLeft, publ
         prisma.member.delete({ where: { keyHash } }),
         prisma.profile.deleteMany({ where: { keyHash } }),
         prisma.adminLabel.deleteMany({ where: { keyHash } }),
-        prisma.blob.deleteMany({ where: { recipientKeyHash: keyHash } }),
       ]);
       if (onLeft) await onLeft(keyHash);
       if (io) io.emit("directory");

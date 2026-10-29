@@ -117,7 +117,7 @@ Keys aren't copied between devices (they're non-extractable once loaded, §4 "wh
 - The server config lists the admin public key(s); the host is the first admin. The Settings → **Admin** tab appears only when the server confirms, at login, that this identity is an admin. Admin actions use identified, signed requests.
 - **Members:** list members by the admin's own labels and key fingerprints, plus enrolled date. There is no last-seen field: the server doesn't track it.
 - **Enroll:** scan the newcomer's QR or paste their public-key code, in person, and set a label (stored server-side, visible only to admins).
-- **Leave:** a member can leave on their own. The app signs `{ type: "relay-leave", keyHash, server, ts }` (fresh within 5 minutes, for this server only) and posts it to `POST /api/directory/leave`. The server checks the signature, then deletes them as a member, their name, their admin label and their undelivered messages, and ends their sessions and sockets. It keeps the signed leave as a `Departure` until an admin's next directory drops them, and it won't re-add them from a directory that still lists them. Clients check each departure against the member's own key (so the server can't make someone vanish), hide that member right away, and an admin's app publishes the directory without them automatically. The leaving device deletes that server's identity, tokens and rollback state; coming back means a new identity, join code and approval. The last admin can't leave. If the server can't be reached, the app offers to leave on the device only, and the member stays listed until an admin removes them. Leaving doesn't rotate the issuer key: the member deleted their own tokens. Privacy cost: until the admin's list catches up, the server's database shows that this member left by choice rather than being removed (an admin removal looks the same to it otherwise). A blinder version would send the leave to the admins as an encrypted message; it wasn't worth the delay, since the server sees the list change moments later anyway.
+- **Leave:** a member can leave on their own. The app signs `{ type: "relay-leave", keyHash, server, ts }` (fresh within 5 minutes, for this server only) and posts it to `POST /api/directory/leave`. The server checks the signature, then deletes them as a member, their name and their admin label, and ends their sessions and sockets. (Messages already sent to them stay until they expire: since protocol v2 the server can't tell whose they are.) It keeps the signed leave as a `Departure` until an admin's next directory drops them, and it won't re-add them from a directory that still lists them. Clients check each departure against the member's own key (so the server can't make someone vanish), hide that member right away, and an admin's app publishes the directory without them automatically. The leaving device deletes that server's identity, tokens and rollback state; coming back means a new identity, join code and approval. The last admin can't leave. If the server can't be reached, the app offers to leave on the device only, and the member stays listed until an admin removes them. Leaving doesn't rotate the issuer key: the member deleted their own tokens. Privacy cost: until the admin's list catches up, the server's database shows that this member left by choice rather than being removed (an admin removal looks the same to it otherwise). A blinder version would send the leave to the admins as an encrypted message; it wasn't worth the delay, since the server sees the list change moments later anyway.
 - **Remove/revoke:** delete the member so they can no longer log in. Anonymous tokens must expire quickly (issuer key rotated e.g. daily) so a removed member's leftover tokens stop working. The server publishes a signed list of removed keys, and clients grey out those contacts.
 - **Server status:** blob count, storage used, token quotas, TURN status. No per-member activity.
 - Adding more admins is possible; admins can't read anyone's messages.
@@ -154,12 +154,12 @@ Enrollment: the new user's app generates keys and shows a QR/short code containi
 | --- | --- |
 | Blobs are fixed 64 KB, stored ≤ ~96 h: expiry = UTC midnight of the send day + 72 h + random 0–24 h. Exact send time is never stored. | Current |
 | No local message history; clients re-download and decrypt everything (including a self-addressed copy of their own messages). History ends when blobs expire. | **Current → Decided: replace** with an encrypted local cache (below) |
-| Server addresses each blob by **recipient key hash**. | **Current → Decided: remove** (recipient-blind storage, below) |
-| The sender's public key is in **plaintext** in every blob header, so the server (and, today, anyone who can GET blobs) learns sender→recipient for every message. | **Gap → Decided: hide sender** |
+| Server addresses each blob by **recipient key hash**. | **Removed** (phase 5a, below) |
+| The sender's public key was in **plaintext** in every blob header, so the server learned sender→recipient for every message. | **Fixed** (phase 5a: sealed sender, below) |
 
 ### Decided: sealed sender
 
-Encrypt the outer layer to the recipient using a **fresh one-time key** (ECIES-style), and put the real sender key inside the ciphertext. The recipient still authenticates the sender using the static-static ECDH key on the inner layer. The server then stores a blob with nothing about who sent it.
+The server stores a blob with nothing about who sent it. (Planned as an ECIES-style one-time key per send; built instead with slots keyed by the static sender–recipient secret plus a random nonce, so no blob carries a public key: see "As built (phase 5a)" below.)
 
 ### Decided: recipient-blind storage ("everyone fetches everything")
 
@@ -176,12 +176,32 @@ Drop the recipient field too. Every member downloads every message blob and trie
 Shape:
 
 1. Fetch-all only for *message* blobs, with an incremental cursor (`since=<last id>`) so each blob is downloaded once.
-2. Store file attachments as separate blobs that the message points at by id + key. Only the real recipient fetches them.
+2. ~~Store file attachments as separate blobs that only the real recipient fetches.~~ **Dropped:** that fetch pattern would show the server which blobs are attachments. Attachments travel like messages (phase 5a).
 3. Notifications use targeted push (§9).
-4. Consider smaller fixed buckets (e.g. 4 KB for text, 64 KB for attachment chunks) to cut bandwidth.
+4. ~~Smaller buckets for text.~~ **Dropped:** one size for everything (admin-set, default 64 KB), so text and attachments look alike. Encrypting each send once instead of per recipient keeps bandwidth down instead.
 5. **Open, for larger groups:** split blobs into K buckets by a rotating recipient tag. Each member then fetches only their bucket, which cuts bandwidth by K but shrinks the crowd a recipient hides in from N to about N/K.
 
 Even without a recipient field, the server must still keep non-members out (§6).
+
+### As built (phase 5a): protocol v2 wire format
+
+Every send (message, file, call event, group rename) is encrypted **once** and spread over blobs of one fixed size **S**, each of which looks like random bytes. The server stores `seq` (a counter), the bytes and `expiresAt`: no sender, no recipient (`relay-web/src/lib/sealed.ts`).
+
+- **S** is set by the admin in the signed member list (`blobSize`, 16–256 KB in 1 KB steps, default 64 KB). The server refuses blobs of any other size, so every blob on a server looks alike.
+- **Body:** the JSON message, encrypted with AES-256-GCM under a random one-time message key.
+- **Head blob** (the one that opens a send): 32 random bytes (a nonce), then one 104-byte slot per recipient in random order, then the start of the body. Slot = `tag (16 B) ‖ AES-GCM(kek, messageKey ‖ bodyLength ‖ bodyStart ‖ SHA-256(body))`, where `tag ‖ kek` = HKDF over the **static** ECDH secret between sender and recipient, salted with the nonce, with the sender and recipient key hashes in the info (the secret is the same both ways, so the info fixes the direction).
+- **Finding your slot:** for each blob, a recipient computes the tag every member would have used for them (one small hash per member, from ECDH secrets computed once per member) and looks for it at the slot positions. Everyone else finds nothing.
+- **Sender authentication (deniable):** only the sender and that recipient know their static secret, so the slot that matches proves who sent it, without a signature anyone else could check. The body hash in the slot stops another recipient (who also learns the message key) from swapping the body.
+- **Continuation blobs:** `tag_j (16 B) ‖ next body bytes`, with `tag_j` derived from the message key, so only recipients can tell which blobs continue which send.
+- **Self-copy:** one more slot, for your own key. No extra blobs.
+- **Decoys:** each send adds a random 0–N blobs of pure random bytes, N set by the admin (`decoys` in the signed member list, default 3, max 16).
+- **Nothing to tell apart:** heads, continuations and decoys contain no public key or fixed bytes, so they're indistinguishable. Upload order is random too: everything is shuffled, with the head somewhere in the first batch of 64 (recipients keep the last 128 unplaced blobs in memory, so a head can come after its continuations).
+- **Late members:** if a new member's send arrives before your member list has them, the blob waits in that memory window and opens when the list refreshes.
+- **Fetching:** every member downloads every blob once with `GET /api/blobs?since=<seq>` (binary pages), and the server pings all members' sockets after each upload.
+- **Attachments** travel the same way as messages, so they're indistinguishable from text and every member downloads them (a 5 MB photo costs every member 5 MB once). There's no size limit.
+- **Limits:** a send can have at most ⌊(S − 32) / 104⌋ recipients including yourself (629 at 64 KB). Trial decryption costs one small hash per member per blob: nothing at tens of members, seconds when catching up days of traffic at many hundreds.
+- **What the server still sees:** when uploads happen and how big each batch is, and (from IPs) roughly who uploads and downloads. Not who sent what to whom, or text vs. files.
+- Hard cutover: older blobs aren't readable.
 
 ### Decided: encrypted local cache
 
@@ -197,14 +217,9 @@ With fetch-all, re-downloading the whole window on every launch would cost up to
   - "Re-sync from server": wipe the cache and re-download what the server still has.
   - Logging out or removing the identity wipes the cache and its key.
 
-### Decided: delete for me
+### Dropped: delete for me
 
-This is a required feature: no delete exists in the app today, and it ships with protocol v2 (roadmap phase 5). There is **no "delete for everyone"**. Messages leave the server only by expiry.
-
-- Deleting removes the message from the local cache and records a *tombstone* (its blob ids). Tombstones survive "clear cache" and "re-sync", so a re-sync can't bring the message back.
-- A tombstone is dropped once the blob's server `expiresAt` has passed, because by then the blob can't return.
-- Deleting only affects your device. Recipients keep their copies, and your self-copy stays on the server until it expires.
-- Messages need a stable id for this. Today `DecryptedMessage` has no id; protocol v2 adds the `messageId` to it.
+Planned for phase 5, dropped before it was built. It could only remove a message from your own device: recipients keep their copies and the blob stays on the server until it expires (~3–4 days), so it does little and could be mistaken for "unsend". There's no "delete for everyone" either, for the same reason: recipients have already downloaded and decrypted it. Clearing local data (Settings → Storage, phase 5b) still removes everything on your device.
 
 ---
 
@@ -269,7 +284,7 @@ IP hiding is optional per member; members who want the strong guarantee should u
 - **No logging:** no request logger; errors log a message only; Caddy has no `log` directive. CORS allows any origin (no cookies are used), so the official app, forks and local builds can all reach any server.
 - **Rate limit, not a daily quota:** a per-member token bucket in memory (`TOKEN_BURST`, default 200 = two refills, then `TOKEN_RATE_PER_MINUTE`, default 30). It only stops one member flooding the server; a busy day of chatting never hits it. Full buckets are dropped, so idle members leave no trace.
 - **Join codes don't expire.** A join code only says where the server is and which admin keys to trust; it grants nothing. Getting in still takes an admin approving your enrollment code, which expires after 3 minutes and needs the admin to check its fingerprint.
-- **Sending:** messages go through a queue, one at a time, in order. A message shows faded until the server has taken every blob, then normal. Out of tokens (rate limit), the queue waits for the server's `retryAfter` and carries on, however long that takes. Unreachable server or 5xx: retries after 2, 5, 10, 20 and 30 s, then fails. Any other 4xx (refused, e.g. removed member): fails at once. A failed message shows "Not sent" with retry and discard icons; retry resumes from the first batch not taken. Not persisted: closing the app drops queued messages.
+- **Sending:** messages go through a queue, one at a time, in order. A message shows faded until the server has taken every blob, then normal. Out of tokens (rate limit), the queue waits for the server's `retryAfter` and carries on, however long that takes. Unreachable server or 5xx: retries after 2, 5, 10, 20 and 30 s, then fails. Any other 4xx (refused, e.g. removed member): fails at once. A failed message shows "Not sent" with retry and cancel (✕) icons; retry resumes from the first batch not taken. Not persisted: closing the app drops queued messages.
 - **Not built yet:** per-device push (phase 7).
 
 ---
@@ -427,7 +442,7 @@ Ordered by dependency. Each phase should land as its own reviewed change.
 | 2 | Self-generated identities | **Done**: client keygen + identity format v5 (adds an ECDSA signing key, drops `myUserNumber`); server `Member` table with public keys replacing `AllowedKey` hashes; admin keys in server config; signed QR codes with 3-minute expiry; admin-signed member directory with version check; key-change notices; retire `generate-20-identities.mjs`; hard cutover (wipe server, re-enroll everyone) | 0 |
 | 3 | Login, tokens and admin | **Done** (see §6 "As built (phase 3)"); also added join codes so one app build works with any server. Challenge-response login; RFC 9474 blind-token issuance, daily issuer-key rotation, key-consistency check, spent-token store; per-member token rate limit; move the TURN credentials endpoint behind a token; no request/IP logging; Settings → Admin tab (admin labels, camera QR scan, signed revocation list, server status; basic enroll/remove already shipped in phase 2) | 1, 2 |
 | 4 | Key storage | **Done**: desktop Chrome/Edge keep a passphrase-encrypted identity file in a folder you pick, with a setup popup and an unlock screen; other browsers and phones keep non-extractable keys in IndexedDB; in-app key generation; removed `public/identity/`, `/api/identity` and the plain `.bin` file; persistent-storage request; linked devices decided as per-device keys. The wallet and rollback version stay in `localStorage`: they're plain data cleared with the same site data, so IndexedDB would add nothing. | 2 |
-| 5 | Protocol v2 | Sealed sender + recipient-blind blobs; `GET /blobs?since=` cursor; attachments as separate blobs; stable `messageId`; `mentions` field + mention picker, `@everyone`, highlight and badge; encrypted local cache + Settings → Storage tab; delete for me; linked devices (per-device keys, device certificates, self-message sync, device list) | 3, 4 |
+| 5 | Protocol v2 | **5a done** (§5 "As built (phase 5a)"): sealed sender + recipient-blind blobs, each send encrypted once with a slot per recipient; `GET /blobs?since=` cursor; admin-set blob size and decoys; attachments travel like messages; stable `messageId`. **Next:** 5b encrypted local cache + Settings → Storage tab; 5c `mentions` field + mention picker, `@everyone`, highlight and badge; 5d linked devices (per-device keys, device certificates, self-message sync, device list) | 3, 4 |
 | 6 | Call security | Seal offer/answer/ICE with pairwise keys; random room ids; attach media only to verified peers; tiles for members not in the call | 3 |
 | 7 | Official PWA | Static export; manifest, icons, service worker; `storage.persist()`; strict CSP; deploy pipeline publishing commit + build hash; push registration (A, per device, no push logs, per-recipient rate limits) + service worker that decrypts and shows mention/ring notifications; call-tile **Notify** button with rate limit; install guide | 1, 3, 4 (5–6 before wide use) |
 | 8 | Plugins | Core/plugin boundary; sandboxed iframe host + versioned `postMessage` API; install from URL/file with hash pinning; plugin message types with fallback text; safe mode | 7 |

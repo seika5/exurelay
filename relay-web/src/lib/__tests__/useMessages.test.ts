@@ -22,7 +22,7 @@ describe("messageBelongsToConversation", () => {
   const me = "me";
 
   it("returns false for group message in DM conversation", () => {
-    const msg: DecryptedMessage = {
+    const msg: DecryptedMessage = { messageId: "m1",
       senderKeyHash: me,
       sentAt: 1,
       type: "text",
@@ -34,7 +34,7 @@ describe("messageBelongsToConversation", () => {
   });
 
   it("returns true for DM message in DM conversation", () => {
-    const msg: DecryptedMessage = {
+    const msg: DecryptedMessage = { messageId: "m2",
       senderKeyHash: me,
       sentAt: 1,
       type: "text",
@@ -46,7 +46,7 @@ describe("messageBelongsToConversation", () => {
   });
 
   it("returns true for group message in matching group conversation", () => {
-    const msg: DecryptedMessage = {
+    const msg: DecryptedMessage = { messageId: "m3",
       senderKeyHash: me,
       sentAt: 1,
       type: "text",
@@ -58,7 +58,7 @@ describe("messageBelongsToConversation", () => {
   });
 
   it("returns false for group message in different group", () => {
-    const msg: DecryptedMessage = {
+    const msg: DecryptedMessage = { messageId: "m4",
       senderKeyHash: me,
       sentAt: 1,
       type: "text",

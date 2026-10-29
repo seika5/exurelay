@@ -53,7 +53,7 @@ You can edit the look and layout of the app freely. Only change the files listed
 ### Do not change
 
 - **`src/lib/keystore.ts`**, **`src/lib/identityFile.ts`**, **`src/lib/crypto.ts`**, **`src/lib/e2ee.ts`**: Key storage, the identity file format and encryption.
-- **`src/lib/blobPayload.ts`**, **`src/lib/blobChunk.ts`**, **`src/lib/api.ts`**: Blob protocol and server API.
+- **`src/lib/sealed.ts`**, **`src/lib/blobPayload.ts`**, **`src/lib/api.ts`**: Message format (protocol v2), message types and server API.
 - **`src/lib/signed.ts`**, **`src/lib/server.ts`**: Signed records, the member list, join codes and pinned admin keys.
 - **`src/lib/session.ts`**, **`src/lib/tokens.ts`**, **`src/lib/socket.ts`**: Login, anonymous tokens and their checks.
 - **`src/context/IdentityContext.tsx`**, **`src/lib/useMessages.ts`**: Identity state and message loading.
