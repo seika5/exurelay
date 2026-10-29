@@ -53,6 +53,15 @@ export function blobSettings(d: Directory | null): { blobSize: number; decoys: n
 
 export type Profile = { type: "relay-profile"; keyHash: string; name: string; updatedAt: number };
 
+/**
+ * A member's linked device (DESIGN.md §4): its own keys, certified by one of the member's devices (their enrolled
+ * key or an already-certified device). `signer` is the certifying device's signing key.
+ */
+export type DeviceCert = { type: "relay-device"; member: string; ecdh: string; sig: string; name: string; addedAt: number; signer: string };
+export type DeviceRevoke = { type: "relay-device-revoke"; member: string; keyHash: string; revokedAt: number; signer: string };
+/** A verified device of a member, including their enrolled one (primary). */
+export type MemberDevice = { keyHash: string; ecdh: string; sig: string; name: string; addedAt: number; primary: boolean };
+
 /** A member's own signed notice that they left a server. */
 export type Leave = { type: "relay-leave"; keyHash: string; server: string; ts: number };
 
@@ -175,18 +184,83 @@ export async function verifyDirectory(
 }
 
 /** Verified display names by keyHash. Profiles not signed by the member's directory key are ignored. */
-export async function verifyProfiles(profiles: SignedEnvelope[], members: DirectoryMember[]): Promise<Map<string, Profile>> {
+export async function verifyProfiles(
+  profiles: SignedEnvelope[],
+  members: DirectoryMember[],
+  devices: Map<string, MemberDevice[]> = new Map()
+): Promise<Map<string, Profile>> {
   const byHash = new Map(members.map((m) => [m.keyHash, m]));
   const out = new Map<string, Profile>();
   for (const env of profiles) {
     const p = parse<Profile>(env);
     const m = p && byHash.get(p.keyHash);
     if (!p || !m || p.type !== "relay-profile" || typeof p.name !== "string") continue;
-    if (!(await verifyRecord(env, m.sig))) continue;
+    // Any of the member's devices may sign their name.
+    const signers = devices.get(m.keyHash)?.map((d) => d.sig) ?? [m.sig];
+    let signed = false;
+    for (const k of signers) if (!signed && (await verifyRecord(env, k))) signed = true;
+    if (!signed) continue;
     const prev = out.get(p.keyHash);
     if (!prev || p.updatedAt > prev.updatedAt) out.set(p.keyHash, { ...p, name: p.name.slice(0, MAX_NAME_LENGTH) });
   }
   return out;
+}
+
+/**
+ * Each member's devices, by member keyHash: their enrolled key first, then every certificate signed (directly or
+ * through another certified device) by one of their devices, minus those unlinked by one of their devices. The
+ * server checks the same, but clients don't trust it to.
+ */
+export async function verifyDevices(
+  certs: SignedEnvelope[],
+  revocations: SignedEnvelope[],
+  members: DirectoryMember[],
+  /** Filled with the key hashes of devices validly unlinked (so an unlinked device can tell). */
+  revoked: Set<string> = new Set()
+): Promise<Map<string, MemberDevice[]>> {
+  const out = new Map<string, MemberDevice[]>();
+  const pending: { env: SignedEnvelope; d: DeviceCert }[] = [];
+  for (const env of certs) {
+    const d = parse<DeviceCert>(env);
+    if (d?.type === "relay-device" && typeof d.member === "string" && typeof d.ecdh === "string" && typeof d.sig === "string") pending.push({ env, d });
+  }
+  const taken = new Set(members.map((m) => m.keyHash));
+  for (const m of members) out.set(m.keyHash, [{ keyHash: m.keyHash, ecdh: m.ecdh, sig: m.sig, name: "", addedAt: m.enrolledAt, primary: true }]);
+  // Accept certificates whose signer is already one of the member's devices, until nothing new is accepted.
+  for (let progress = true; progress; ) {
+    progress = false;
+    for (const p of [...pending]) {
+      const list = out.get(p.d.member);
+      if (!list || !list.some((x) => x.sig === p.d.signer)) continue;
+      pending.splice(pending.indexOf(p), 1);
+      const keyHash = await keyHashOf(p.d.ecdh);
+      if (taken.has(keyHash) || !(await verifyRecord(p.env, p.d.signer))) continue;
+      taken.add(keyHash);
+      const name = typeof p.d.name === "string" ? p.d.name.slice(0, MAX_NAME_LENGTH) : "";
+      list.push({ keyHash, ecdh: p.d.ecdh, sig: p.d.sig, name, addedAt: p.d.addedAt, primary: false });
+      progress = true;
+    }
+  }
+  for (const env of revocations) {
+    const r = parse<DeviceRevoke>(env);
+    const list = r?.type === "relay-device-revoke" ? out.get(r.member) : undefined;
+    if (!r || !list || !list.some((x) => x.sig === r.signer)) continue;
+    const target = list.find((x) => x.keyHash === r.keyHash && !x.primary);
+    if (target && (await verifyRecord(env, r.signer))) {
+      list.splice(list.indexOf(target), 1);
+      revoked.add(r.keyHash);
+    }
+  }
+  return out;
+}
+
+/** A device certificate for a new device of `member`, from its enrollment code, to be signed by `signer`. */
+export function deviceCert(member: string, request: EnrollmentRequest, name: string, signer: string, now = Date.now()): DeviceCert {
+  return { type: "relay-device", member, ecdh: request.ecdh, sig: request.sig, name: name.trim().slice(0, MAX_NAME_LENGTH), addedAt: now, signer };
+}
+
+export function deviceRevoke(member: string, keyHash: string, signer: string, now = Date.now()): DeviceRevoke {
+  return { type: "relay-device-revoke", member, keyHash, revokedAt: now, signer };
 }
 
 /**
@@ -233,13 +307,31 @@ export function directoryWithMember(
   };
 }
 
-export function directoryWithoutMember(current: Directory, signer: string, keyHash: string, now = Date.now()): Directory {
-  return directoryWithoutMembers(current, signer, [keyHash], now);
+/** A member's signing keys: their enrolled key and every linked device's (any of them can be the admin device). */
+export function memberSigs(m: { keyHash: string; sig: string }, devices: Map<string, MemberDevice[]> = new Map()): string[] {
+  return [m.sig, ...(devices.get(m.keyHash) ?? []).filter((d) => !d.primary).map((d) => d.sig)];
 }
 
-export function directoryWithoutMembers(current: Directory, signer: string, keyHashes: string[], now = Date.now()): Directory {
+export function directoryWithoutMember(
+  current: Directory,
+  signer: string,
+  keyHash: string,
+  now = Date.now(),
+  devices: Map<string, MemberDevice[]> = new Map()
+): Directory {
+  return directoryWithoutMembers(current, signer, [keyHash], now, devices);
+}
+
+/** Next version without these members; admin rights held by any of their devices go with them. */
+export function directoryWithoutMembers(
+  current: Directory,
+  signer: string,
+  keyHashes: string[],
+  now = Date.now(),
+  devices: Map<string, MemberDevice[]> = new Map()
+): Directory {
   const gone = new Set(keyHashes);
-  const goneSigs = new Set(current.members.filter((m) => gone.has(m.keyHash)).map((m) => m.sig));
+  const goneSigs = new Set(current.members.filter((m) => gone.has(m.keyHash)).flatMap((m) => memberSigs(m, devices)));
   const admins = (current.admins ?? [signer]).filter((a) => !goneSigs.has(a));
   if (admins.length === 0) throw new Error("Can't remove the last admin. Make someone else an admin first.");
   return {
@@ -258,9 +350,18 @@ export function directoryWithoutMembers(current: Directory, signer: string, keyH
   };
 }
 
-/** Next directory version with a different admin list. Admins must be members; at least one must remain. */
-export function directoryWithAdmins(current: Directory, signer: string, admins: string[], now = Date.now()): Directory {
-  const sigs = new Set(current.members.map((m) => m.sig));
+/**
+ * Next directory version with a different admin list. Admins must be members' keys or their linked devices' keys;
+ * at least one must remain.
+ */
+export function directoryWithAdmins(
+  current: Directory,
+  signer: string,
+  admins: string[],
+  now = Date.now(),
+  devices: Map<string, MemberDevice[]> = new Map()
+): Directory {
+  const sigs = new Set(current.members.flatMap((m) => memberSigs(m, devices)));
   const next = [...new Set(admins)].filter((a) => sigs.has(a));
   if (next.length === 0) throw new Error("At least one admin must remain");
   return { ...current, version: current.version + 1, issuedAt: now, signer, admins: next };

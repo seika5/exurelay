@@ -40,10 +40,15 @@ export function authRouter(prisma, auth) {
       } catch {
         return res.status(400).json({ error: "malformed login" });
       }
-      const member =
+      // A member's enrolled key, or one of their linked devices.
+      let member =
         typeof keyHash === "string"
           ? await prisma.member.findUnique({ where: { keyHash }, select: { keyHash: true, signingPublicKey: true } })
           : null;
+      if (!member && typeof keyHash === "string") {
+        const device = await prisma.device.findUnique({ where: { keyHash }, select: { keyHash: true, signingPublicKey: true, member: true } });
+        if (device && (await prisma.member.findUnique({ where: { keyHash: device.member }, select: { keyHash: true } }))) member = device;
+      }
       const result = await auth.login(req.body, member);
       if (!result.ok) return res.status(401).json({ error: result.error });
       const isAdmin = await sessionIsAdmin(prisma, member);

@@ -81,3 +81,39 @@ model Departure {
   body      String
   signature String
 }
+
+// A member's other devices (linked devices, DESIGN.md §4): each has its own keys, certified by one of the member's
+// devices. Deleted when the member is removed or leaves.
+model Device {
+  keyHash          String @id
+  member           String
+  ecdhPublicKey    String
+  signingPublicKey String @unique
+  body             String
+  signature        String
+
+  @@index([member])
+}
+
+// Signed unlinks, so clients can verify them and an unlinked device key can't be certified again.
+model DeviceRevocation {
+  keyHash   String @id
+  member    String
+  body      String
+  signature String
+
+  @@index([member])
+}
+
+// Web Push subscriptions (DESIGN.md §9 "direct push (A)"), one per device that turned notifications on. Only used to
+// deliver @mentions and call rings; who was notified, or when, is never recorded.
+model PushSubscription {
+  endpoint String @id
+  device   String
+  member   String
+  p256dh   String
+  auth     String
+
+  @@index([device])
+  @@index([member])
+}

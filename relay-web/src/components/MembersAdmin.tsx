@@ -9,6 +9,7 @@ import {
   directoryWithMember,
   directoryWithoutMember,
   fingerprint,
+  memberSigs,
   readEnrollmentCode,
   type DirectoryMember,
   type EnrollmentRequest,
@@ -33,7 +34,7 @@ type Pending = { request: EnrollmentRequest; keyHash: string };
  * this device; the server can't make these changes itself. Labels live on the server and only admins see them.
  */
 export function MembersAdmin() {
-  const { identity, directory, isAdmin, publishSignedDirectory, getDisplayName } = useIdentity();
+  const { identity, directory, isAdmin, publishSignedDirectory, getDisplayName, memberDevices } = useIdentity();
   const [code, setCode] = useState("");
   const [pending, setPending] = useState<Pending | null>(null);
   const [replaces, setReplaces] = useState("");
@@ -93,6 +94,8 @@ export function MembersAdmin() {
   }
 
   const admins = directory.admins ?? [directory.signer];
+  // A member is an admin if their enrolled key or any of their linked devices is on the admin list.
+  const adminOf = (m: DirectoryMember) => memberSigs(m, memberDevices).some((k) => admins.includes(k));
 
   const checkCode = (text = code) =>
     run(async () => {
@@ -135,20 +138,21 @@ export function MembersAdmin() {
   };
 
   const toggleAdmin = (m: DirectoryMember) => {
-    const isAdminNow = admins.includes(m.sig);
+    const isAdminNow = adminOf(m);
     const label = getDisplayName(m.keyHash) || m.keyHash.slice(0, 8);
     const question = isAdminNow
       ? `Stop ${label} being an admin?`
       : `Make ${label} an admin? Admins can enroll and remove anyone, including you.`;
     if (!window.confirm(question)) return;
-    const next = isAdminNow ? admins.filter((a) => a !== m.sig) : [...admins, m.sig];
-    run(() => publishSignedDirectory(directoryWithAdmins(directory, me, next)));
+    const theirs = memberSigs(m, memberDevices);
+    const next = isAdminNow ? admins.filter((a) => !theirs.includes(a)) : [...admins, m.sig];
+    run(() => publishSignedDirectory(directoryWithAdmins(directory, me, next, Date.now(), memberDevices)));
   };
 
   const remove = (m: DirectoryMember) => {
     const label = getDisplayName(m.keyHash) || m.keyHash.slice(0, 8);
     if (!window.confirm(`Remove ${label}? They'll no longer be able to use this server.`)) return;
-    run(() => publishSignedDirectory(directoryWithoutMember(directory, me, m.keyHash)));
+    run(() => publishSignedDirectory(directoryWithoutMember(directory, me, m.keyHash, Date.now(), memberDevices)));
   };
 
   return (
@@ -161,7 +165,7 @@ export function MembersAdmin() {
                 {getDisplayName(m.keyHash) || m.keyHash.slice(0, 8)}
                 {labels[m.keyHash] && <span className="text-[var(--muted)]"> · {labels[m.keyHash]}</span>}
                 {m.keyHash === identity.keyHash && <span className="text-[var(--muted)]"> (you)</span>}
-                {admins.includes(m.sig) && <span className="ml-1 text-xs text-[var(--accent)]">admin</span>}
+                {adminOf(m) && <span className="ml-1 text-xs text-[var(--accent)]">admin</span>}
               </div>
               <div className="flex gap-2 items-center">
                 <Fingerprint keyB64={m.ecdh} />
@@ -174,7 +178,7 @@ export function MembersAdmin() {
             {m.keyHash !== identity.keyHash && (
               <>
                 <button type="button" disabled={busy} className={button} onClick={() => toggleAdmin(m)}>
-                  {admins.includes(m.sig) ? "Unadmin" : "Admin"}
+                  {adminOf(m) ? "Unadmin" : "Admin"}
                 </button>
                 <button type="button" disabled={busy} className={button} onClick={() => remove(m)}>
                   Remove

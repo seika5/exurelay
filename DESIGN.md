@@ -46,7 +46,7 @@ Any measure that only hides something from the second kind of adversary *without
 | `relay-web/` | Next.js client. All crypto happens here. Can run locally, as the official PWA, or as a user's own deployed fork. | Trusted (by whoever runs that build) |
 | Official PWA | **Decided.** The owner-hosted build of `relay-web`. Its core can't be changed by users; plugins can extend it (§9). | Trusted by whoever installs it |
 | Forked builds | **Decided.** Users fork `relay-web` and deploy it to their own HTTPS origin for full control (§9). | Trusted by their owner |
-| `relay-mobile/` | Capacitor iOS wrapper, sideloaded via SideStore. | **Decided: remove**, replaced by the PWA, plugins and forks |
+| `relay-mobile/` | Capacitor iOS wrapper, sideloaded via SideStore. | **Removed** (phase 10): replaced by the installed PWA, plugins and forks |
 
 ---
 
@@ -111,6 +111,17 @@ Keys aren't copied between devices (they're non-extractable once loaded, §4 "wh
 5. **Push:** each device registers its own push endpoint, and a mention notifies all of them.
 6. **Device list:** Settings shows your devices by name. Any of your devices can unlink another (a signed revocation); unlinking the one you're on wipes its data.
 7. **Lost or stolen device:** unlink it from another device. Only that device's key is exposed, and nobody else has to re-verify you. With no other device left, the admin re-enrolls you as before.
+
+**As built (phase 5d):**
+
+- **Member vs device:** a member is their enrolled key in the admin-signed directory. Each other device has its own keys and a certificate `{ type: "relay-device", member, ecdh, sig, name, addedAt, signer }` signed by one of the member's devices (the enrolled key, or an already-certified device). Unlinking is a signed `relay-device-revoke` from any of their devices, that one included. The server stores both (`Device`, `DeviceRevocation`), refuses certificates for keys already in use or unlinked, and drops a member's devices when they're removed or leave. Clients verify every chain themselves (`verifyDevices` in `relay-web/src/lib/signed.ts`).
+- **Linking:** the new device joins the server and creates an identity as usual; its waiting screen shows its enrollment code. On an existing device, Settings → **Devices** → scan or paste it, check the fingerprint, name it, **Link device**. No admin is involved. The waiting screen re-checks every 5 s, so it opens moments later.
+- **Messages:** every send has a slot for every device of every recipient and of the sender (the self-copy). The slot proves which device sent it; the message must name that device's member. Names, nicknames and volumes sync to your other devices as `device_sync` messages, which are never shown or cached. Newer `settingsAt` wins, and a newly linked device gets them at once.
+- **Logins and calls:** a device logs in with its own key; its session records its member, so removing a member ends all their devices' sessions. In calls the server reports each peer's member and device; signals are sealed device to device and allowed by member.
+- **Names and leaving:** any device may sign the member's display name or their leave.
+- **Unlinks are permanent:** an unlink has no trusted order relative to certificates, so if re-linking the same keys were allowed, the server could replay an old certificate to revive a lost or stolen device. So the server refuses certificates for unlinked keys, and clients drop a revoked key whatever its certificate. An unlinked device sees "This device was unlinked" and **Start over** (new keys, same server), then can be linked again.
+- **Admin device:** admin rights belong to a device: the member list's `admins` may hold a member's enrolled key or one of their linked devices' keys (the server and clients accept either, if that device belongs to a member still on the list). An admin moves admin to another of their devices in Settings → Devices → **Make admin device**, which signs a member list swapping this device's key for that one's. An admin device can't be unlinked while it holds admin (the server and the app both refuse: its key could still sign member lists), so move it first. Removing a member drops admin held by any of their devices. Members admin shows a member as admin if any of their devices is.
+- **Limits:** the enrolled device can't be unlinked: it *is* the member (its key is in the signed member list, and every other device's certificate chains to it). Replacing it is re-enrollment by the admin, which shows contacts a key-change notice and drops the old key's devices. A new device doesn't get old messages.
 
 ### Decided: admin tab
 
@@ -295,7 +306,7 @@ IP hiding is optional per member; members who want the strong guarantee should u
 - **Rate limit, not a daily quota:** a per-member token bucket in memory (`TOKEN_BURST`, default 200 = two refills, then `TOKEN_RATE_PER_MINUTE`, default 30). It only stops one member flooding the server; a busy day of chatting never hits it. Full buckets are dropped, so idle members leave no trace.
 - **Join codes don't expire.** A join code only says where the server is and which admin keys to trust; it grants nothing. Getting in still takes an admin approving your enrollment code, which expires after 3 minutes and needs the admin to check its fingerprint.
 - **Sending:** messages go through a queue, one at a time, in order. A message shows faded until the server has taken every blob, then normal. Out of tokens (rate limit), the queue waits for the server's `retryAfter` and carries on, however long that takes. Unreachable server or 5xx: retries after 2, 5, 10, 20 and 30 s, then fails. Any other 4xx (refused, e.g. removed member): fails at once. A failed message shows "Not sent" with retry and cancel (✕) icons; retry resumes from the first batch not taken. Not persisted: closing the app drops queued messages.
-- **Not built yet:** per-device push (phase 7).
+- **Push** came in phase 7, per device (§9, as built).
 
 ---
 
@@ -304,9 +315,17 @@ IP hiding is optional per member; members who want the strong guarantee should u
 | Decision | Status |
 | --- | --- |
 | WebRTC mesh, Socket.io signaling, STUN plus optional TURN. Media is DTLS-SRTP peer-to-peer. | Current |
-| The room id is a SHA-256 of the sorted member key hashes, so it's deterministic. | Current |
-| SDP (including DTLS fingerprints) passes through the server **unauthenticated**, so the server or anyone on the plain-HTTP path can man-in-the-middle a call. The README's "E2EE voice/video" isn't true yet. | **Gap** |
-| `join_room` accepts a client-*asserted* key hash, and the first joiner sets the room's allowed list. Clients automatically send an offer (with mic/camera) to any peer that appears. So anyone who knows the hashes can join and receive media, or squat a room id to block a call. | **Gap** |
+| The room id was a SHA-256 of the sorted member key hashes, so anyone who knew the members could compute it. | **Replaced** (phase 6): random room ids, below |
+| SDP (including DTLS fingerprints) passed through the server **unauthenticated**, so the server could man-in-the-middle a call. | **Fixed** (phase 6): sealed signaling, below |
+| `join_room` accepted a client-*asserted* key hash, the first joiner set the room's allowed list, and clients sent an offer (with mic/camera) to any peer that appeared, so anyone who knew the hashes could join and receive media, or squat a room id. | **Fixed**: the socket's key hash comes from its login session (phase 3); room ids are random and only shared inside encrypted messages; offers and answers are sealed to conversation members only (phase 6) |
+
+### As built (phase 6): call security
+
+- **Sealed signaling** (`relay-web/src/lib/callSignal.ts`): every offer, answer and ICE candidate is AES-GCM encrypted to the one peer it's for, with a key from HKDF over the static ECDH secret between the two members, salted with the room id and bound to the direction, and carries a timestamp (refused if more than 2 minutes off). The server forwards only `{ from, fromKeyHash, sealed }`, where `fromKeyHash` is the sender's logged-in member, and drops unsealed signals. If the server names the wrong sender, decryption fails.
+- **Media only to verified peers:** signals are sealed to, and accepted from, only members of the call's conversation. The SDP and its DTLS fingerprint are inside the sealed envelope, so only that member can complete the connection, and the server can't sit in the middle.
+- **Random room ids:** whoever starts a call picks a random 128-bit room id and announces it in the encrypted "call started" message. Others join the room named by the conversation's latest "started" event, until an "ended". The Call button says **Join call** while one is going. Known limit: two people starting a call at the very same moment end up in two rooms.
+- **Tiles for members not in the call:** dimmed "not in call" tiles under the call, with **Notify** (a ring push, phase 7).
+- The wrapper sits around the call socket, so the existing WebRTC code is unchanged; signals to and from each peer are kept in order.
 
 ### Decided: call tiles for everyone in the conversation
 
@@ -324,8 +343,8 @@ Recommended fix: authenticate signaling end to end. Seal each offer/answer/ICE m
 | --- | --- |
 | A message's sender was taken from the decrypted JSON (`senderKeyHash`) without checking it against the key that encrypted it. Any member (or anyone holding a member's public key) could impersonate any contact. | **Fixed** (`assembleVerifiedMessages` in `relay-web/src/lib/blobChunk.ts`, tests in `senderVerification.test.ts`) |
 | Web: `identity.bin` (with the private key) is served from `public/identity/`, and `PUT /api/identity` overwrote it. `next dev` listened on all interfaces, so anyone on the LAN could download or replace your identity. | **Fixed** (phase 4): `public/identity/` and `/api/identity` are gone, which also closes the DNS-rebinding gap; the identity is a passphrase-encrypted file the dev server never sees, or non-extractable keys in IndexedDB. The web app is now fully static, so it can also be hosted. |
-| iOS app: received filenames were used as cache paths unsanitized, so `../identity.bin` could overwrite the identity file. | **Fixed** (`safeFilename` in `page.tsx`); goes away with the Capacitor app |
-| iOS app: `identity.bin` is exposed in the Files app and in backups. | **Fixed** (phase 4): keys live in the app's IndexedDB; the app no longer opens `.bin` files or shows its Documents folder in Files. |
+| iOS app: received filenames were used as cache paths unsanitized, so `../identity.bin` could overwrite the identity file. | **Fixed** (`safeFilename` in `page.tsx`, still used for downloads); the iOS app is gone (phase 10) |
+| iOS app: `identity.bin` was exposed in the Files app and in backups. | **Gone** with the iOS app (phase 10); in the PWA, keys live in IndexedDB or the encrypted identity file |
 | Images are re-encoded through a canvas to strip EXIF/GPS before sending. | Current |
 | Only messages from known contacts (or yourself) are shown. Contact cards received in chat are displayed, never auto-added. | Current |
 
@@ -356,7 +375,7 @@ Recommended fix: authenticate signaling end to end. Seal each offer/answer/ICE m
 | App Store / TestFlight | Yes | Excluded |
 | Firebase App Distribution | **Yes.** iOS builds must be ad hoc–signed with each tester's UDID in the provisioning profile, which needs the paid Developer Program. | Not viable |
 | EU alternative marketplaces | Yes (plus Apple notarization) | Not viable |
-| Sideload (SideStore, free Apple ID) | No | **Current → Decided: remove** |
+| Sideload (SideStore, free Apple ID) | No | **Removed** (phase 10) |
 | **PWA (Add to Home Screen)** | No | **Decided**: the only mobile route |
 
 ### How a Home Screen web app compares to a native app (iOS 16.4+)
@@ -369,6 +388,18 @@ Recommended fix: authenticate signaling end to end. Seal each offer/answer/ICE m
 | Camera, mic and WebRTC calls while open | Can't receive "Open with…" from AirDrop or Files (not needed: keys are generated in-app) |
 | Works offline (service worker) | Updates apply on next launch with no review step, so whoever hosts the build can change it at any time |
 
+### As built (phase 7): the official PWA
+
+- **Static export** (`output: "export"`): `npm run build` writes plain files to `relay-web/out/`, and `npm start` serves them locally with no dependencies (`scripts/serve.mjs`). `BASE_PATH` serves it under a path (a GitHub Pages project site).
+- **Strict CSP** (`scripts/postbuild.mjs`): a static host can't set headers, so every page gets a `<meta>` CSP. Scripts only from this origin plus the exact inline scripts Next emitted (SHA-256 hashes), so an injected script can't run. `connect-src` allows any HTTPS/WSS server, because the app talks to whichever servers you join. `object-src 'none'`, `base-uri 'none'`, `form-action 'none'`, and frames only from `blob:` (plugins, phase 8). Styles allow `'unsafe-inline'`, because React sets style attributes.
+- **Published builds** (`.github/workflows/deploy-web.yml`): on each push to `main`, it tests, builds and publishes to GitHub Pages. `out/build.json` carries the commit and a SHA-256 over every published file; the workflow prints it in the run summary, and the app shows it in Settings → General. Not yet reproducible bit for bit: Next builds can differ between machines, so the hash proves "this is what that run published", not "anyone rebuilding gets the same".
+- **Installable:** a manifest, icons (`scripts/icons.py` draws them), and a service worker (`public/sw.js`). The service worker caches only the app's own files (pages network-first, hashed build files cache-first), never anything from a Relay server. Once installed, the app asks for persistent storage.
+- **Install first on phones:** on a phone, the join and create-identity screens are replaced by install instructions (Share → Add to Home Screen on iOS; Install app on Android) until Relay runs as the installed app, so an identity can't end up in a browser tab's separate storage. `?browser` skips this, for development.
+- **Push** (A, below): the server holds `PushSubscription { endpoint, device, member }`, registered by a logged-in device (Settings → General → **Turn on notifications**). Senders pay with an anonymous token to `POST /api/push/notify { kind, items: [{ device, payload }] }`, where each payload is encrypted device to device by the sender (`relay-web/src/lib/push.ts`: HKDF over the static ECDH secret, AES-GCM, `{ kind, member, group, ts }`). Limits per recipient member (`relay-server/src/lib/pushLimits.js`): 5 mentions a minute, one `@everyone` a minute, one ring per 30 s. Nothing about who was notified is stored or logged. Subscriptions go when the member is removed or the device unlinked. Disabled unless the server has VAPID keys (`npm run vapid`).
+- **Showing a push:** the service worker reads this device's key from IndexedDB (app-storage mode), decrypts the payload, checks the sending device belongs to the member it names and that it's under a day old, and shows e.g. "Ana mentioned you in Trip" with *your* name for Ana. For that, the app keeps a `pushPeers` list in IndexedDB: contacts' device public keys and your names for them, in the clear (names and keys, no messages). In folder mode, or if anything doesn't check out, the notification is generic ("You were mentioned in Relay").
+- **Only addressable devices:** senders fetch which devices have notifications on (`GET /api/push/devices`, members only; the server knows this from the subscriptions anyway) and name only those, and send nothing if the server has push off. So a mention of someone who can't be notified never reaches the server; it learns a mention target only when a push actually goes out.
+- **Notify** on a "not in call" tile rings that member's devices.
+
 ### Decided: two ways to customize
 
 **1. Plugins in the official PWA**
@@ -380,8 +411,22 @@ Recommended fix: authenticate signaling end to end. Seal each offer/answer/ICE m
   - Add message types. These go inside the encrypted content, namespaced like `x-<plugin>/<type>`, and carry fallback text for people without the plugin.
   - Hook in before encryption and after decryption.
 - Plugins run in sandboxed iframes with an opaque origin and talk to the core over `postMessage` through a narrow, versioned API. They can't read keys, the cache or the network, and can only ask the core to send. CSP enforces this.
-- **Safe mode** starts the app with all plugins off, so a bad plugin can't brick it.
+- ~~**Safe mode**~~ **Dropped:** plugins are sandboxed and never touch sending, and Settings → Plugins can always turn one off.
 - The wire format can't be changed by plugins. Wire changes are versioned core releases.
+
+**As built (phase 8), plugin API v1** (`relay-web/src/lib/plugins.ts`, `public/plugin-host.html`):
+
+- **Install:** Settings → **Plugins**, from a URL or a file. The app shows the code's SHA-256 before you accept and pins that exact code in IndexedDB. **Check for update** re-downloads a URL plugin and asks again if the hash changed. Plugins can be turned on and off, or removed.
+- **Sandbox:** each enabled plugin runs in its own `<iframe sandbox="allow-scripts">` of `plugin-host.html`: an opaque origin, so no access to keys, the cache, cookies or storage, and no popups or navigation. That page has its own CSP: `default-src 'none'` (no network at all), and scripts only by hash (its own inline host script; `'self'` matches nothing in a sandboxed page) plus `'unsafe-eval'`, so the plugin's code (sent over `postMessage`) can run there and only there. A test checks the hash matches the script. The app's own CSP still forbids eval, and only allows frames from itself.
+- **What a plugin can do** (`relay` object):
+  - `setTheme(vars)`: only the six color variables, with color values (no `url()`).
+  - `registerMessageType("x-<name>/<type>", { render })`: renders that type as plain text (0.5 s budget). Without the plugin, people see the sender's fallback text and the type.
+  - `send(type, data, fallback)`: always asks you to confirm, then sends to the open conversation (data at most 16 KB).
+  - `onBeforeSend(fn)`: may change a text before it's sent (0.5 s budget).
+  - `onMessage(fn)`: read-only messages as they arrive in the open conversation.
+  - `root`: its own screen, shown from Settings → Plugins → **Open**.
+- **Not in v1:** replacing built-in screens or components, and after-decrypt hooks that change messages. Plugin message types are part of the encrypted content (`type: "plugin"`); the wire format itself never changes for plugins.
+- **No safe mode:** plugins never touch how blobs are sealed or sent (recipients, decoys, blob size, tokens), and any plugin can be turned off in Settings → Plugins.
 
 **2. Fork and deploy**
 - `relay-web` doubles as a template that users fork and deploy to their own HTTPS origin (e.g. GitHub Pages or Cloudflare Pages via a provided workflow). Anything can change, including the core.
@@ -459,10 +504,10 @@ Ordered by dependency. Each phase should land as its own reviewed change.
 | 2 | Self-generated identities | **Done**: client keygen + identity format v5 (adds an ECDSA signing key, drops `myUserNumber`); server `Member` table with public keys replacing `AllowedKey` hashes; admin keys in server config; signed QR codes with 3-minute expiry; admin-signed member directory with version check; key-change notices; retire `generate-20-identities.mjs`; hard cutover (wipe server, re-enroll everyone) | 0 |
 | 3 | Login, tokens and admin | **Done** (see §6 "As built (phase 3)"); also added join codes so one app build works with any server. Challenge-response login; RFC 9474 blind-token issuance, daily issuer-key rotation, key-consistency check, spent-token store; per-member token rate limit; move the TURN credentials endpoint behind a token; no request/IP logging; Settings → Admin tab (admin labels, camera QR scan, signed revocation list, server status; basic enroll/remove already shipped in phase 2) | 1, 2 |
 | 4 | Key storage | **Done**: desktop Chrome/Edge keep a passphrase-encrypted identity file in a folder you pick, with a setup popup and an unlock screen; other browsers and phones keep non-extractable keys in IndexedDB; in-app key generation; removed `public/identity/`, `/api/identity` and the plain `.bin` file; persistent-storage request; linked devices decided as per-device keys. The wallet and rollback version stay in `localStorage`: they're plain data cleared with the same site data, so IndexedDB would add nothing. | 2 |
-| 5 | Protocol v2 | **5a done** (§5 "As built (phase 5a)"): sealed sender + recipient-blind blobs, each send encrypted once with a slot per recipient; `GET /blobs?since=` cursor; admin-set blob size and decoys; attachments travel like messages; stable `messageId`. **5b done** (§5 "As built (phase 5b)"): encrypted local cache, Settings → Storage tab. **5c done** (§8 "@mentions", as built): `mentions` field + picker, `@everyone`, highlight and badge (push waits for phase 7). **Next:** 5d linked devices (per-device keys, device certificates, self-message sync, device list) | 3, 4 |
-| 6 | Call security | Seal offer/answer/ICE with pairwise keys; random room ids; attach media only to verified peers; tiles for members not in the call | 3 |
-| 7 | Official PWA | Static export; manifest, icons, service worker; `storage.persist()`; strict CSP; deploy pipeline publishing commit + build hash; push registration (A, per device, no push logs, per-recipient rate limits) + service worker that decrypts and shows mention/ring notifications; call-tile **Notify** button with rate limit; install guide | 1, 3, 4 (5–6 before wide use) |
-| 8 | Plugins | Core/plugin boundary; sandboxed iframe host + versioned `postMessage` API; install from URL/file with hash pinning; plugin message types with fallback text; safe mode | 7 |
-| 9 | Fork and deploy | Template + deploy workflow (Pages); protocol golden test vectors in CI; fork guide | 5, 7 |
-| 10 | Remove Capacitor app | Delete `relay-mobile/`, its README section and `@capacitor/*` deps in `relay-web`; cutover note for current users | 7 |
-| 11 | Docs and tests | README rewritten for the new setup; tests for login/tokens, protocol v2, signaling and the plugin API; keep this file current | each phase |
+| 5 | Protocol v2 | **5a done** (§5 "As built (phase 5a)"): sealed sender + recipient-blind blobs, each send encrypted once with a slot per recipient; `GET /blobs?since=` cursor; admin-set blob size and decoys; attachments travel like messages; stable `messageId`. **5b done** (§5 "As built (phase 5b)"): encrypted local cache, Settings → Storage tab. **5c done** (§8 "@mentions", as built): `mentions` field + picker, `@everyone`, highlight and badge. **5d done** (§4, as built): linked devices with per-device keys, device certificates, settings sync, Settings → Devices | 3, 4 |
+| 6 | Call security | **Done** (§7, as built): sealed offer/answer/ICE with pairwise keys; random room ids; media only to verified peers; tiles for members not in the call | 3 |
+| 7 | Official PWA | **Done** (§9, as built): static export; manifest, icons, service worker; `storage.persist()`; strict CSP; GitHub Pages workflow publishing commit + build hash; push (A, per device, no push logs, per-recipient limits) + service worker that decrypts and shows mention/ring notifications; call-tile **Notify**; install-first on phones and install guide | 1, 3, 4 |
+| 8 | Plugins | **Done** (§9, as built): sandboxed iframe host + versioned `postMessage` API (v1); install from URL/file with hash pinning; themes; plugin message types with fallback text; before-send hook; own screens. Not in v1: replacing built-in components. No safe mode | 7 |
+| 9 | Fork and deploy | **Done**: deploy workflow (Pages, `BASE_PATH`); protocol v2 test vectors in CI (`vectors.test.ts`); [FORKING.md](FORKING.md) | 5, 7 |
+| 10 | Remove Capacitor app | **Done**: `relay-mobile/`, its README section and `@capacitor/*` removed; phones use the installed PWA | 7 |
+| 11 | Docs and tests | **Done**: README and relay-web/README rewritten for the PWA; tests for login/tokens, protocol v2 (plus vectors), devices, sealed signaling, push, plugins, mentions, the cache; CI workflow (`.github/workflows/test.yml`) | each phase |

@@ -10,6 +10,7 @@ import { directoryRouter } from "./routes/directory.js";
 import { authRouter } from "./routes/auth.js";
 import { tokensRouter } from "./routes/tokens.js";
 import { adminRouter } from "./routes/admin.js";
+import { pushRouter } from "./routes/push.js";
 import { registerSocketHandlers, disconnectKeyHashes } from "./socket.js";
 import { createAuth } from "./lib/auth.js";
 import { createIssuer, requireToken } from "./lib/tokens.js";
@@ -36,11 +37,18 @@ async function onMembersRemoved(keyHashes, version) {
   await issuer.rotateForRemoval(version);
   auth.revokeKeyHashes(keyHashes);
   disconnectKeyHashes(io, keyHashes);
+  await dropPushSubscriptions(keyHashes);
 }
 
-function onMemberLeft(keyHash) {
-  auth.revokeKeyHashes([keyHash]);
-  disconnectKeyHashes(io, [keyHash]);
+/** A removed member, or an unlinked device, gets no more pushes. */
+async function dropPushSubscriptions(keyHashes) {
+  await prisma.pushSubscription.deleteMany({ where: { OR: [{ device: { in: keyHashes } }, { member: { in: keyHashes } }] } });
+}
+
+async function onMemberLeft(keyHashes) {
+  auth.revokeKeyHashes(keyHashes);
+  disconnectKeyHashes(io, keyHashes);
+  await dropPushSubscriptions(keyHashes);
 }
 
 app.get("/health", (_, res) => res.status(200).json({ ok: true }));
@@ -50,6 +58,7 @@ app.use("/api/blobs", blobRouter(prisma, computeExpiresAt, io, spend));
 app.use("/api/turn", turnRouter(spend));
 app.use("/api/directory", directoryRouter(prisma, io, { onRemoved: onMembersRemoved, onLeft: onMemberLeft }));
 app.use("/api/admin", adminRouter(prisma, auth, issuer));
+app.use("/api/push", pushRouter(prisma, auth, spend));
 
 registerSocketHandlers(io, prisma, auth);
 

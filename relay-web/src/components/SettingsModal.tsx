@@ -6,6 +6,9 @@ import { MembersAdmin } from "@/components/MembersAdmin";
 import { BlobSettingsPanel, JoinCodePanel, ServerStatusPanel } from "@/components/AdminPanels";
 import { fingerprint } from "@/lib/signed";
 import { StoragePanel, type StorageControls } from "@/components/StoragePanel";
+import { DevicesPanel } from "@/components/DevicesPanel";
+import { PluginsPanel } from "@/components/PluginsPanel";
+import { BuildInfo, NotificationsSection } from "@/components/GeneralExtras";
 import type { Conversation } from "@/lib/useMessages";
 import { ApiError } from "@/lib/api";
 
@@ -19,7 +22,7 @@ export function SettingsModal({
   conversations: { conv: Conversation; label: string }[];
 }) {
   const { identity, isAdmin, directory, directoryError, setDisplayName, server, servers, leaveServer, identityStorage } = useIdentity();
-  const [tab, setTab] = useState<"general" | "storage" | "admin">("general");
+  const [tab, setTab] = useState<"general" | "devices" | "storage" | "plugins" | "admin">("general");
   const [name, setName] = useState(identity?.myName ?? "");
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -43,20 +46,24 @@ export function SettingsModal({
           </button>
         </div>
 
-        <div className="flex gap-1 text-sm">
-          {(isAdmin ? (["general", "storage", "admin"] as const) : (["general", "storage"] as const)).map((t) => (
+        <div className="flex flex-wrap gap-1 text-sm">
+          {(isAdmin ? (["general", "devices", "storage", "plugins", "admin"] as const) : (["general", "devices", "storage", "plugins"] as const)).map((t) => (
             <button
               key={t}
               type="button"
               onClick={() => setTab(t)}
               className={`px-3 py-1 rounded ${tab === t ? "bg-[var(--accent)] text-white" : "border border-[var(--border)]"}`}
             >
-              {t === "general" ? "General" : t === "storage" ? "Storage" : "Admin"}
+              {t === "general" ? "General" : t === "devices" ? "Devices" : t === "storage" ? "Storage" : t === "plugins" ? "Plugins" : "Admin"}
             </button>
           ))}
         </div>
 
-        {tab === "storage" ? (
+        {tab === "plugins" ? (
+          <PluginsPanel />
+        ) : tab === "devices" ? (
+          <DevicesPanel />
+        ) : tab === "storage" ? (
           <StoragePanel storage={storage} conversations={conversations} />
         ) : tab === "admin" && isAdmin ? (
           <>
@@ -160,6 +167,8 @@ export function SettingsModal({
           {leaveError && <p className="text-xs text-red-500">{leaveError}</p>}
         </section>
 
+        <NotificationsSection />
+
         <section className="flex flex-col gap-1">
           <h3 className="text-sm font-medium">Your keys</h3>
           {identityStorage?.kind === "folder" ? (
@@ -174,6 +183,8 @@ export function SettingsModal({
             </p>
           )}
         </section>
+
+        <BuildInfo />
           </>
         )}
       </div>

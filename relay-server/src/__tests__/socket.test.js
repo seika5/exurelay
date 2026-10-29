@@ -42,7 +42,7 @@ describe("registerSocketHandlers (voice)", () => {
     assert.ok(!events.includes("leave"), "must not register unchecked leave");
   });
 
-  it("signal forwards payload to target with from when they share a room", () => {
+  it("signal forwards only the sealed envelope, with the sender's socket, member and device, when they share a room", () => {
     const emitted = [];
     let connectionCb;
     // Both sender and receiver are in "call-room-1"
@@ -66,6 +66,7 @@ describe("registerSocketHandlers (voice)", () => {
     let signalHandler;
     const socket = {
       id: "sender-id",
+      data: { keyHash: "sender-device", member: "sender-member" },
       rooms: new Set(["sender-id", "call-room-1"]),
       join: () => {},
       leave: () => {},
@@ -76,12 +77,14 @@ describe("registerSocketHandlers (voice)", () => {
       },
     };
     connectionCb(socket);
+    // Unsealed signals (plain SDP) are never forwarded.
     signalHandler({ to: "receiver-id", type: "offer", sdp: {} });
+    assert.strictEqual(emitted.length, 0);
+    signalHandler({ to: "receiver-id", sealed: "c2VhbGVk", type: "offer" });
     assert.strictEqual(emitted.length, 1);
     assert.strictEqual(emitted[0].target, "receiver-id");
     assert.strictEqual(emitted[0].event, "signal");
-    assert.strictEqual(emitted[0].payload.from, "sender-id");
-    assert.strictEqual(emitted[0].payload.type, "offer");
+    assert.deepStrictEqual(emitted[0].payload, { from: "sender-id", fromKeyHash: "sender-member", fromDevice: "sender-device", sealed: "c2VhbGVk" });
   });
 
   it("signal is dropped when sender and target share no room", () => {
@@ -117,7 +120,7 @@ describe("registerSocketHandlers (voice)", () => {
       },
     };
     connectionCb(socket);
-    signalHandler({ to: "receiver-id", type: "offer", sdp: {} });
+    signalHandler({ to: "receiver-id", sealed: "c2VhbGVk" });
     assert.strictEqual(emitted.length, 0, "signal should be dropped when no shared room");
   });
 });

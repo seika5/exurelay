@@ -304,8 +304,29 @@ function SigningKey({ value }: { value: string }) {
 
 /** Identity exists but isn't in the member directory yet: show the enrollment code for the admin. */
 export function NotEnrolled() {
-  const { identity, directory, directoryError, isAdmin, error, server, servers, leaveServer } = useIdentity();
+  const { identity, directory, directoryError, isAdmin, error, server, servers, leaveServer, unlinked, startOver } = useIdentity();
   if (!identity) return null;
+
+  // Unlinked from its account: these keys are dead (an unlink is permanent, so it can't be replayed away).
+  if (unlinked) {
+    return (
+      <main className={screen} style={safeTop}>
+        <h1 className="text-xl font-semibold">This device was unlinked</h1>
+        <p className="text-sm text-[var(--muted)] text-center max-w-sm">
+          One of your devices removed this one from your account, so its keys no longer work here. To use this device
+          again, start over: it makes new keys, and you link it again from another device (or ask the admin).
+        </p>
+        <button
+          type="button"
+          onClick={() => startOver().catch(() => {})}
+          className="px-4 py-2 rounded bg-[var(--accent)] text-white text-sm"
+        >
+          Start over
+        </button>
+        <ServerSwitcher />
+      </main>
+    );
+  }
 
   // Not a member here yet, but maybe of another joined server: let them go back to it.
   const leave = (
@@ -357,7 +378,11 @@ export function NotEnrolled() {
     <main className={screen} style={safeTop}>
       <h1 className="text-xl font-semibold">Waiting for enrollment</h1>
       <p className="text-sm text-[var(--muted)] text-center max-w-sm">
-        Show this code to the admin in person. This screen moves on by itself once they&apos;ve enrolled you.
+        <strong>New member:</strong> show this code to the admin in person.
+        <br />
+        <strong>Already a member on another device?</strong> Enter it there, in Settings → Devices, to link this one.
+        <br />
+        This screen moves on by itself once you&apos;re in.
       </p>
       <EnrollmentCode />
       {(directoryError || error) && (

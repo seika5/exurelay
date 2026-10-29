@@ -1,0 +1,66 @@
+# Builds relay-web as a static site and publishes it to GitHub Pages: the official app, or your fork's own.
+# Each run publishes the commit and a SHA-256 over every file (out/build.json, also in the run summary), and the
+# app shows both in Settings → General, so anyone can check what they're running (DESIGN.md §9).
+#
+# One-time setup: repository Settings → Pages → Source: "GitHub Actions". With a custom domain the app is served at
+# its root; otherwise under /<repository>, which BASE_PATH handles.
+name: Deploy web app
+
+on:
+  push:
+    branches: [main]
+    paths: ["relay-web/**", ".github/workflows/deploy-web.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: relay-web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: relay-web/package-lock.json
+      - id: pages
+        uses: actions/configure-pages@v5
+      - run: npm ci
+      # Includes the protocol test vectors: a change that breaks messaging with everyone else fails here.
+      - run: npm test
+      - run: npm run build
+        env:
+          BASE_PATH: ${{ steps.pages.outputs.base_path }}
+      - name: Publish the build hash
+        run: |
+          cat out/build.json
+          {
+            echo "### Relay web build"
+            echo '```json'
+            cat out/build.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: relay-web/out
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

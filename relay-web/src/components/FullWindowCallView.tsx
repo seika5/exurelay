@@ -4,6 +4,7 @@ import { useRef, useEffect, useMemo, useState, useCallback } from "react";
 import { useCall } from "@/context/CallContext";
 import { useIdentity } from "@/context/IdentityContext";
 import { getParticipantSources, type ParticipantSource } from "@/lib/callUtils";
+import { AbsentMembers } from "@/components/AbsentMembers";
 
 const VOLUME_MIN = 0;
 const VOLUME_MAX = 100;
@@ -381,6 +382,9 @@ export function FullWindowCallView() {
             </div>
           );
         })}
+        <div className="absolute left-3 bottom-20 z-10">
+          <AbsentMembers />
+        </div>
       </div>
       <div className="p-2 border-t border-[var(--border)] flex justify-start">
         <button type="button" onClick={() => hangUp()} className="px-4 py-2 rounded text-sm font-medium bg-red-600/80 text-white">

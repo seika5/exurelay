@@ -32,7 +32,10 @@ export function createAuth({ now = () => Date.now(), publicUrl = process.env.PUB
     return nonce;
   }
 
-  /** member: { keyHash, signingPublicKey } from the Member table, or null. */
+  /**
+   * member: { keyHash, signingPublicKey, member } for a member's enrolled key (member = keyHash) or one of their
+   * linked devices (member = the member it belongs to), or null.
+   */
   async function login(envelope, member) {
     const body = parseBody(envelope);
     if (!body || body.type !== "relay-login" || typeof body.nonce !== "string") return { ok: false, error: "malformed login" };
@@ -46,7 +49,7 @@ export function createAuth({ now = () => Date.now(), publicUrl = process.env.PUB
     if (!(await verifySigned(envelope, member.signingPublicKey))) return { ok: false, error: "bad signature" };
     const token = randomBytes(32).toString("base64url");
     const expiresAt = now() + SESSION_TTL_MS;
-    sessions.set(token, { keyHash: member.keyHash, signingPublicKey: member.signingPublicKey, expiresAt });
+    sessions.set(token, { keyHash: member.keyHash, member: member.member ?? member.keyHash, signingPublicKey: member.signingPublicKey, expiresAt });
     return { ok: true, session: token, expiresAt };
   }
 
@@ -57,10 +60,10 @@ export function createAuth({ now = () => Date.now(), publicUrl = process.env.PUB
     return s;
   }
 
-  /** Drop every session of a removed member so they can't keep refilling tokens. */
+  /** Drop every session of a removed member (all their devices) or an unlinked device, so they can't keep refilling tokens. */
   function revokeKeyHashes(keyHashes) {
     const gone = new Set(keyHashes);
-    for (const [k, s] of sessions) if (gone.has(s.keyHash)) sessions.delete(k);
+    for (const [k, s] of sessions) if (gone.has(s.keyHash) || gone.has(s.member)) sessions.delete(k);
   }
 
   return { challenge, login, getSession, revokeKeyHashes };

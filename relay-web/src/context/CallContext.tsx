@@ -5,6 +5,7 @@ import type { Socket } from "socket.io-client";
 import { useSpeakingDetection } from "@/lib/useSpeakingDetection";
 import { getIceServers } from "@/lib/api";
 import { createSocket } from "@/lib/socket";
+import { secureSignalSocket } from "@/lib/callSignal";
 import { useIdentity } from "@/context/IdentityContext";
 
 /** Fallback when the relay has no TURN configured (or the request fails). STUN only works on friendly NATs. */
@@ -44,6 +45,8 @@ type CallState = {
   screenTrackRef: React.MutableRefObject<MediaStreamTrack | null>;
   /** Set when server rejects join (room authorization). */
   roomJoinError: string | null;
+  /** Rings a member who isn't in the call (registered by the chat page, which can send pushes); null if unavailable. */
+  notifyMember: ((keyHash: string) => Promise<void>) | null;
 };
 
 type CallContextValue = CallState & {
@@ -64,6 +67,7 @@ type CallContextValue = CallState & {
   setScreenSharing: (on: boolean) => void;
   setCallExpanded: (v: boolean) => void;
   setFocusedPeerId: (id: string | null) => void;
+  setNotifyMember: (fn: ((keyHash: string) => Promise<void>) | null) => void;
 };
 
 const CallContext = createContext<CallContextValue | null>(null);
@@ -87,6 +91,9 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
   const [focusedPeerId, setFocusedPeerId] = useState<string | null>(null);
   const [peerMutedDeafened, setPeerMutedDeafened] = useState<Map<string, { muted: boolean; deafened: boolean }>>(new Map());
   const [roomJoinError, setRoomJoinError] = useState<string | null>(null);
+  const [notifyMember, setNotifyMemberState] = useState<((keyHash: string) => Promise<void>) | null>(null);
+  // A function in state needs the updater form, or React would call it.
+  const setNotifyMember = useCallback((fn: ((keyHash: string) => Promise<void>) | null) => setNotifyMemberState(() => fn), []);
   const pcRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const iceQueueRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
   const localStreamRef = useRef<MediaStream | null>(null);
@@ -110,10 +117,33 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
   // The socket logs in as us, so it only exists once we're an enrolled member of a chosen server.
   const { enrolled, server, identity } = useIdentity();
   const myKeyHash = identity?.keyHash;
+  // Signals are sealed per peer (callSignal.ts); these refs give the wrapper the latest identity and call members.
+  const identityRef = useRef(identity);
+  identityRef.current = identity;
+  const allowedRef = useRef<Set<string> | null>(null);
   useEffect(() => {
     if (!enrolled || !server || !myKeyHash) return;
     const s = createSocket();
-    setSocket(s);
+    setSocket(
+      secureSignalSocket(s, {
+        me: () => {
+          const id = identityRef.current;
+          return id ? { keyPair: id.keyPair, keyHash: id.deviceKeyHash } : null;
+        },
+        // Any current device of a current member (mine included, for a call between my own devices).
+        publicKeyFor: (device) => {
+          const id = identityRef.current;
+          if (!id) return undefined;
+          if (device === id.deviceKeyHash) return id.publicKeyBase64;
+          return (
+            id.myDevices.find((d) => d.keyHash === device)?.ecdh ??
+            id.contacts.flatMap((c) => c.devices).find((d) => d.keyHash === device)?.publicKey
+          );
+        },
+        allowed: () => allowedRef.current,
+        room: () => roomIdRef.current,
+      })
+    );
     return () => {
       s.close();
       setSocket(null);
@@ -255,6 +285,8 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
         setRoomJoinError("Cannot join call: conversation members unknown.");
         return;
       }
+      // Only this conversation's members can exchange (sealed) signals with us in this call.
+      allowedRef.current = new Set(allowed);
       const fetched = await getIceServers().catch(() => []);
       iceServersRef.current = fetched.length > 0 ? fetched : FALLBACK_ICE_SERVERS;
       // Audio only at join; video is requested only when user turns camera on
@@ -266,6 +298,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
       setDeafened(false);
       setInCall(true);
       setRoomIdState(rid.trim());
+      roomIdRef.current = rid.trim();
       setCallExpanded(false);
       setFocusedPeerId(null);
 
@@ -698,6 +731,8 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
       setRoomId,
       setCurrentCallConversation,
       startOrJoinCall,
+      notifyMember,
+      setNotifyMember,
       hangUp,
       dismissRoomJoinError,
       setMuted,
@@ -729,6 +764,8 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
       setRoomId,
       setCurrentCallConversation,
       startOrJoinCall,
+      notifyMember,
+      setNotifyMember,
       hangUp,
       dismissRoomJoinError,
       setCameraOnWithMedia,

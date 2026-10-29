@@ -63,7 +63,13 @@ export async function getIceServers(): Promise<RTCIceServer[]> {
   return Array.isArray(data?.iceServers) ? data.iceServers : [];
 }
 
-export type DirectoryResponse = { directory: SignedEnvelope | null; profiles: SignedEnvelope[]; departures?: SignedEnvelope[] };
+export type DirectoryResponse = {
+  directory: SignedEnvelope | null;
+  profiles: SignedEnvelope[];
+  departures?: SignedEnvelope[];
+  devices?: SignedEnvelope[];
+  deviceRevocations?: SignedEnvelope[];
+};
 
 /** Newest admin-signed member directory and member-signed profiles. Unverified: callers must check signatures. */
 export async function getDirectory(): Promise<DirectoryResponse> {
@@ -85,6 +91,10 @@ export const publishDirectory = (envelope: SignedEnvelope) => postJson("/api/dir
 export const publishProfile = (envelope: SignedEnvelope) => postJson("/api/directory/profile", envelope);
 /** Signed by the member themself: the server deletes them at once and drops their sessions and pending messages. */
 export const postLeave = (envelope: SignedEnvelope) => postJson("/api/directory/leave", envelope);
+/** Link a device: a certificate signed by one of the member's devices. */
+export const postDeviceCert = (envelope: SignedEnvelope) => postJson("/api/directory/device", envelope);
+/** Unlink a device: signed by one of the member's devices (including that one). */
+export const postDeviceRevoke = (envelope: SignedEnvelope) => postJson("/api/directory/device/revoke", envelope);
 
 // ---------------------------------------------------------------------------
 // Admin (logged-in admin session)

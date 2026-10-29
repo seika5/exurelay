@@ -4,10 +4,12 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import { exportPrivateKey, exportPublicKey, generateKeyPair, generateSigningKeyPair, importIdentityKeys } from "@/lib/crypto";
 import { createIdentityFile, openIdentityFile, rewriteSettings, type FileSession } from "@/lib/identityFile";
 import { getKeyHashFromKeyPair } from "@/lib/e2ee";
-import { ApiError, getDirectory, postLeave, publishDirectory, publishProfile } from "@/lib/api";
+import { ApiError, getDirectory, postDeviceCert, postDeviceRevoke, postLeave, publishDirectory, publishProfile } from "@/lib/api";
 import {
   deleteFolderRef,
   deleteIdentity,
+  deletePushPeers,
+  savePushPeers,
   ensureFolderAccess,
   identityFileName,
   loadFolderRef,
@@ -25,9 +27,15 @@ import {
 import {
   createEnrollmentCode as buildEnrollmentCode,
   directoryWithoutMembers,
+  directoryWithAdmins,
   MAX_NAME_LENGTH,
   signRecord,
   verifyDepartures,
+  verifyDevices,
+  deviceCert,
+  deviceRevoke,
+  readEnrollmentCode,
+  type MemberDevice,
   verifyDirectory,
   verifyProfiles,
   type Directory,
@@ -53,6 +61,7 @@ import { clearWallet, resetWalletMemory, setTokenDirectory } from "@/lib/tokens"
 /** Newest directory version this device has accepted for the current server (rollback protection). */
 const DIRECTORY_VERSION_KEY = "relay.directoryVersion";
 const DIRECTORY_POLL_MS = 60_000;
+const WAITING_POLL_MS = 5_000;
 
 type IdentityState = {
   /** The one server this identity belongs to. */
@@ -64,8 +73,17 @@ type IdentityState = {
   signingPublicKeyBase64: string;
   myName: string;
   contactSettings: ContactSettings[];
-  /** Active directory members other than me, with resolved names. Derived from the verified directory. */
+  /** When myName/contactSettings last changed on any of my devices (for syncing them between devices). */
+  settingsAt?: number;
+  /** Active directory members other than me, with resolved names and devices. Derived from the verified directory. */
   contacts: Contact[];
+  /**
+   * keyHash above is the member I am (my enrolled key's hash, which every device of mine shares); this is this
+   * device's own key hash. The same on the enrolled device.
+   */
+  deviceKeyHash: string;
+  /** My devices (enrolled one first), this one included. */
+  myDevices: MemberDevice[];
 };
 
 /**
@@ -134,6 +152,21 @@ type IdentityContextValue = {
   /** Fresh signed enrollment code (valid 3 minutes) for the admin to paste or scan. */
   createEnrollmentCode: () => Promise<string>;
   logout: () => void;
+  /** Approve a new device of mine from its enrollment code (shown on its waiting screen). */
+  linkDevice: (code: string, name: string) => Promise<void>;
+  /** Unlink one of my devices; unlinking this one also wipes it here. */
+  unlinkDevice: (deviceKeyHash: string) => Promise<void>;
+  /** Apply name and contact settings synced from another of my devices, if newer. */
+  applyDeviceSync: (sync: { myName: string; contactSettings: ContactSettings[]; settingsAt: number }) => void;
+  /** Bumped when name or contact settings change on this device, so the chat can sync them to my other devices. */
+  settingsChangedAt: number;
+  /** Every member's verified devices (enrolled first), by member keyHash. */
+  memberDevices: Map<string, MemberDevice[]>;
+  /** Admin only: move my admin rights from this device to another of my devices (it becomes the admin device). */
+  moveAdmin: (deviceKeyHash: string) => Promise<void>;
+  /** This device was unlinked from its account: its keys can't be linked again, so it must start over. */
+  unlinked: boolean;
+  startOver: () => Promise<void>;
 };
 
 const IdentityContext = createContext<IdentityContextValue | null>(null);
@@ -162,7 +195,8 @@ function writeMinDirectoryVersion(version: number) {
 // Provider
 // ---------------------------------------------------------------------------
 
-type BaseIdentity = Omit<IdentityState, "contacts">;
+/** What's stored for an identity: this device's keys, my name and contact settings. Member and devices are derived. */
+type BaseIdentity = Omit<IdentityState, "contacts" | "deviceKeyHash" | "myDevices">;
 
 export function IdentityProvider({ children }: { children: React.ReactNode }) {
   const [base, setBase] = useState<BaseIdentity | null>(null);
@@ -175,6 +209,11 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
   const [profiles, setProfiles] = useState<Map<string, Profile>>(new Map());
   // Members who signed their own leave and are still listed until an admin publishes the next directory.
   const [departed, setDeparted] = useState<Set<string>>(new Set());
+  // Every member's verified devices (enrolled key first), by member keyHash.
+  const [devices, setDevices] = useState<Map<string, MemberDevice[]>>(new Map());
+  // Devices validly unlinked: if this one is among them, its keys are dead and it has to start over.
+  const [revokedDevices, setRevokedDevices] = useState<Set<string>>(new Set());
+  const [settingsChangedAt, setSettingsChangedAt] = useState(0);
   const [directoryLoaded, setDirectoryLoaded] = useState(false);
   const [directoryError, setDirectoryError] = useState<string | null>(null);
   const profilePublishedFor = useRef<string | null>(null);
@@ -261,7 +300,7 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
   const persist = useCallback(async (next: BaseIdentity) => {
     const f = fileSessions.current.get(next.server);
     if (f) {
-      const bytes = await rewriteSettings(f.session, { myName: next.myName, contactSettings: next.contactSettings });
+      const bytes = await rewriteSettings(f.session, { myName: next.myName, contactSettings: next.contactSettings, settingsAt: next.settingsAt });
       await writeFolderFile(f.ref.dir, f.ref.fileName, bytes);
     } else {
       await saveIdentity(next);
@@ -350,6 +389,7 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
       signingPublicKeyBase64: keys.signingPublic,
       myName: settings.myName,
       contactSettings: settings.contactSettings ?? [],
+      settingsAt: settings.settingsAt,
     });
   }, [locked, adopt]);
 
@@ -453,7 +493,11 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
       }
       setTokenDirectory(result.directory);
       setDirectory(result.directory);
-      setProfiles(await verifyProfiles(res.profiles ?? [], result.directory.members));
+      const revoked = new Set<string>();
+      const verifiedDevices = await verifyDevices(res.devices ?? [], res.deviceRevocations ?? [], result.directory.members, revoked);
+      setDevices(verifiedDevices);
+      setRevokedDevices(revoked);
+      setProfiles(await verifyProfiles(res.profiles ?? [], result.directory.members, verifiedDevices));
       setDeparted(await verifyDepartures(res.departures ?? [], result.directory.members));
       setDirectoryError(null);
     } catch (e) {
@@ -468,10 +512,20 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
     }
   }, [server, adminKeys]);
 
+  // The member this device belongs to: its own key if enrolled directly, else the member whose certified device it is.
+  const myMember = useMemo(() => {
+    if (!base || !directory) return null;
+    if (directory.members.some((m) => m.keyHash === base.keyHash)) return base.keyHash;
+    for (const [member, list] of devices) if (list.some((d) => d.keyHash === base.keyHash)) return member;
+    return null;
+  }, [base, directory, devices]);
+  const enrolled = !!myMember && !departed.has(myMember);
+
   useEffect(() => {
     if (!base || !server) return;
     refreshDirectory();
-    const timer = setInterval(refreshDirectory, DIRECTORY_POLL_MS);
+    // Waiting to be enrolled or linked: check often, so the screen moves on soon after approval (the GET is anonymous).
+    const timer = setInterval(refreshDirectory, enrolled ? DIRECTORY_POLL_MS : WAITING_POLL_MS);
     const onVisible = () => {
       if (document.visibilityState === "visible") refreshDirectory();
     };
@@ -480,17 +534,53 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
       clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [base, server, refreshDirectory]);
+  }, [base, server, refreshDirectory, enrolled]);
 
-  const enrolled = !!base && !!directory?.members.some((m) => m.keyHash === base.keyHash);
   const isAdmin = !!base && adminKeys.includes(base.signingPublicKeyBase64);
+
+  /** Delete this device's identity for a server, its file, cache, tokens and rollback state (leave or start over). */
+  const forgetHere = useCallback(async (url: string) => {
+    clearWallet();
+    try {
+      localStorage.removeItem(serverScopedKey(DIRECTORY_VERSION_KEY));
+    } catch {
+      // ignore
+    }
+    identities.current.delete(url);
+    // The identity file goes too once we've left (it's useless after); while locked we couldn't sign the leave,
+    // so the file stays and only this device forgets the server.
+    const file = fileSessions.current.get(url)?.ref ?? (await loadFolderRef(url).catch(() => null));
+    if (file) {
+      if (base) {
+        try {
+          if (await ensureFolderAccess(file.dir)) await removeFolderFile(file.dir, file.fileName);
+        } catch {
+          // Couldn't delete it: it's no longer a member's key either way.
+        }
+      }
+      await deleteFolderRef(url).catch(() => {});
+    }
+    fileSessions.current.delete(url);
+    if (base) await wipeCache(base.keyHash).catch(() => {});
+    await deletePushPeers(url).catch(() => {});
+    await deleteIdentity(url);
+    setBase(null);
+    setLocked(null);
+  }, [base]);
+
+  /** This device's identity is dead (unlinked): delete it and go back to creating one, staying on this server. */
+  const startOver = useCallback(async () => {
+    if (!server) return;
+    await forgetHere(server.url);
+    setNeedsSetup(true);
+  }, [server, forgetHere]);
 
   const leaveServer = useCallback(async ({ force = false }: { force?: boolean } = {}) => {
     if (!server) return;
     if (base && enrolled && !force) {
       const env = await signRecord(base.signingKeyPair.privateKey, {
         type: "relay-leave",
-        keyHash: base.keyHash,
+        keyHash: myMember,
         server: server.url,
         ts: Date.now(),
       });
@@ -501,48 +591,24 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
         if (!(e instanceof ApiError && e.message === "not a member")) throw e;
       }
     }
-    clearWallet();
-    try {
-      localStorage.removeItem(serverScopedKey(DIRECTORY_VERSION_KEY));
-    } catch {
-      // ignore
-    }
-    identities.current.delete(server.url);
-    // The identity file goes too once we've left (it's useless after); while locked we couldn't sign the leave,
-    // so the file stays and only this device forgets the server.
-    const file = fileSessions.current.get(server.url)?.ref ?? (await loadFolderRef(server.url).catch(() => null));
-    if (file) {
-      if (base) {
-        try {
-          if (await ensureFolderAccess(file.dir)) await removeFolderFile(file.dir, file.fileName);
-        } catch {
-          // Couldn't delete it: it's no longer a member's key either way.
-        }
-      }
-      await deleteFolderRef(server.url).catch(() => {});
-    }
-    fileSessions.current.delete(server.url);
-    if (base) await wipeCache(base.keyHash).catch(() => {});
-    await deleteIdentity(server.url);
-    setBase(null);
-    setLocked(null);
+    await forgetHere(server.url);
     activate(removeServerConfig(server.url));
-  }, [server, base, enrolled, activate]);
+  }, [server, base, enrolled, myMember, activate, forgetHere]);
 
   const signAndPublishProfile = useCallback(async (identity: BaseIdentity, name: string) => {
     const env = await signRecord(identity.signingKeyPair.privateKey, {
       type: "relay-profile",
-      keyHash: identity.keyHash,
+      keyHash: myMember ?? identity.keyHash,
       name,
       updatedAt: Date.now(),
     });
     await publishProfile(env);
-  }, []);
+  }, [myMember]);
 
   // Once enrolled, publish my display name if the directory doesn't have it yet.
   useEffect(() => {
     if (!base || !enrolled || !directoryLoaded) return;
-    if (profiles.get(base.keyHash)?.name === base.myName) return;
+    if (profiles.get(myMember ?? base.keyHash)?.name === base.myName) return;
     if (profilePublishedFor.current === base.myName) return;
     profilePublishedFor.current = base.myName;
     signAndPublishProfile(base, base.myName)
@@ -550,7 +616,7 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
       .catch(() => {
         profilePublishedFor.current = null;
       });
-  }, [base, enrolled, directoryLoaded, profiles, signAndPublishProfile, refreshDirectory]);
+  }, [base, enrolled, myMember, directoryLoaded, profiles, signAndPublishProfile, refreshDirectory]);
 
   const publishSignedDirectory = useCallback(async (next: Directory) => {
     if (!base || !isAdmin) throw new Error("Only an admin can change the member list");
@@ -564,12 +630,12 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!base || !isAdmin || !directory || departed.size === 0 || cleaningUp.current) return;
     cleaningUp.current = true;
-    publishSignedDirectory(directoryWithoutMembers(directory, base.signingPublicKeyBase64, [...departed]))
+    publishSignedDirectory(directoryWithoutMembers(directory, base.signingPublicKeyBase64, [...departed], Date.now(), devices))
       .catch(() => {})
       .finally(() => {
         cleaningUp.current = false;
       });
-  }, [base, isAdmin, directory, departed, publishSignedDirectory]);
+  }, [base, isAdmin, directory, departed, devices, publishSignedDirectory]);
 
   const getMember = useCallback(
     (keyHash: string) => (departed.has(keyHash) ? undefined : directory?.members.find((m) => m.keyHash === keyHash)),
@@ -592,16 +658,23 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
 
   const identity = useMemo<IdentityState | null>(() => {
     if (!base) return null;
+    const me = myMember ?? base.keyHash;
+    const devicesOf = (m: { keyHash: string; ecdh: string }) =>
+      (devices.get(m.keyHash) ?? [{ keyHash: m.keyHash, ecdh: m.ecdh }]).map((d) => ({ keyHash: d.keyHash, publicKey: d.ecdh }));
     const contacts: Contact[] = (directory?.members ?? [])
-      .filter((m) => m.keyHash !== base.keyHash && !departed.has(m.keyHash))
+      .filter((m) => m.keyHash !== me && !departed.has(m.keyHash))
       .map((m) => ({
         keyHash: m.keyHash,
         publicKey: m.ecdh,
         displayName: resolveName(m.keyHash, base.contactSettings) ?? m.keyHash.slice(0, 8),
         volume: base.contactSettings.find((c) => c.keyHash === m.keyHash)?.volume ?? 100,
+        devices: devicesOf(m),
       }));
-    return { ...base, contacts };
-  }, [base, directory, departed, resolveName]);
+    const myDevices = devices.get(me) ?? [
+      { keyHash: base.keyHash, ecdh: base.publicKeyBase64, sig: base.signingPublicKeyBase64, name: "", addedAt: 0, primary: true },
+    ];
+    return { ...base, keyHash: me, deviceKeyHash: base.keyHash, contacts, myDevices };
+  }, [base, myMember, directory, devices, departed, resolveName]);
 
   const updateSettings = useCallback((keyHash: string, change: Partial<ContactSettings>): BaseIdentity | null => {
     if (!base) return null;
@@ -609,18 +682,21 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
     const next = {
       ...base,
       contactSettings: [...base.contactSettings.filter((c) => c.keyHash !== keyHash), { ...existing, ...change }],
+      settingsAt: Date.now(),
     };
     setBase(next);
+    setSettingsChangedAt(next.settingsAt);
     return next;
   }, [base]);
 
   const setDisplayName = useCallback(async (keyHash: string, displayName: string): Promise<void> => {
     if (!base) throw new Error("No identity");
     const trimmed = displayName.trim().slice(0, MAX_NAME_LENGTH);
-    if (keyHash === base.keyHash) {
+    if (keyHash === (myMember ?? base.keyHash)) {
       if (!trimmed) throw new Error("Enter a name");
-      const next = { ...base, myName: trimmed };
+      const next = { ...base, myName: trimmed, settingsAt: Date.now() };
       setBase(next);
+      setSettingsChangedAt(next.settingsAt);
       profilePublishedFor.current = trimmed;
       await persist(next);
       if (enrolled) {
@@ -631,12 +707,12 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
     }
     const next = updateSettings(keyHash, { nickname: trimmed || undefined });
     if (next) await persist(next);
-  }, [base, enrolled, signAndPublishProfile, refreshDirectory, updateSettings, persist]);
+  }, [base, myMember, enrolled, signAndPublishProfile, refreshDirectory, updateSettings, persist]);
 
   const getDisplayName = useCallback(
     (keyHash: string): string | undefined =>
-      base && keyHash === base.keyHash ? base.myName : resolveName(keyHash, base?.contactSettings ?? []),
-    [base, resolveName]
+      base && keyHash === (myMember ?? base.keyHash) ? base.myName : resolveName(keyHash, base?.contactSettings ?? []),
+    [base, myMember, resolveName]
   );
 
   const getContactVolume = useCallback(
@@ -676,11 +752,61 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
     };
   }, [base?.keyHash, base?.server]);
 
+  // For the service worker: contacts' device keys and my names for them, so pushes show with my names while the app
+  // is closed. App-storage mode only: in folder mode the service worker has no keys, and shows generic notifications.
+  useEffect(() => {
+    if (!identity || !server || fileSessions.current.has(server.url)) return;
+    const peers = identity.contacts.flatMap((c) =>
+      c.devices.map((d) => ({ device: d.keyHash, member: c.keyHash, publicKey: d.publicKey, name: c.displayName }))
+    );
+    savePushPeers(server.url, peers).catch(() => {});
+  }, [identity, server]);
+
   const identityStorage = useMemo<IdentityStorage | null>(() => {
     if (!base) return null;
     const f = fileSessions.current.get(base.server);
     return f ? { kind: "folder", folder: f.ref.dir.name, fileName: f.ref.fileName } : { kind: "app" };
   }, [base]);
+
+  const linkDevice = useCallback(async (code: string, name: string) => {
+    if (!base || !myMember) throw new Error("This device isn't a member yet");
+    const r = await readEnrollmentCode(code);
+    if (!r.ok) throw new Error(r.error);
+    if (!name.trim()) throw new Error("Name the device");
+    const cert = deviceCert(myMember, r.request, name, base.signingPublicKeyBase64);
+    await postDeviceCert(await signRecord(base.signingKeyPair.privateKey, cert));
+    await refreshDirectory();
+    // The new device starts without my nicknames and settings: send them (the chat sends on this bump).
+    setSettingsChangedAt(Date.now());
+  }, [base, myMember, refreshDirectory]);
+
+  const moveAdmin = useCallback(async (deviceKeyHash: string) => {
+    if (!base || !myMember || !directory || !isAdmin) throw new Error("Only the admin device can move admin");
+    const target = devices.get(myMember)?.find((d) => d.keyHash === deviceKeyHash);
+    if (!target) throw new Error("That isn't one of your devices");
+    const admins = (directory.admins ?? [base.signingPublicKeyBase64]).map((a) => (a === base.signingPublicKeyBase64 ? target.sig : a));
+    await publishSignedDirectory(directoryWithAdmins(directory, base.signingPublicKeyBase64, admins, Date.now(), devices));
+  }, [base, myMember, directory, isAdmin, devices, publishSignedDirectory]);
+
+  const unlinkDevice = useCallback(async (deviceKeyHash: string) => {
+    if (!base || !myMember) throw new Error("No identity");
+    const sig = devices.get(myMember)?.find((d) => d.keyHash === deviceKeyHash)?.sig;
+    if (sig && adminKeys.includes(sig)) throw new Error("That's an admin device. Move admin to another device first.");
+    const revoke = deviceRevoke(myMember, deviceKeyHash, base.signingPublicKeyBase64);
+    await postDeviceRevoke(await signRecord(base.signingKeyPair.privateKey, revoke));
+    // Unlinking this device: it's no longer a member's key, so wipe it here, as when leaving (the server's told).
+    if (deviceKeyHash === base.keyHash) await leaveServer({ force: true });
+    else await refreshDirectory();
+  }, [base, myMember, devices, adminKeys, refreshDirectory, leaveServer]);
+
+  const applyDeviceSync = useCallback((sync: { myName: string; contactSettings: ContactSettings[]; settingsAt: number }) => {
+    if (!base || typeof sync.settingsAt !== "number" || sync.settingsAt <= (base.settingsAt ?? 0)) return;
+    if (typeof sync.myName !== "string" || !Array.isArray(sync.contactSettings)) return;
+    const next = { ...base, myName: sync.myName.slice(0, MAX_NAME_LENGTH), contactSettings: sync.contactSettings, settingsAt: sync.settingsAt };
+    setBase(next);
+    identities.current.set(next.server, next);
+    persist(next).catch(() => {});
+  }, [base, persist]);
 
   const logout = useCallback(() => {
     if (server) {
@@ -703,6 +829,14 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
         openIdentityFolder,
         identityStorage,
         cacheKey,
+        linkDevice,
+        unlinkDevice,
+        applyDeviceSync,
+        settingsChangedAt,
+        unlinked: !!base && revokedDevices.has(base.keyHash),
+        memberDevices: devices,
+        moveAdmin,
+        startOver,
         error,
         dismissError,
         createIdentity,

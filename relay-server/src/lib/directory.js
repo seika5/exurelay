@@ -45,9 +45,10 @@ export function blobSizeOf(latestBody) {
 
 /**
  * Check a signed member directory. Returns { ok, directory } or { ok: false, error }.
- * The directory must be signed by one of adminKeys, and its version must be above currentVersion.
+ * The directory must be signed by one of adminKeys, and its version must be above currentVersion. Admins may be
+ * members' enrolled keys or their linked devices' keys (deviceSigsOf(memberKeyHash) lists those).
  */
-export async function validateDirectory(envelope, adminKeys, currentVersion = 0) {
+export async function validateDirectory(envelope, adminKeys, currentVersion = 0, deviceSigsOf = () => []) {
   const d = parseBody(envelope);
   if (!d || d.type !== "relay-directory") return { ok: false, error: "not a directory" };
   if (!adminKeys.includes(d.signer)) return { ok: false, error: "signer is not an admin" };
@@ -71,7 +72,11 @@ export async function validateDirectory(envelope, adminKeys, currentVersion = 0)
   }
   if (d.admins != null) {
     if (!Array.isArray(d.admins) || d.admins.length === 0 || d.admins.length > 20) return { ok: false, error: "malformed admins" };
-    if (!d.admins.every((a) => isB64(a) && sigKeys.has(a))) return { ok: false, error: "every admin must be a member" };
+    // An admin is a member's enrolled key or one of their linked devices (the member's "admin device").
+    const deviceSigs = new Set(d.members.flatMap((m) => deviceSigsOf(m.keyHash)));
+    if (!d.admins.every((a) => isB64(a) && (sigKeys.has(a) || deviceSigs.has(a)))) {
+      return { ok: false, error: "every admin must be a member or one of their devices" };
+    }
   }
   if (d.blobSize != null && !(Number.isSafeInteger(d.blobSize) && d.blobSize % 1024 === 0 && d.blobSize >= MIN_BLOB_SIZE && d.blobSize <= MAX_BLOB_SIZE)) {
     return { ok: false, error: `blobSize must be a multiple of 1024 from ${MIN_BLOB_SIZE} to ${MAX_BLOB_SIZE}` };
@@ -90,16 +95,22 @@ export async function validateDirectory(envelope, adminKeys, currentVersion = 0)
  * Check a member's self-signed profile against their directory entry.
  * Returns { ok, profile } or { ok: false, error }. updatedAt must be above previousUpdatedAt.
  */
-export async function validateProfile(envelope, member, previousUpdatedAt = 0) {
+export async function validateProfile(envelope, member, previousUpdatedAt = 0, signers = member ? [member.signingPublicKey] : []) {
   const p = parseBody(envelope);
   if (!p || p.type !== "relay-profile" || typeof p.keyHash !== "string") return { ok: false, error: "not a profile" };
   if (!member || member.keyHash !== p.keyHash) return { ok: false, error: "not a member" };
-  if (!(await verifySigned(envelope, member.signingPublicKey))) return { ok: false, error: "bad signature" };
+  if (!(await verifiedByAny(envelope, signers))) return { ok: false, error: "bad signature" };
   if (typeof p.name !== "string" || !p.name.trim() || p.name.length > MAX_NAME_LENGTH) {
     return { ok: false, error: "bad name" };
   }
   if (!isTime(p.updatedAt) || p.updatedAt <= previousUpdatedAt) return { ok: false, error: "stale profile" };
   return { ok: true, profile: p };
+}
+
+/** Signed by any of these keys (a member's enrolled key or one of their linked devices). */
+async function verifiedByAny(envelope, signers) {
+  for (const k of signers) if (await verifySigned(envelope, k)) return true;
+  return false;
 }
 
 export const LEAVE_MAX_AGE_MS = 5 * 60_000;
@@ -111,11 +122,16 @@ const trimSlash = (u) => (typeof u === "string" ? u.replace(/\/+$/, "") : u);
  * server must match publicUrl when it's set, so a leave signed for another relay can't be replayed here.
  * The last admin can't leave: nobody would be left to sign the next directory.
  */
-export async function validateLeave(envelope, member, adminKeys, { publicUrl = "", now = Date.now() } = {}) {
+export async function validateLeave(
+  envelope,
+  member,
+  adminKeys,
+  { publicUrl = "", now = Date.now(), signers = member ? [member.signingPublicKey] : [] } = {}
+) {
   const l = parseBody(envelope);
   if (!l || l.type !== "relay-leave" || typeof l.keyHash !== "string") return { ok: false, error: "not a leave request" };
   if (!member || member.keyHash !== l.keyHash) return { ok: false, error: "not a member" };
-  if (!(await verifySigned(envelope, member.signingPublicKey))) return { ok: false, error: "bad signature" };
+  if (!(await verifiedByAny(envelope, signers))) return { ok: false, error: "bad signature" };
   if (publicUrl && trimSlash(l.server) !== trimSlash(publicUrl)) return { ok: false, error: "leave is for a different server" };
   if (!isTime(l.ts) || Math.abs(now - l.ts) > LEAVE_MAX_AGE_MS) return { ok: false, error: "stale leave request" };
   if (adminKeys.length === 1 && adminKeys[0] === member.signingPublicKey) {

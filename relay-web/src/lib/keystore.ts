@@ -9,7 +9,7 @@
  */
 
 const DB_NAME = "relay";
-const DB_VERSION = 3;
+const DB_VERSION = 5;
 const STORE = "identities";
 /** Folder-mode identities: { server, dir, fileName }. */
 const FOLDERS = "folders";
@@ -17,6 +17,12 @@ const FOLDERS = "folders";
 export const CACHE_MESSAGES = "messages";
 export const CACHE_META = "cacheMeta";
 export const CACHE_KEYS = "cacheKeys";
+/**
+ * For the service worker (public/sw.js), per server: each contact device's public key, its member and my name for
+ * them, so a push can be decrypted and shown with my names while the app is closed. App-storage mode only (in folder
+ * mode the service worker has no keys). Names and keys of contacts, no messages.
+ */
+export const PUSH_PEERS = "pushPeers";
 
 /** A member as the UI sees it: directory keys + resolved name + local settings. */
 export type Contact = {
@@ -25,6 +31,8 @@ export type Contact = {
   displayName: string;
   /** 0-100, default 100. */
   volume?: number;
+  /** Every device of this member (enrolled key first), each with its own ECDH key: messages go to all of them. */
+  devices: { keyHash: string; publicKey: string }[];
 };
 
 /** Per-contact settings stored locally. nickname overrides the member's own display name on this device. */
@@ -44,6 +52,8 @@ export type StoredIdentity = {
   signingPublicKeyBase64: string;
   myName: string;
   contactSettings: ContactSettings[];
+  /** When myName/contactSettings last changed (any of my devices), so a sync from another device can tell which is newer. */
+  settingsAt?: number;
 };
 
 let dbPromise: Promise<IDBDatabase> | null = null;
@@ -60,6 +70,9 @@ function openDb(): Promise<IDBDatabase> {
         }
         if (!req.result.objectStoreNames.contains(CACHE_META)) req.result.createObjectStore(CACHE_META, { keyPath: "owner" });
         if (!req.result.objectStoreNames.contains(CACHE_KEYS)) req.result.createObjectStore(CACHE_KEYS, { keyPath: "owner" });
+        if (!req.result.objectStoreNames.contains(PUSH_PEERS)) req.result.createObjectStore(PUSH_PEERS, { keyPath: "server" });
+        // Installed plugins (plugins.ts), pinned by hash.
+        if (!req.result.objectStoreNames.contains("plugins")) req.result.createObjectStore("plugins", { keyPath: "id" });
       };
       req.onsuccess = () => {
         // Another tab upgrading the database: let go so it isn't blocked; the next call reopens.
@@ -108,6 +121,7 @@ export async function saveIdentity(identity: StoredIdentity): Promise<void> {
     signingPublicKeyBase64: identity.signingPublicKeyBase64,
     myName: identity.myName,
     contactSettings: identity.contactSettings,
+    settingsAt: identity.settingsAt,
   };
   await run("readwrite", (s) => s.put(record));
 }
@@ -201,4 +215,19 @@ export async function saveFolderRef(ref: FolderRef): Promise<void> {
 
 export async function deleteFolderRef(server: string): Promise<void> {
   await run("readwrite", (s) => s.delete(server), FOLDERS);
+}
+
+// ---------------------------------------------------------------------------
+// Push peers (for the service worker)
+// ---------------------------------------------------------------------------
+
+export type PushPeer = { device: string; member: string; publicKey: string; name: string };
+
+/** Replace this server's push peers (see PUSH_PEERS). */
+export async function savePushPeers(server: string, peers: PushPeer[]): Promise<void> {
+  await run("readwrite", (s) => s.put({ server, peers }), PUSH_PEERS);
+}
+
+export async function deletePushPeers(server: string): Promise<void> {
+  await run("readwrite", (s) => s.delete(server), PUSH_PEERS);
 }

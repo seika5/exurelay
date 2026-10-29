@@ -29,7 +29,7 @@ export type IdentityKeys = {
   signingPublic: string;
   signingPrivate: JsonWebKey;
 };
-export type IdentitySettings = { myName: string; contactSettings: ContactSettings[] };
+export type IdentitySettings = { myName: string; contactSettings: ContactSettings[]; settingsAt?: number };
 
 /**
  * What an unlocked file needs to save settings again (no passphrase, no readable private keys), plus the key for

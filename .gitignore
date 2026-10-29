@@ -6,27 +6,12 @@ relay-web/.next/
 relay-web/out/
 relay-web/node_modules/
 relay-web/*.tsbuildinfo
-# Holds your private keys: never commit it
+# Old (pre-phase-4) identity files held private keys: never commit them
 relay-web/public/identity/*.bin
-
-# Mobile build artifacts (covered by relay-mobile/ios/.gitignore but listed here for clarity)
-relay-mobile/node_modules/
-relay-mobile/ios/App/App/public/
-relay-mobile/ios/App/Pods/
-relay-mobile/ios/App/build/
-relay-mobile/ios/App/output/
-relay-mobile/ios/DerivedData/
-relay-mobile/ios/xcuserdata/
-relay-mobile/ios/App/App.xcodeproj/xcuserdata/
-relay-mobile/ios/App/App.xcodeproj/project.xcworkspace/xcuserdata/
-relay-mobile/ios/App/CapApp-SPM/.swiftpm/xcode/xcuserdata/
-relay-mobile/ios/App/App/capacitor.config.json
-relay-mobile/ios/App/App/config.xml
+# Identity files from the folder you picked, if you picked one inside the repo
+*.relayid
 
 # Server
 relay-server/.env
 relay-server/node_modules/
 relay-server/identities/
-
-# Generated
-*.ipa

@@ -4,6 +4,7 @@ import { useRef, useEffect, useMemo, useState, useCallback } from "react";
 import { useCall } from "@/context/CallContext";
 import { useIdentity } from "@/context/IdentityContext";
 import { getParticipantSources, type ParticipantSource } from "@/lib/callUtils";
+import { AbsentMembers } from "@/components/AbsentMembers";
 
 const VOLUME_MIN = 0;
 const VOLUME_MAX = 100;
@@ -284,6 +285,7 @@ export function InlineCallView({ onHangUp }: { onHangUp?: () => void }) {
           ))}
         </div>
       )}
+      <AbsentMembers />
 
       {/* Call controls — always visible so mobile users are not stuck without controls */}
       <div

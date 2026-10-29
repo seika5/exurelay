@@ -13,6 +13,10 @@ import {
   readEnrollmentCode,
   signRecord,
   verifyDepartures,
+  verifyDevices,
+  directoryWithAdmins,
+  deviceCert,
+  deviceRevoke,
   verifyDirectory,
   verifyProfiles,
   ENROLLMENT_CODE_TTL_MS,
@@ -128,5 +132,50 @@ describe("departures", () => {
     expect(next.members.map((m) => m.keyHash)).toEqual([admin.entry.keyHash, b.entry.keyHash]);
     expect(next.removed).toEqual([{ keyHash: a.entry.keyHash, removedAt: 5 }]);
     expect(next.admins).toEqual([admin.entry.sig]);
+  });
+});
+
+describe("linked devices", () => {
+  it("accepts certificate chains from the member's devices, ignores forgeries, and applies unlinks", async () => {
+    const [ana, laptop, phone, mallory] = await Promise.all([newMember(), newMember(), newMember(), newMember()]);
+    const req = (m: typeof ana) => ({ type: "relay-enroll" as const, ecdh: m.entry.ecdh, sig: m.entry.sig, name: "x", ts: 1 });
+    // Ana's enrolled device certifies the laptop; the laptop certifies the phone.
+    const laptopCert = await signRecord(ana.signing.privateKey, deviceCert(ana.entry.keyHash, req(laptop), "Laptop", ana.entry.sig, 2));
+    const phoneCert = await signRecord(laptop.signing.privateKey, deviceCert(ana.entry.keyHash, req(phone), "Phone", laptop.entry.sig, 3));
+    // Mallory (not Ana's device) tries to add her key to Ana's account, claiming Ana signed it.
+    const forged = await signRecord(mallory.signing.privateKey, deviceCert(ana.entry.keyHash, req(mallory), "Evil", ana.entry.sig, 4));
+
+    const devices = await verifyDevices([phoneCert, forged, laptopCert], [], [ana.entry]);
+    expect(devices.get(ana.entry.keyHash)!.map((d) => d.name || "enrolled")).toEqual(["enrolled", "Laptop", "Phone"]);
+
+    // The phone unlinks the laptop; a revocation signed by a stranger is ignored.
+    const unlink = await signRecord(phone.signing.privateKey, deviceRevoke(ana.entry.keyHash, laptop.entry.keyHash, phone.entry.sig, 5));
+    const bogus = await signRecord(mallory.signing.privateKey, deviceRevoke(ana.entry.keyHash, phone.entry.keyHash, mallory.entry.sig, 5));
+    const revoked = new Set<string>();
+    const after = await verifyDevices([laptopCert, phoneCert], [unlink, bogus], [ana.entry], revoked);
+    expect(after.get(ana.entry.keyHash)!.map((d) => d.name || "enrolled")).toEqual(["enrolled", "Phone"]);
+    // The laptop can tell it was unlinked; the bogus unlink of the phone doesn't count.
+    expect([...revoked]).toEqual([laptop.entry.keyHash]);
+  });
+});
+
+describe("admin devices", () => {
+  it("move admin to a linked device, and drop it when that member is removed", async () => {
+    const [ana, laptop, bob] = await Promise.all([newMember(), newMember(), newMember()]);
+    const devices = new Map([
+      [ana.entry.keyHash, [
+        { keyHash: ana.entry.keyHash, ecdh: ana.entry.ecdh, sig: ana.entry.sig, name: "", addedAt: 1, primary: true },
+        { keyHash: laptop.entry.keyHash, ecdh: laptop.entry.ecdh, sig: laptop.entry.sig, name: "Laptop", addedAt: 2, primary: false },
+      ]],
+    ]);
+    const d = { type: "relay-directory" as const, version: 3, issuedAt: 1, signer: ana.entry.sig, members: [ana.entry, bob.entry], removed: [], admins: [ana.entry.sig, bob.entry.sig] };
+
+    const moved = directoryWithAdmins(d, ana.entry.sig, [laptop.entry.sig, bob.entry.sig], 5, devices);
+    expect(moved.admins).toEqual([laptop.entry.sig, bob.entry.sig]);
+    // Without knowing Ana's devices, the laptop's key isn't a member's and is dropped.
+    expect(directoryWithAdmins(d, ana.entry.sig, [laptop.entry.sig, bob.entry.sig], 5).admins).toEqual([bob.entry.sig]);
+
+    const withoutAna = directoryWithoutMembers({ ...moved, signer: bob.entry.sig }, bob.entry.sig, [ana.entry.keyHash], 6, devices);
+    expect(withoutAna.admins).toEqual([bob.entry.sig]);
   });
 });

@@ -5,7 +5,7 @@ import { ApiError, getBlobsSince, postBlobs } from "@/lib/api";
 import { createSocket } from "@/lib/socket";
 import { checkPeerIssuer, currentIssuerId, RateLimitError } from "@/lib/tokens";
 import { decodeMessage, encodeMessage, type DecryptedMessage } from "@/lib/blobPayload";
-import type { Contact } from "@/lib/keystore";
+import type { Contact, ContactSettings } from "@/lib/keystore";
 import { BATCH, Opener, sealSend, DEFAULT_BLOB_SIZE, DEFAULT_DECOYS, type Opened } from "@/lib/sealed";
 import {
   DEFAULT_RETENTION_DAYS,
@@ -112,11 +112,21 @@ export function messageBelongsToConversation(
 }
 
 export function useMessages(
-  identity: { keyPair: CryptoKeyPair; keyHash: string; publicKeyBase64: string; contacts: Contact[] } | null,
+  /** keyHash is the member I am; deviceKeyHash and keyPair are this device's (linked devices, DESIGN.md §4). */
+  identity: {
+    keyPair: CryptoKeyPair;
+    keyHash: string;
+    deviceKeyHash: string;
+    publicKeyBase64: string;
+    contacts: Contact[];
+    myDevices: { keyHash: string; ecdh: string }[];
+  } | null,
   /** From the admin-signed directory (blobSettings in signed.ts). */
   blobs: { blobSize: number; decoys: number } = { blobSize: DEFAULT_BLOB_SIZE, decoys: DEFAULT_DECOYS },
   /** The local cache key (IdentityContext), or null to keep nothing between launches. */
-  cacheKey: CryptoKey | null = null
+  cacheKey: CryptoKey | null = null,
+  /** Name and contact settings synced from another of my devices. */
+  onDeviceSync?: (sync: { myName: string; contactSettings: ContactSettings[]; settingsAt: number }) => void
 ) {
   const [receivedMessages, setReceivedMessages] = useState<DecryptedMessage[]>([]);
   // Sync state for this identity: where we are on the server, the trial decrypter, and what we've kept, by messageId.
@@ -133,6 +143,8 @@ export function useMessages(
   const [readMarks, setReadMarks] = useState<Record<string, number>>({});
   const syncing = useRef<Promise<void> | null>(null);
   const syncAgain = useRef(false);
+  /** Settings syncs between my devices seen this session (never shown, never cached). */
+  const syncedIds = useRef(new Set<string>());
   const [outbox, setOutboxState] = useState<OutboxEntry[]>([]);
   // The queue worker reads the outbox outside React renders, so keep the latest copy in a ref too.
   const outboxRef = useRef<OutboxEntry[]>([]);
@@ -157,6 +169,7 @@ export function useMessages(
   const messages = useMemo(() => {
     const list: ShownMessage[] = [...receivedMessages];
     for (const o of outbox) {
+      if (o.message.type === "device_sync") continue;
       if (!receivedMessages.some((m) => outboxMatch(m, o.message))) list.push({ ...o.message, outbox: { id: o.id, status: o.status } });
     }
     list.sort((a, b) => a.sentAt - b.sentAt);
@@ -178,16 +191,34 @@ export function useMessages(
   const syncOnce = useCallback(async () => {
     if (!identity) return;
     await cacheLoaded.current;
-    // Only contacts and ourselves can be senders: the opener tries each one's tag on every blob.
-    const members = new Map(identity.contacts.map((c) => [c.keyHash, c.publicKey]));
-    members.set(identity.keyHash, identity.publicKeyBase64);
-    opener.current ??= new Opener(identity.keyPair, identity.keyHash);
+    // Every device of every contact, and of mine, can be a sender: the opener tries each one's tag on every blob.
+    const senders = new Map<string, string>();
+    const memberOf = new Map<string, string>();
+    for (const c of identity.contacts) {
+      for (const d of c.devices) {
+        senders.set(d.keyHash, d.publicKey);
+        memberOf.set(d.keyHash, c.keyHash);
+      }
+    }
+    for (const d of identity.myDevices) {
+      senders.set(d.keyHash, d.ecdh);
+      memberOf.set(d.keyHash, identity.keyHash);
+    }
+    senders.set(identity.deviceKeyHash, identity.publicKeyBase64);
+    memberOf.set(identity.deviceKeyHash, identity.keyHash);
+    opener.current ??= new Opener(identity.keyPair, identity.deviceKeyHash);
     const fresh: CachedMessage[] = [];
     const keep = (opened: Opened) => {
       try {
         const msg = decodeMessage(new TextDecoder().decode(opened.payload));
-        // The slot proved who sent it; the message must say the same.
-        if (typeof msg.messageId !== "string" || msg.senderKeyHash !== opened.senderKeyHash) return;
+        // The slot proved which device sent it; the message must name that device's member.
+        if (typeof msg.messageId !== "string" || msg.senderKeyHash !== memberOf.get(opened.senderKeyHash)) return;
+        if (msg.type === "device_sync") {
+          // From another of my devices: apply it, never show it.
+          if (msg.senderKeyHash === identity.keyHash) onDeviceSync?.(msg);
+          syncedIds.current.add(msg.messageId);
+          return;
+        }
         if (!received.current.has(msg.messageId)) {
           const item = { message: msg, expiresAt: opened.expiresAt };
           received.current.set(msg.messageId, item);
@@ -198,7 +229,7 @@ export function useMessages(
       }
     };
     // A member we've only just learned about may have sent something we already passed over.
-    (await opener.current.setMembers(members)).forEach(keep);
+    (await opener.current.setMembers(senders)).forEach(keep);
     const from = cursor.current;
     for (let more = true; more; ) {
       const page = await getBlobsSince(cursor.current);
@@ -221,14 +252,16 @@ export function useMessages(
         await saveMeta(owner, cacheKey, { cursor: savedCursor.current, read: readRef.current });
       }
     }
+    // Our self-copy is back: those messages no longer need the outbox.
+    setOutbox((box) =>
+      box.filter((o) => o.status !== "sent" || !(received.current.has(o.message.messageId) || syncedIds.current.has(o.message.messageId)))
+    );
     if (fresh.length === 0) return;
     await publish();
-    // Our self-copy is back: those messages no longer need the outbox.
-    setOutbox((box) => box.filter((o) => o.status !== "sent" || !received.current.has(o.message.messageId)));
     // Cross-check the token keys other members are using (see tokens.ts).
     const issuers = new Set(fresh.map((c) => c.message).filter((m) => m.senderKeyHash !== identity.keyHash && m.issuer).map((m) => m.issuer!));
     for (const id of issuers) checkPeerIssuer(id).catch(() => {});
-  }, [identity, setOutbox, owner, cacheKey, publish]);
+  }, [identity, setOutbox, owner, cacheKey, publish, onDeviceSync]);
 
   /** One sync at a time; a ping during a sync runs one more afterwards. */
   const loadBlobs = useCallback(async () => {
@@ -276,8 +309,13 @@ export function useMessages(
     };
   }, [identity?.keyHash, loadBlobs]);
 
-  // A new member in the list: their recent sends may be among the blobs the opener couldn't place yet.
-  const memberKey = identity?.contacts.map((c) => c.keyHash).sort().join(",");
+  // A new member or device in the list: their recent sends may be among the blobs the opener couldn't place yet.
+  const memberKey = [
+    ...(identity?.contacts.flatMap((c) => c.devices.map((d) => d.keyHash)) ?? []),
+    ...(identity?.myDevices.map((d) => d.keyHash) ?? []),
+  ]
+    .sort()
+    .join(",");
   useEffect(() => {
     if (opener.current) loadBlobs();
   }, [memberKey, loadBlobs]);
@@ -373,16 +411,20 @@ export function useMessages(
       let posted = 0;
       const post = async () => {
         if (!prepared) {
+          // A slot for every device of every recipient, and for every device of mine (the self-copy and sync).
           const recipients = recipientKeyHashes
             .map((k) => contactByKeyHash.get(k))
             .filter((c): c is Contact => !!c)
-            .map((c) => ({ keyHash: c.keyHash, publicKey: c.publicKey }));
+            .flatMap((c) => c.devices);
+          const mine = [
+            { keyHash: identity.deviceKeyHash, publicKey: identity.publicKeyBase64 },
+            ...identity.myDevices.filter((d) => d.keyHash !== identity.deviceKeyHash).map((d) => ({ keyHash: d.keyHash, publicKey: d.ecdh })),
+          ];
           const sealed = { ...fullMessage, issuer: await currentIssuerId() };
-          // One encryption for everyone: a slot per recipient, plus one for our own key (the self-copy).
           prepared = await sealSend({
             senderKeyPair: identity.keyPair,
-            senderKeyHash: identity.keyHash,
-            recipients: [...recipients, { keyHash: identity.keyHash, publicKey: identity.publicKeyBase64 }],
+            senderKeyHash: identity.deviceKeyHash,
+            recipients: [...recipients, ...mine],
             payload: new TextEncoder().encode(encodeMessage(sealed)),
             blobSize: blobs.blobSize,
             maxDecoys: blobs.decoys,
@@ -415,6 +457,7 @@ export function useMessages(
     cursor.current = "0";
     opener.current = null;
     received.current = new Map();
+    syncedIds.current = new Set();
     savedCursor.current = "0";
     readRef.current = {};
     setReadMarks({});

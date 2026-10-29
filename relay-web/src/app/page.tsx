@@ -1,9 +1,6 @@
 "use client";
 
 import { useState, useMemo, useEffect, useRef, useCallback } from "react";
-import { Capacitor } from "@capacitor/core";
-import { Filesystem, Directory } from "@capacitor/filesystem";
-import { Share } from "@capacitor/share";
 import { useIdentity } from "@/context/IdentityContext";
 import { useCall } from "@/context/CallContext";
 import { CompactCallTile } from "@/components/CallTile";
@@ -12,6 +9,7 @@ import { RemoteCallAudio } from "@/components/RemoteCallAudio";
 import { CreateIdentity, JoinServer, NotEnrolled, UnlockIdentity } from "@/components/Onboarding";
 import { TokenWarning } from "@/components/TokenWarning";
 import { SettingsModal } from "@/components/SettingsModal";
+import { InstallFirst, useInstallFirst } from "@/components/AppShell";
 import { ServerSwitcher } from "@/components/ServerSwitcher";
 import {
   useMessages,
@@ -19,10 +17,13 @@ import {
   conversationId,
   messageBelongsToConversation,
 } from "@/lib/useMessages";
-import { getRoomIdForConversation } from "@/lib/callRoom";
+import { activeCallRoom, newRoomId } from "@/lib/callRoom";
 import type { DecryptedMessage } from "@/lib/blobPayload";
 import { blobSettings } from "@/lib/signed";
 import { activeMentionQuery, encodeDraft, mentionsMe, EVERYONE, type PickedMention } from "@/lib/mentions";
+import { sendPushes } from "@/lib/push";
+import { usePlugins } from "@/context/PluginContext";
+import { PluginMessage } from "@/components/PluginMessage";
 import { MentionPicker, MessageText, type MentionCandidate } from "@/components/Mentions";
 
 const GROUP_BREAK_MS = 10 * 60 * 1000;
@@ -126,22 +127,11 @@ function safeFilename(name: string): string {
 }
 
 /**
- * Download / share a file received as a base64 blob.
- * - Native (Capacitor): writes to cache then opens the iOS share sheet.
- * - Web: creates an object URL, clicks a temporary anchor, then cleans up.
+ * Save a file received as a base64 blob: an object URL clicked as a download (on iOS this opens the preview, where
+ * Share saves it).
  */
 async function downloadFile(base64Body: string, rawFilename: string): Promise<void> {
   const filename = safeFilename(rawFilename);
-  if (Capacitor.isNativePlatform()) {
-    await Filesystem.writeFile({
-      path: filename,
-      data: base64Body,
-      directory: Directory.Cache,
-    });
-    const { uri } = await Filesystem.getUri({ path: filename, directory: Directory.Cache });
-    await Share.share({ url: uri });
-    return;
-  }
   const bin = Uint8Array.from(atob(base64Body), (c) => c.charCodeAt(0));
   const blob = new Blob([bin], { type: getMimeType(filename) });
   const url = URL.createObjectURL(blob);
@@ -163,22 +153,42 @@ export default function Home() {
 function Chat() {
   const {
     identity, loading, needsSetup, lockedFile, enrolled, directory, directoryLoaded, error: identityError, server, cacheKey,
+    applyDeviceSync, settingsChangedAt,
     getDisplayName, getMyDisplayName, setDisplayName, getMember, isRemoved,
   } = useIdentity();
   const {
     inCall, callExpanded, muted, deafened, cameraOn, screenSharing,
     currentCallConversation, setMuted, setDeafened, setCameraOn,
     setScreenSharing, hangUp, setCurrentCallConversation, setCallExpanded,
-    startOrJoinCall, roomJoinError, dismissRoomJoinError,
+    startOrJoinCall, roomJoinError, dismissRoomJoinError, roomId: currentRoomId, setNotifyMember,
   } = useCall();
   // Messages need a login, which needs membership: nothing is fetched until we're enrolled on a server.
   // Wait for the cache key too, so the first sync resumes from the cached cursor instead of starting over.
   const { messages, conversations, sendMessage, retrySend, cancelSend, storage, readMarks, markRead, error } = useMessages(
     enrolled && server && cacheKey !== undefined ? identity : null,
     useMemo(() => blobSettings(directory), [directory]),
-    cacheKey ?? null
+    cacheKey ?? null,
+    applyDeviceSync
   );
 
+  // My name or contact settings changed here (or a device was just linked): send them to my other devices.
+  useEffect(() => {
+    if (!settingsChangedAt || !identity || identity.myDevices.length < 2) return;
+    sendMessage(
+      {
+        type: "device_sync",
+        myName: identity.myName,
+        contactSettings: identity.contactSettings,
+        settingsAt: identity.settingsAt ?? settingsChangedAt,
+      } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
+      []
+    );
+    // Only on a change here, not whenever the identity object changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settingsChangedAt, identity?.myDevices.length]);
+
+  const installFirst = useInstallFirst();
+  const { runtime: plugins, setSendHandler } = usePlugins();
   const [selected, setSelected] = useState<Conversation | null>(null);
   // On mobile: controls whether the sidebar or the chat panel is visible.
   // On desktop (md+) both are always visible, so this is ignored.
@@ -199,7 +209,6 @@ function Chat() {
   const [addingServer, setAddingServer] = useState(false);
   const [groupRenameModal, setGroupRenameModal] = useState<Conversation | null>(null);
   const [groupRenameValue, setGroupRenameValue] = useState("");
-  const [callRoomId, setCallRoomId] = useState<string | null>(null);
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [keyboardVisible, setKeyboardVisible] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -233,19 +242,13 @@ function Chat() {
       r.readAsDataURL(file);
     });
 
-  useEffect(() => {
-    if (!selected || !identity) { setCallRoomId(null); return; }
-    let cancelled = false;
-    getRoomIdForConversation(selected, identity.keyHash).then((id) => {
-      if (!cancelled) setCallRoomId(id);
-    });
-    return () => { cancelled = true; };
-  }, [selected, identity?.keyHash]);
-
   const filteredMessages = useMemo(() => {
     if (!selected || !identity) return [];
     return messages.filter((m) => messageBelongsToConversation(m, selected, identity.keyHash));
   }, [messages, selected, identity?.keyHash]);
+
+  /** The room of this conversation's ongoing call, if any (random, announced in the encrypted "started" message). */
+  const ongoingRoom = useMemo(() => activeCallRoom(filteredMessages), [filteredMessages]);
 
   /** Display name for a member as this viewer knows them. */
   const nameFor = useCallback(
@@ -353,6 +356,66 @@ function Chat() {
     });
   }, [identity?.contacts, keyHashesWithDm, getDisplayName]);
 
+  /** Pushes for a message's mentions (DESIGN.md §9): each mentioned member's devices; @everyone, every member's. */
+  const notifyMentions = async (mentions: string[], recipients: string[]) => {
+    if (!identity || !selected) return;
+    const everyone = mentions.includes(EVERYONE);
+    const targets = everyone ? recipients : mentions.filter((k) => k !== EVERYONE && recipients.includes(k));
+    const devices = targets.flatMap((k) => identity.contacts.find((c) => c.keyHash === k)?.devices ?? []);
+    const group = selected.type === "group" ? groupNamesFromMessages.get(conversationId(selected, identity.keyHash)) : undefined;
+    await sendPushes(everyone ? "everyone" : "mention", identity, devices, { member: identity.keyHash, group });
+  };
+
+  // The call's Notify button: ring one member's devices (rate-limited per person by the server).
+  useEffect(() => {
+    if (!identity) return setNotifyMember(null);
+    setNotifyMember(async (k: string) => {
+      const devices = identity.contacts.find((c) => c.keyHash === k)?.devices ?? [];
+      const conv = currentCallConversation;
+      const group =
+        conv?.type === "group" ? groupNamesFromMessages.get(conversationId(conv, identity.keyHash)) ?? "a group call" : undefined;
+      const r = await sendPushes("ring", identity, devices, { member: identity.keyHash, group });
+      if (r.limited && !r.sent) throw new Error("Rung recently; try again shortly");
+      if (!r.sent) throw new Error("They haven't turned on notifications");
+    });
+    return () => setNotifyMember(null);
+  }, [identity, currentCallConversation, groupNamesFromMessages, setNotifyMember]);
+
+  // A plugin asks to send one of its message types: to the open conversation, only if you say yes.
+  useEffect(() => {
+    setSendHandler((req) => {
+      if (!identity || !selected) return;
+      if (!window.confirm(`${req.plugin.name} wants to send in this conversation:\n\n"${req.fallback}"\n\nSend it?`)) return;
+      const base = { type: "plugin", pluginType: req.messageType, data: req.data, fallback: req.fallback };
+      if (selected.type === "dm") {
+        sendMessage(base as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">, [selected.otherKeyHash], {
+          recipientKeyHash: selected.otherKeyHash,
+        });
+      } else {
+        sendMessage(
+          { ...base, groupMemberKeyHashes: selected.memberKeyHashes } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
+          selected.memberKeyHashes.filter((k) => k !== identity.keyHash)
+        );
+      }
+    });
+    return () => setSendHandler(null);
+  }, [identity, selected, sendMessage, setSendHandler]);
+
+  // Plugins may read (not change) messages as they arrive in the open conversation.
+  const lastToPlugins = useRef<string | null>(null);
+  useEffect(() => {
+    const last = filteredMessages[filteredMessages.length - 1];
+    if (!plugins || !identity || !last || last.outbox || last.messageId === lastToPlugins.current) return;
+    lastToPlugins.current = last.messageId;
+    if (last.type !== "text" && last.type !== "plugin") return;
+    plugins.notifyMessage({
+      type: last.type === "plugin" ? last.pluginType : "text",
+      body: last.type === "text" ? last.body : undefined,
+      sender: nameFor(last.senderKeyHash),
+      mine: last.senderKeyHash === identity.keyHash,
+    });
+  }, [filteredMessages, plugins, identity, nameFor]);
+
   const handleSend = async () => {
     if (!identity || (!input.trim() && pendingFiles.length === 0)) return;
     const recipients =
@@ -363,7 +426,9 @@ function Chat() {
           : [];
 
     // The composer clears at once; the message shows faded until the server has it (see useMessages' outbox).
-    const { body: text, mentions } = encodeDraft(input.trim(), picked);
+    // Plugins that asked may change the text first (sandboxed; at most 0.5 s each).
+    const draft = plugins && input.trim() ? await plugins.beforeSend(input.trim()) : input.trim();
+    const { body: text, mentions } = encodeDraft(draft, picked);
     const files = pendingFiles;
     setInput("");
     setPicked([]);
@@ -384,6 +449,7 @@ function Chat() {
           recipients
         );
       }
+      if (sentMentions) notifyMentions(sentMentions, recipients).catch(() => {});
     }
 
     for (const file of files) {
@@ -420,8 +486,10 @@ function Chat() {
   };
 
   const handleStartCall = async () => {
-    if (!identity || !selected || !callRoomId) return;
+    if (!identity || !selected) return;
     setCurrentCallConversation(selected);
+    // Join the ongoing call, or start one in a fresh random room.
+    const callRoomId = ongoingRoom ?? newRoomId();
     const allowedKeyHashes =
       selected.type === "dm"
         ? [identity.keyHash, selected.otherKeyHash].sort()
@@ -430,13 +498,13 @@ function Chat() {
       if (!selected || !identity) return;
       if (selected.type === "dm") {
         await sendMessage(
-          { type: "call_event", event: "started", recipientKeyHash: selected.otherKeyHash } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
+          { type: "call_event", event: "started", recipientKeyHash: selected.otherKeyHash, roomId: callRoomId } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
           [selected.otherKeyHash],
           { recipientKeyHash: selected.otherKeyHash }
         );
       } else {
         await sendMessage(
-          { type: "call_event", event: "started", groupMemberKeyHashes: selected.memberKeyHashes } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
+          { type: "call_event", event: "started", groupMemberKeyHashes: selected.memberKeyHashes, roomId: callRoomId } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
           selected.memberKeyHashes.filter((k) => k !== identity.keyHash)
         );
       }
@@ -446,7 +514,7 @@ function Chat() {
 
   const handleHangUp = async () => {
     const conv = currentCallConversation;
-    const wasLast = await hangUp(callRoomId ?? undefined);
+    const wasLast = await hangUp(currentRoomId || undefined);
     if (wasLast && identity && conv) {
       if (conv.type === "dm") {
         await sendMessage(
@@ -466,6 +534,9 @@ function Chat() {
   /** A DM partner who is no longer in the member directory (removed, or re-enrolled with a new key). */
   const isInactive = (conv: Conversation | null) => conv?.type === "dm" && directoryLoaded && !getMember(conv.otherKeyHash);
   const selectedInactive = isInactive(selected);
+
+  // On a phone, set up only inside the installed app (its storage is separate from the browser tab's).
+  if (installFirst && !loading && (!server || needsSetup)) return <InstallFirst />;
 
   // Server first: each server has its own identity.
   if (!loading && (!server || addingServer)) return <JoinServer onClose={server ? () => setAddingServer(false) : undefined} />;
@@ -732,13 +803,13 @@ function Chat() {
               <span className="flex-1 text-sm font-medium truncate">
                 {conversationLabel(selected, identity.keyHash, getDisplayName, groupNamesFromMessages)}
               </span>
-              {callRoomId && !inCall && !selectedInactive && (
+              {!inCall && !selectedInactive && (
                 <button
                   type="button"
                   onClick={handleStartCall}
                   className="py-1.5 px-3 rounded text-sm bg-[var(--accent)] text-white font-medium hover:opacity-90 flex-shrink-0"
                 >
-                  Call
+                  {ongoingRoom ? "Join call" : "Call"}
                 </button>
               )}
             </div>
@@ -821,6 +892,15 @@ function Chat() {
                         </span>
                       )}
                       {m.type === "contact" && <span className="text-[var(--muted)]">[Contact]</span>}
+                      {m.type === "plugin" && (
+                        <PluginMessage
+                          type={m.pluginType}
+                          data={m.data}
+                          fallback={m.fallback}
+                          mine={m.senderKeyHash === identity.keyHash}
+                          sender={nameFor(m.senderKeyHash)}
+                        />
+                      )}
                     </div>
                     {m.outbox?.status === "failed" && (
                       <div className="flex items-center gap-1 text-xs text-red-500">
@@ -882,7 +962,7 @@ function Chat() {
               <MentionPicker candidates={mentionCandidates} active={mentionActive} onPick={pickMention} />
               <div className="flex gap-2">
                 {/*
-                  sr-only keeps the input in the DOM (not display:none) so iOS WKWebView
+                  sr-only keeps the input in the DOM (not display:none) so iOS Safari
                   recognises the label click as a real user gesture and opens the file picker.
                 */}
                 <input

@@ -6,6 +6,8 @@
  * Room authorization: only key hashes in the room's allowed set can join, and they must be members.
  */
 const roomAllowedKeyHashes = new Map(); // roomId -> Set(keyHash)
+/** An SDP with many candidates, base64 and encrypted, fits well inside this. */
+const MAX_SEALED_SIGNAL = 64 * 1024;
 
 function emitRoomJoinError(socket, message = "Not allowed to join this call.") {
   socket.emit("room_join_error", { message });
@@ -17,15 +19,20 @@ export function registerSocketHandlers(io, prisma, auth) {
       const session = auth.getSession(socket.handshake?.auth?.session);
       if (!session) return next(new Error("unauthorized"));
       socket.data = socket.data || {};
+      // keyHash: this device; member: whose device it is (the same for a member's enrolled key).
       socket.data.keyHash = session.keyHash;
+      socket.data.member = session.member ?? session.keyHash;
       next();
     });
   }
 
   io.on("connection", (socket) => {
+    // Signals are sealed end to end (relay-web/src/lib/callSignal.ts): the server only routes the opaque envelope
+    // and says which logged-in member sent it, so the receiver knows whose key should open it.
     socket.on("signal", (payload) => {
-      const { to, ...data } = payload;
-      if (!to) return;
+      const to = payload?.to;
+      const sealed = payload?.sealed;
+      if (!to || typeof sealed !== "string" || sealed.length > MAX_SEALED_SIGNAL) return;
       const targetSocket = io.sockets.sockets.get(to);
       if (!targetSocket) return;
       // Only relay if sender and target share a call room
@@ -34,31 +41,29 @@ export function registerSocketHandlers(io, prisma, auth) {
         (r) => r !== to && r !== socket.id && senderRooms.has(r)
       );
       if (!shared) return;
-      io.to(to).emit("signal", { from: socket.id, ...data });
+      io.to(to).emit("signal", {
+        from: socket.id,
+        fromKeyHash: socket.data?.member ?? null,
+        fromDevice: socket.data?.keyHash ?? null,
+        sealed,
+      });
     });
 
+    // The member comes from the login session (a linked device joins as its member); the client's claim must match.
     socket.on("join_room", async (roomId, keyHash, allowedKeyHashes) => {
       try {
         if (!roomId) return;
-        keyHash = keyHash || null;
+        const member = socket.data?.member ?? keyHash ?? null;
         if (!Array.isArray(allowedKeyHashes) || allowedKeyHashes.length === 0) {
           emitRoomJoinError(socket);
           return;
         }
-        const normalized = allowedKeyHashes
-          .filter((k) => typeof k === "string" && k.trim())
-          .slice(0, 100);
-        if (socket.data?.keyHash && keyHash !== socket.data.keyHash) {
+        const normalized = allowedKeyHashes.filter((k) => typeof k === "string" && k.trim()).slice(0, 100);
+        if (!member || (keyHash && keyHash !== member) || !normalized.includes(member)) {
           emitRoomJoinError(socket);
           return;
         }
-        if (normalized.length === 0 || !keyHash || !normalized.includes(keyHash)) {
-          emitRoomJoinError(socket);
-          return;
-        }
-        // DB-validate that the joining keyHash is an enrolled member
-        const dbAllowed = await prisma.member.findUnique({ where: { keyHash } });
-        if (!dbAllowed) {
+        if (!(await prisma.member.findUnique({ where: { keyHash: member } }))) {
           emitRoomJoinError(socket);
           return;
         }
@@ -67,21 +72,20 @@ export function registerSocketHandlers(io, prisma, auth) {
           set = new Set(normalized);
           roomAllowedKeyHashes.set(roomId, set);
         }
-        if (!set.has(keyHash)) {
+        if (!set.has(member)) {
           emitRoomJoinError(socket);
           return;
         }
         socket.data = socket.data || {};
-        socket.data.keyHash = keyHash;
+        socket.data.member = member;
+        socket.data.keyHash = socket.data.keyHash ?? member;
         socket.join(roomId);
         const room = io.sockets.adapter.rooms.get(roomId);
-        const memberIds = room ? Array.from(room).filter((id) => id !== socket.id) : [];
-        const members = memberIds.map((id) => {
-          const s = io.sockets.sockets.get(id);
-          return { id, keyHash: s?.data?.keyHash ?? null };
-        });
-        socket.emit("members", members);
-        socket.to(roomId).emit("peer_joined", { id: socket.id, keyHash: socket.data.keyHash ?? null });
+        const others = room ? Array.from(room).filter((id) => id !== socket.id) : [];
+        // keyHash: the member (for names and tiles); device: the device's own key (for sealing signals to it).
+        const describe = (s, id) => ({ id, keyHash: s?.data?.member ?? null, device: s?.data?.keyHash ?? null });
+        socket.emit("members", others.map((id) => describe(io.sockets.sockets.get(id), id)));
+        socket.to(roomId).emit("peer_joined", describe(socket, socket.id));
       } catch (e) {
         console.error("join_room error:", e?.message);
       }
@@ -112,6 +116,6 @@ export function registerSocketHandlers(io, prisma, auth) {
 export function disconnectKeyHashes(io, keyHashes) {
   const gone = new Set(keyHashes);
   for (const s of io.sockets.sockets.values()) {
-    if (gone.has(s.data?.keyHash)) s.disconnect(true);
+    if (gone.has(s.data?.keyHash) || gone.has(s.data?.member)) s.disconnect(true);
   }
 }

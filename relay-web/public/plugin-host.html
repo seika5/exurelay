@@ -1,0 +1,111 @@
+<!doctype html>
+<!--
+  Relay plugin host (DESIGN.md §9 "Plugins"). Loaded in a sandboxed iframe (allow-scripts only), so it runs with an
+  opaque origin: no access to the app's storage, keys or cookies. This page's own CSP allows no network at all, and
+  allows eval only here, so the plugin's code (sent by the app over postMessage) can run but can't phone home.
+  The script below is allowed by its SHA-256: change it and update the hash (plugins.test.ts checks they match).
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-6HkhBljqpeq6Ilm1iFgkoFbdSZentAIboqUG7sfGm+k=' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data:" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      html, body { margin: 0; font: 14px system-ui, sans-serif; background: transparent; color: #e7e7ea; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <!-- Inline, allowed by its hash: in a sandboxed (opaque-origin) page 'self' matches nothing. -->
+    <script>
+/**
+ * Runs one plugin inside the sandboxed host page (plugin-host.html) and gives it the `relay` API, version 1.
+ * Everything goes through postMessage to the app (the parent window), which checks each request.
+ *
+ * Plugin code is an ES5/ES2017 script that receives `relay`:
+ *   relay.setTheme({ "--accent": "#ff6600" })              // core validates names and colors
+ *   relay.registerMessageType("x-dice/roll", { render(data) { return "rolled " + data.n } })
+ *   relay.send("x-dice/roll", { n: 4 }, "🎲 rolled 4")     // the app asks you before sending
+ *   relay.onBeforeSend(function (text) { return text })    // may change a text before it's sent
+ *   relay.onMessage(function (m) {})                       // read-only: messages in the open conversation
+ *   relay.root                                             // this page's <div id="root">, for the plugin's screen
+ */
+(function () {
+  "use strict";
+  var API = 1;
+  var parentOrigin = null;
+  var renderers = {};
+  var beforeSend = [];
+  var messageHandlers = [];
+
+  function post(msg) {
+    msg.relayPlugin = API;
+    parent.postMessage(msg, parentOrigin || "*");
+  }
+
+  var relay = {
+    api: API,
+    root: document.getElementById("root"),
+    setTheme: function (vars) {
+      post({ type: "theme", vars: vars });
+    },
+    registerMessageType: function (type, handlers) {
+      renderers[type] = handlers || {};
+      post({ type: "register", messageType: type });
+    },
+    send: function (messageType, data, fallback) {
+      post({ type: "send", messageType: messageType, data: data, fallback: String(fallback || "") });
+    },
+    onBeforeSend: function (fn) {
+      beforeSend.push(fn);
+      post({ type: "hook", hook: "beforeSend" });
+    },
+    onMessage: function (fn) {
+      messageHandlers.push(fn);
+    },
+  };
+
+  window.addEventListener("message", function (event) {
+    if (event.source !== parent) return;
+    var m = event.data;
+    if (!m || m.relayHost !== API) return;
+    if (m.type === "load") {
+      parentOrigin = m.origin;
+      try {
+        new Function("relay", m.source)(relay);
+        post({ type: "ready" });
+      } catch (e) {
+        post({ type: "error", error: String(e && e.message ? e.message : e) });
+      }
+    } else if (m.type === "render") {
+      var r = renderers[m.messageType];
+      var text = null;
+      try {
+        text = r && r.render ? String(r.render(m.data, m.context)) : null;
+      } catch (e) {
+        text = null;
+      }
+      post({ type: "rendered", id: m.id, text: text });
+    } else if (m.type === "beforeSend") {
+      var out = m.text;
+      try {
+        for (var i = 0; i < beforeSend.length; i++) {
+          var next = beforeSend[i](out);
+          if (typeof next === "string") out = next;
+        }
+      } catch (e) {
+        out = m.text;
+      }
+      post({ type: "beforeSendDone", id: m.id, text: out });
+    } else if (m.type === "message") {
+      messageHandlers.forEach(function (fn) {
+        try {
+          fn(m.message);
+        } catch (e) {}
+      });
+    }
+  });
+})();
+</script>
+  </body>
+</html>

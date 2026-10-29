@@ -132,3 +132,19 @@ describe("blob settings", () => {
     assert.strictEqual(blobSizeOf(undefined), DEFAULT_BLOB_SIZE);
   });
 });
+
+describe("admin devices", () => {
+  it("accepts a member's linked device as admin, but not a stranger's key", async () => {
+    const admin = await signingKeyPair();
+    const laptop = await signingKeyPair();
+    const stranger = await signingKeyPair();
+    const ecdh = await ecdhPub();
+    const member = { keyHash: keyHashOf(ecdh), ecdh, sig: admin.pub, enrolledAt: 1 };
+    const dir = (admins) =>
+      sign(admin.pair.privateKey, { type: "relay-directory", version: 2, issuedAt: 1, signer: admin.pub, members: [member], removed: [], admins });
+    const devicesOf = (k) => (k === member.keyHash ? [laptop.pub] : []);
+    assert.strictEqual((await validateDirectory(await dir([laptop.pub]), [admin.pub], 1, devicesOf)).ok, true);
+    assert.match((await validateDirectory(await dir([laptop.pub]), [admin.pub], 1)).error, /member or one of their devices/);
+    assert.match((await validateDirectory(await dir([stranger.pub]), [admin.pub], 1, devicesOf)).error, /member or one of their devices/);
+  });
+});
