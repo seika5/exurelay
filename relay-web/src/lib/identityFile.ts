@@ -31,8 +31,11 @@ export type IdentityKeys = {
 };
 export type IdentitySettings = { myName: string; contactSettings: ContactSettings[] };
 
-/** What an unlocked file needs to save settings again: no passphrase, no readable private keys. */
-export type FileSession = { header: Uint8Array; keysSection: Uint8Array; settingsKey: CryptoKey };
+/**
+ * What an unlocked file needs to save settings again (no passphrase, no readable private keys), plus the key for
+ * this identity's local message cache, which is derived from the passphrase so the cache can't be read without it.
+ */
+export type FileSession = { header: Uint8Array; keysSection: Uint8Array; settingsKey: CryptoKey; cacheKey: CryptoKey };
 
 export class WrongPassphraseError extends Error {
   constructor() {
@@ -73,7 +76,7 @@ async function deriveKeys(passphrase: string, salt: Uint8Array, iterations: numb
       false,
       ["encrypt", "decrypt"]
     );
-  return { keysKey: await key("relay-identity-keys"), settingsKey: await key("relay-identity-settings") };
+  return { keysKey: await key("relay-identity-keys"), settingsKey: await key("relay-identity-settings"), cacheKey: await key("relay-message-cache") };
 }
 
 async function seal(key: CryptoKey, plaintext: Uint8Array, additionalData: Uint8Array): Promise<Uint8Array> {
@@ -110,10 +113,10 @@ export async function createIdentityFile(
   if (passphrase.length < MIN_PASSPHRASE_LENGTH) throw new Error(`Use a passphrase of at least ${MIN_PASSPHRASE_LENGTH} characters.`);
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const header = concat(MAGIC, new Uint8Array([VERSION]), u32(iterations), salt);
-  const { keysKey, settingsKey } = await deriveKeys(passphrase, salt, iterations);
+  const { keysKey, settingsKey, cacheKey } = await deriveKeys(passphrase, salt, iterations);
   const keysSection = await seal(keysKey, enc(keys), aad(header, "keys"));
   const settingsSection = await seal(settingsKey, enc(settings), aad(header, "settings"));
-  return { bytes: concat(header, keysSection, settingsSection), session: { header, keysSection, settingsKey } };
+  return { bytes: concat(header, keysSection, settingsSection), session: { header, keysSection, settingsKey, cacheKey } };
 }
 
 /** Decrypt a file with its passphrase. Throws WrongPassphraseError if it's wrong (or the file was altered). */
@@ -129,12 +132,12 @@ export async function openIdentityFile(
   const iterations = new DataView(header.buffer).getUint32(MAGIC.length + 1);
   if (iterations < 100_000 || iterations > 10_000_000) throw new Error("This identity file is damaged.");
   const salt = header.slice(MAGIC.length + 5);
-  const { keysKey, settingsKey } = await deriveKeys(passphrase, salt, iterations);
+  const { keysKey, settingsKey, cacheKey } = await deriveKeys(passphrase, salt, iterations);
   const k = readSection(bytes, HEADER_LEN);
   const s = readSection(bytes, k.end);
   const keys = await open<IdentityKeys>(keysKey, k.iv, k.ct, aad(header, "keys"));
   const settings = await open<IdentitySettings>(settingsKey, s.iv, s.ct, aad(header, "settings"));
-  return { keys, settings, session: { header, keysSection: k.raw, settingsKey } };
+  return { keys, settings, session: { header, keysSection: k.raw, settingsKey, cacheKey } };
 }
 
 /** The same file with new settings; the keys section is copied unchanged. */

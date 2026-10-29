@@ -61,6 +61,15 @@ describe("identity file", () => {
     );
   });
 
+  it("derives the same cache key every time the file is unlocked", async () => {
+    const { bytes, session } = await createIdentityFile(await newKeys(), { myName: "Ana", contactSettings: [] }, PASS, ITER);
+    const iv = new Uint8Array(12);
+    const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, session.cacheKey, new TextEncoder().encode("cached"));
+    const reopened = await openIdentityFile(bytes, PASS);
+    const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, reopened.session.cacheKey, ct);
+    expect(new TextDecoder().decode(pt)).toBe("cached");
+  });
+
   it("the settings key kept in memory can't decrypt the keys section", async () => {
     const { session } = await createIdentityFile(await newKeys(), { myName: "Ana", contactSettings: [] }, PASS, ITER);
     const iv = session.keysSection.slice(0, 12);

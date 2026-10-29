@@ -214,6 +214,16 @@ export class Opener {
     return null;
   }
 
+  /** Seq of the oldest head still waiting for continuations, so a saved cursor never skips past it. */
+  oldestPendingSeq(): string | null {
+    let min: bigint | null = null;
+    for (const { p } of this.pending.values()) {
+      const s = BigInt(p.seq);
+      if (min === null || s < min) min = s;
+    }
+    return min === null ? null : min.toString();
+  }
+
   /** A continuation of a send we're waiting on: undefined if it isn't one. */
   private continue(blob: StoredBlob): Promise<Opened | null> | undefined {
     const waiting = this.pending.get(hex(blob.payload.subarray(0, TAG_LEN)));

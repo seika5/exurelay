@@ -160,7 +160,7 @@ export default function Home() {
 
 function Chat() {
   const {
-    identity, loading, needsSetup, lockedFile, enrolled, directory, directoryLoaded, error: identityError, server,
+    identity, loading, needsSetup, lockedFile, enrolled, directory, directoryLoaded, error: identityError, server, cacheKey,
     getDisplayName, getMyDisplayName, setDisplayName, getMember, isRemoved,
   } = useIdentity();
   const {
@@ -170,9 +170,11 @@ function Chat() {
     startOrJoinCall, roomJoinError, dismissRoomJoinError,
   } = useCall();
   // Messages need a login, which needs membership: nothing is fetched until we're enrolled on a server.
-  const { messages, conversations, sendMessage, retrySend, cancelSend, error } = useMessages(
-    enrolled && server ? identity : null,
-    useMemo(() => blobSettings(directory), [directory])
+  // Wait for the cache key too, so the first sync resumes from the cached cursor instead of starting over.
+  const { messages, conversations, sendMessage, retrySend, cancelSend, storage, error } = useMessages(
+    enrolled && server && cacheKey !== undefined ? identity : null,
+    useMemo(() => blobSettings(directory), [directory]),
+    cacheKey ?? null
   );
 
   const [selected, setSelected] = useState<Conversation | null>(null);
@@ -722,13 +724,17 @@ function Chat() {
                       {m.type === "file" && (
                         <span className="inline-flex items-center gap-2">
                           <span className="text-[var(--muted)]">[File: {m.filename || "file"}]</span>
-                          <button
-                            type="button"
-                            onClick={() => downloadFile(m.body, m.filename || "download")}
-                            className="px-2 py-0.5 rounded text-xs bg-[var(--accent)] text-white hover:opacity-90"
-                          >
-                            Download
-                          </button>
+                          {m.removed ? (
+                            <span className="text-xs text-[var(--muted)]">removed from this device</span>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => downloadFile(m.body, m.filename || "download")}
+                              className="px-2 py-0.5 rounded text-xs bg-[var(--accent)] text-white hover:opacity-90"
+                            >
+                              Download
+                            </button>
+                          )}
                         </span>
                       )}
                       {m.type === "contact" && <span className="text-[var(--muted)]">[Contact]</span>}
@@ -849,7 +855,13 @@ function Chat() {
 
       {/* ── Modals ─────────────────────────────────────────────────────────── */}
 
-      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && (
+        <SettingsModal
+          onClose={() => setSettingsOpen(false)}
+          storage={storage}
+          conversations={conversations.map((c) => ({ conv: c, label: conversationLabel(c, identity.keyHash, getDisplayName, groupNamesFromMessages) }))}
+        />
+      )}
 
       {newGroupOpen && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-20 p-4">

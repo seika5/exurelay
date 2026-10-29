@@ -2,6 +2,8 @@ import express, { Router } from "express";
 import { blobSizeOf, MAX_BLOB_SIZE } from "../lib/directory.js";
 
 export const MAX_BLOBS_PER_POST = 64;
+/** Advisory lock id serializing blob inserts (see POST). Any constant unique to this app. */
+const BLOB_INSERT_LOCK = 7_265_001;
 /** Blobs per GET page. */
 export const PAGE_BLOBS = 64;
 
@@ -33,9 +35,14 @@ export function blobRouter(prisma, computeExpiresAt, io, requireToken) {
           return res.status(400).json({ error: `Body must be 1-${MAX_BLOBS_PER_POST} blobs of exactly ${size} bytes`, blobSize: size });
         }
         const expiresAt = computeExpiresAt();
-        // One INSERT keeps them in order: the sender puts the head blob first (DESIGN.md §5).
-        await prisma.blob.createMany({
-          data: Array.from({ length: n }, (_, i) => ({ payload: buffer.subarray(i * size, (i + 1) * size), expiresAt })),
+        // One INSERT per batch, and one batch at a time: seq is handed out when a row is inserted but becomes
+        // visible when its transaction commits, so two overlapping uploads could commit out of seq order and a
+        // reader's cursor would skip the earlier one for good. The lock makes seq order commit order.
+        await prisma.$transaction(async (tx) => {
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(${BLOB_INSERT_LOCK})`;
+          await tx.blob.createMany({
+            data: Array.from({ length: n }, (_, i) => ({ payload: buffer.subarray(i * size, (i + 1) * size), expiresAt })),
+          });
         });
         if (io) io.emit("blobs");
         return res.status(201).json({ count: n, expiresAt: expiresAt.toISOString() });

@@ -5,11 +5,21 @@ import { useIdentity } from "@/context/IdentityContext";
 import { MembersAdmin } from "@/components/MembersAdmin";
 import { BlobSettingsPanel, JoinCodePanel, ServerStatusPanel } from "@/components/AdminPanels";
 import { fingerprint } from "@/lib/signed";
+import { StoragePanel, type StorageControls } from "@/components/StoragePanel";
+import type { Conversation } from "@/lib/useMessages";
 import { ApiError } from "@/lib/api";
 
-export function SettingsModal({ onClose }: { onClose: () => void }) {
+export function SettingsModal({
+  onClose,
+  storage,
+  conversations,
+}: {
+  onClose: () => void;
+  storage: StorageControls;
+  conversations: { conv: Conversation; label: string }[];
+}) {
   const { identity, isAdmin, directory, directoryError, setDisplayName, server, servers, leaveServer, identityStorage } = useIdentity();
-  const [tab, setTab] = useState<"general" | "admin">("general");
+  const [tab, setTab] = useState<"general" | "storage" | "admin">("general");
   const [name, setName] = useState(identity?.myName ?? "");
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -33,22 +43,22 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
           </button>
         </div>
 
-        {isAdmin && (
-          <div className="flex gap-1 text-sm">
-            {(["general", "admin"] as const).map((t) => (
-              <button
-                key={t}
-                type="button"
-                onClick={() => setTab(t)}
-                className={`px-3 py-1 rounded ${tab === t ? "bg-[var(--accent)] text-white" : "border border-[var(--border)]"}`}
-              >
-                {t === "general" ? "General" : "Admin"}
-              </button>
-            ))}
-          </div>
-        )}
+        <div className="flex gap-1 text-sm">
+          {(isAdmin ? (["general", "storage", "admin"] as const) : (["general", "storage"] as const)).map((t) => (
+            <button
+              key={t}
+              type="button"
+              onClick={() => setTab(t)}
+              className={`px-3 py-1 rounded ${tab === t ? "bg-[var(--accent)] text-white" : "border border-[var(--border)]"}`}
+            >
+              {t === "general" ? "General" : t === "storage" ? "Storage" : "Admin"}
+            </button>
+          ))}
+        </div>
 
-        {tab === "admin" && isAdmin ? (
+        {tab === "storage" ? (
+          <StoragePanel storage={storage} conversations={conversations} />
+        ) : tab === "admin" && isAdmin ? (
           <>
             <section className="flex flex-col gap-2">
               <h3 className="text-sm font-medium">Join code</h3>

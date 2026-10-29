@@ -7,14 +7,56 @@ import { checkPeerIssuer, currentIssuerId, RateLimitError } from "@/lib/tokens";
 import { decodeMessage, encodeMessage, type DecryptedMessage } from "@/lib/blobPayload";
 import type { Contact } from "@/lib/keystore";
 import { BATCH, Opener, sealSend, DEFAULT_BLOB_SIZE, DEFAULT_DECOYS, type Opened } from "@/lib/sealed";
+import {
+  DEFAULT_RETENTION_DAYS,
+  MAX_RETENTION_DAYS,
+  deleteMessages,
+  expired,
+  loadCache,
+  saveCursor,
+  saveMessages,
+  wipeCache,
+  type CachedMessage,
+} from "@/lib/messageCache";
+import { serverScopedKey } from "@/lib/server";
+
+const RETENTION_KEY = "relay.retentionDays";
+
+function readRetention(): number {
+  try {
+    const n = Number(localStorage.getItem(serverScopedKey(RETENTION_KEY)));
+    return Number.isInteger(n) && n >= 1 && n <= MAX_RETENTION_DAYS ? n : DEFAULT_RETENTION_DAYS;
+  } catch {
+    return DEFAULT_RETENTION_DAYS;
+  }
+}
+
+/** What Settings → Storage shows: sizes are of the decrypted messages as kept on this device. */
+export type StorageStats = { messages: number; messageBytes: number; files: number; fileBytes: number };
+
+function storageStats(list: DecryptedMessage[]): StorageStats {
+  const st: StorageStats = { messages: 0, messageBytes: 0, files: 0, fileBytes: 0 };
+  for (const m of list) {
+    const size = JSON.stringify(m).length;
+    if (m.type === "file" && !m.removed) {
+      st.files++;
+      st.fileBytes += size;
+    } else {
+      st.messages++;
+      st.messageBytes += size;
+    }
+  }
+  return st;
+}
 
 /** Several "blobs" pings in a row (e.g. a multi-batch send) cost one sync. Each page fetched costs one token. */
 const REFRESH_DEBOUNCE_MS = 1500;
 
 /**
  * Protocol v2 (sealed.ts): every member downloads every blob once, from a cursor, and keeps what decrypts.
- * No local persistence yet (phase 5b): each launch syncs from the start of what the server holds, including our own
- * messages via the self-copy slot. Until our self-copy comes back, a message we sent is shown from the outbox:
+ * Kept messages and the cursor live in the encrypted local cache (messageCache.ts), so a launch only downloads
+ * what's new. Our own messages come back through the self-copy slot. Until then, a message we sent is shown from
+ * the outbox:
  *
  * - "sending" (drawn faded): queued or in flight. The queue sends one message at a time, in order. Out of tokens
  *   (the server's rate limit), it waits until there are some and carries on; the messages just stay faded.
@@ -72,13 +114,18 @@ export function messageBelongsToConversation(
 export function useMessages(
   identity: { keyPair: CryptoKeyPair; keyHash: string; publicKeyBase64: string; contacts: Contact[] } | null,
   /** From the admin-signed directory (blobSettings in signed.ts). */
-  blobs: { blobSize: number; decoys: number } = { blobSize: DEFAULT_BLOB_SIZE, decoys: DEFAULT_DECOYS }
+  blobs: { blobSize: number; decoys: number } = { blobSize: DEFAULT_BLOB_SIZE, decoys: DEFAULT_DECOYS },
+  /** The local cache key (IdentityContext), or null to keep nothing between launches. */
+  cacheKey: CryptoKey | null = null
 ) {
   const [receivedMessages, setReceivedMessages] = useState<DecryptedMessage[]>([]);
   // Sync state for this identity: where we are on the server, the trial decrypter, and what we've kept, by messageId.
   const cursor = useRef("0");
   const opener = useRef<Opener | null>(null);
-  const received = useRef(new Map<string, DecryptedMessage>());
+  const received = useRef(new Map<string, CachedMessage>());
+  /** Settles once the cache is loaded; syncing waits for it so it resumes from the cached cursor. */
+  const cacheLoaded = useRef<Promise<void>>(Promise.resolve());
+  const [retentionDays, setRetentionState] = useState(DEFAULT_RETENTION_DAYS);
   const syncing = useRef<Promise<void> | null>(null);
   const syncAgain = useRef(false);
   const [outbox, setOutboxState] = useState<OutboxEntry[]>([]);
@@ -111,22 +158,35 @@ export function useMessages(
     return list;
   }, [receivedMessages, outbox]);
 
+  const owner = identity?.keyHash ?? null;
+
+  /** Show what's kept, newest last, after dropping anything past retention (from memory and the cache). */
+  const publish = useCallback(async () => {
+    const days = readRetention();
+    const gone = [...received.current.values()].filter((c) => expired(c, days)).map((c) => c.message.messageId);
+    for (const id of gone) received.current.delete(id);
+    if (gone.length && owner && cacheKey) await deleteMessages(owner, gone).catch(() => {});
+    setReceivedMessages([...received.current.values()].map((c) => c.message).sort((a, b) => a.sentAt - b.sentAt));
+  }, [owner, cacheKey]);
+
   /** Download every blob after our cursor and keep the messages that decrypt for us from a current member. */
   const syncOnce = useCallback(async () => {
     if (!identity) return;
+    await cacheLoaded.current;
     // Only contacts and ourselves can be senders: the opener tries each one's tag on every blob.
     const members = new Map(identity.contacts.map((c) => [c.keyHash, c.publicKey]));
     members.set(identity.keyHash, identity.publicKeyBase64);
     opener.current ??= new Opener(identity.keyPair, identity.keyHash);
-    const fresh: DecryptedMessage[] = [];
+    const fresh: CachedMessage[] = [];
     const keep = (opened: Opened) => {
       try {
         const msg = decodeMessage(new TextDecoder().decode(opened.payload));
         // The slot proved who sent it; the message must say the same.
         if (typeof msg.messageId !== "string" || msg.senderKeyHash !== opened.senderKeyHash) return;
         if (!received.current.has(msg.messageId)) {
-          received.current.set(msg.messageId, msg);
-          fresh.push(msg);
+          const item = { message: msg, expiresAt: opened.expiresAt };
+          received.current.set(msg.messageId, item);
+          fresh.push(item);
         }
       } catch {
         // Not a message we understand.
@@ -134,6 +194,7 @@ export function useMessages(
     };
     // A member we've only just learned about may have sent something we already passed over.
     (await opener.current.setMembers(members)).forEach(keep);
+    const from = cursor.current;
     for (let more = true; more; ) {
       const page = await getBlobsSince(cursor.current);
       for (const b of page.blobs) {
@@ -143,15 +204,25 @@ export function useMessages(
       }
       more = page.more;
     }
+    if (owner && cacheKey) {
+      if (fresh.length) await saveMessages(owner, cacheKey, fresh);
+      // Each upload batch is stored in one insert, so a finished sync has seen every batch whole: resume after the
+      // last blob, except before a send still waiting for pieces from a later batch.
+      if (cursor.current !== from) {
+        let safe = BigInt(cursor.current);
+        const pending = opener.current.oldestPendingSeq();
+        if (pending !== null && BigInt(pending) - BigInt(1) < safe) safe = BigInt(pending) - BigInt(1);
+        await saveCursor(owner, cacheKey, safe.toString());
+      }
+    }
     if (fresh.length === 0) return;
-    const all = [...received.current.values()].sort((a, b) => a.sentAt - b.sentAt);
-    setReceivedMessages(all);
+    await publish();
     // Our self-copy is back: those messages no longer need the outbox.
     setOutbox((box) => box.filter((o) => o.status !== "sent" || !received.current.has(o.message.messageId)));
     // Cross-check the token keys other members are using (see tokens.ts).
-    const issuers = new Set(fresh.filter((m) => m.senderKeyHash !== identity.keyHash && m.issuer).map((m) => m.issuer!));
+    const issuers = new Set(fresh.map((c) => c.message).filter((m) => m.senderKeyHash !== identity.keyHash && m.issuer).map((m) => m.issuer!));
     for (const id of issuers) checkPeerIssuer(id).catch(() => {});
-  }, [identity, setOutbox]);
+  }, [identity, setOutbox, owner, cacheKey, publish]);
 
   /** One sync at a time; a ping during a sync runs one more afterwards. */
   const loadBlobs = useCallback(async () => {
@@ -331,14 +402,94 @@ export function useMessages(
   );
   const cancelSend = useCallback((id: string) => setOutbox((box) => box.filter((o) => o.id !== id)), [setOutbox]);
 
-  // A different identity starts with an empty outbox and inbox, and syncs from the start.
+  // A different identity starts with an empty outbox, then loads its cache and resumes from its cursor.
   useEffect(() => {
     setOutbox(() => []);
     setReceivedMessages([]);
     cursor.current = "0";
     opener.current = null;
     received.current = new Map();
-  }, [identity?.keyHash, setOutbox]);
+    setRetentionState(readRetention());
+    if (!owner || !cacheKey) {
+      cacheLoaded.current = Promise.resolve();
+      return;
+    }
+    cacheLoaded.current = loadCache(owner, cacheKey).then(
+      async ({ messages: kept, cursor: from }) => {
+        for (const c of kept) received.current.set(c.message.messageId, c);
+        cursor.current = from;
+        await publish();
+      },
+      () => {} // unreadable cache: sync from the start
+    );
+  }, [owner, cacheKey, setOutbox, publish]);
 
-  return { messages, conversations, loadBlobs, sendMessage, retrySend, cancelSend, error };
+  // ---------------------------------------------------------------------------
+  // Settings → Storage
+  // ---------------------------------------------------------------------------
+
+  const setRetentionDays = useCallback(
+    (days: number) => {
+      const n = Math.min(MAX_RETENTION_DAYS, Math.max(1, Math.round(days)));
+      try {
+        localStorage.setItem(serverScopedKey(RETENTION_KEY), String(n));
+      } catch {
+        // Storage unavailable: applies for this session only.
+      }
+      setRetentionState(n);
+      publish();
+    },
+    [publish]
+  );
+
+  /** Keep file messages but drop their contents from this device. */
+  const clearFiles = useCallback(async () => {
+    const changed: CachedMessage[] = [];
+    for (const c of received.current.values()) {
+      if (c.message.type === "file" && !c.message.removed) {
+        const next = { ...c, message: { ...c.message, body: "", removed: true } };
+        received.current.set(c.message.messageId, next);
+        changed.push(next);
+      }
+    }
+    if (owner && cacheKey) await saveMessages(owner, cacheKey, changed);
+    await publish();
+  }, [owner, cacheKey, publish]);
+
+  const clearConversation = useCallback(
+    async (conv: Conversation) => {
+      if (!identity) return;
+      const ids = [...received.current.values()]
+        .filter((c) => messageBelongsToConversation(c.message, conv, identity.keyHash))
+        .map((c) => c.message.messageId);
+      for (const id of ids) received.current.delete(id);
+      if (owner) await deleteMessages(owner, ids);
+      await publish();
+    },
+    [identity, owner, publish]
+  );
+
+  /** Clear everything kept on this device. Messages still on the server don't come back unless you re-sync. */
+  const clearAll = useCallback(async () => {
+    received.current = new Map();
+    if (owner) await wipeCache(owner, "messages");
+    await publish();
+  }, [owner, publish]);
+
+  /** Clear everything and download again whatever the server still holds (the last ~3–4 days). */
+  const resync = useCallback(async () => {
+    received.current = new Map();
+    cursor.current = "0";
+    opener.current = null;
+    if (owner) await wipeCache(owner, "sync");
+    await publish();
+    await loadBlobs();
+  }, [owner, publish, loadBlobs]);
+
+  const storage = useMemo(
+    () => ({ stats: storageStats(receivedMessages), retentionDays, setRetentionDays, clearFiles, clearConversation, clearAll, resync }),
+    [receivedMessages, retentionDays, setRetentionDays, clearFiles, clearConversation, clearAll, resync]
+  );
+
+  return { messages, conversations, loadBlobs, sendMessage, retrySend, cancelSend, storage, error };
 }

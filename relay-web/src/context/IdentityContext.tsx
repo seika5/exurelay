@@ -47,6 +47,7 @@ import {
   type ServerConfig,
 } from "@/lib/server";
 import { setSigner } from "@/lib/session";
+import { appCacheKey, wipeCache } from "@/lib/messageCache";
 import { clearWallet, resetWalletMemory, setTokenDirectory } from "@/lib/tokens";
 
 /** Newest directory version this device has accepted for the current server (rollback protection). */
@@ -89,6 +90,8 @@ type IdentityContextValue = {
   /** Point this server at a folder holding its identity file (after the folder moved, or site data was cleared). */
   openIdentityFolder: (dir: FileSystemDirectoryHandle) => Promise<void>;
   identityStorage: IdentityStorage | null;
+  /** Key for this identity's local message cache (messageCache.ts): undefined while loading, null if unavailable. */
+  cacheKey: CryptoKey | null | undefined;
   error: string | null;
   dismissError: () => void;
   createIdentity: (name: string, storage: StorageChoice) => Promise<void>;
@@ -519,6 +522,7 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
       await deleteFolderRef(server.url).catch(() => {});
     }
     fileSessions.current.delete(server.url);
+    if (base) await wipeCache(base.keyHash).catch(() => {});
     await deleteIdentity(server.url);
     setBase(null);
     setLocked(null);
@@ -655,6 +659,23 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
     return buildEnrollmentCode(base.keyPair.publicKey, base.signingKeyPair, base.myName);
   }, [base]);
 
+  // Folder mode: derived from the passphrase at unlock. App-storage mode: a random non-extractable key in IndexedDB.
+  const [cacheKey, setCacheKey] = useState<CryptoKey | null | undefined>(undefined);
+  useEffect(() => {
+    setCacheKey(undefined);
+    if (!base) return;
+    const fromFile = fileSessions.current.get(base.server)?.session.cacheKey;
+    if (fromFile) return setCacheKey(fromFile);
+    let cancelled = false;
+    appCacheKey(base.keyHash).then(
+      (k) => !cancelled && setCacheKey(k),
+      () => !cancelled && setCacheKey(null) // no cache: messages just aren't kept between launches
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [base?.keyHash, base?.server]);
+
   const identityStorage = useMemo<IdentityStorage | null>(() => {
     if (!base) return null;
     const f = fileSessions.current.get(base.server);
@@ -666,9 +687,10 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
       clearWallet();
       identities.current.delete(server.url);
       fileSessions.current.delete(server.url);
+      if (base) wipeCache(base.keyHash).catch(() => {});
     }
     setBase(null);
-  }, [server]);
+  }, [server, base]);
 
   return (
     <IdentityContext.Provider
@@ -680,6 +702,7 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
         unlockIdentity,
         openIdentityFolder,
         identityStorage,
+        cacheKey,
         error,
         dismissError,
         createIdentity,

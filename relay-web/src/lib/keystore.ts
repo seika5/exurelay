@@ -9,10 +9,14 @@
  */
 
 const DB_NAME = "relay";
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const STORE = "identities";
 /** Folder-mode identities: { server, dir, fileName }. */
 const FOLDERS = "folders";
+/** Local message cache (messageCache.ts): encrypted messages, sync state, and app-mode cache keys. */
+export const CACHE_MESSAGES = "messages";
+export const CACHE_META = "cacheMeta";
+export const CACHE_KEYS = "cacheKeys";
 
 /** A member as the UI sees it: directory keys + resolved name + local settings. */
 export type Contact = {
@@ -51,8 +55,20 @@ function openDb(): Promise<IDBDatabase> {
       req.onupgradeneeded = () => {
         if (!req.result.objectStoreNames.contains(STORE)) req.result.createObjectStore(STORE, { keyPath: "server" });
         if (!req.result.objectStoreNames.contains(FOLDERS)) req.result.createObjectStore(FOLDERS, { keyPath: "server" });
+        if (!req.result.objectStoreNames.contains(CACHE_MESSAGES)) {
+          req.result.createObjectStore(CACHE_MESSAGES, { keyPath: "id" }).createIndex("owner", "owner");
+        }
+        if (!req.result.objectStoreNames.contains(CACHE_META)) req.result.createObjectStore(CACHE_META, { keyPath: "owner" });
+        if (!req.result.objectStoreNames.contains(CACHE_KEYS)) req.result.createObjectStore(CACHE_KEYS, { keyPath: "owner" });
       };
-      req.onsuccess = () => resolve(req.result);
+      req.onsuccess = () => {
+        // Another tab upgrading the database: let go so it isn't blocked; the next call reopens.
+        req.result.onversionchange = () => {
+          req.result.close();
+          dbPromise = null;
+        };
+        resolve(req.result);
+      };
       req.onerror = () => reject(req.error);
       req.onblocked = () => reject(new Error("Close Relay in your other tabs, then reload."));
     });
@@ -63,7 +79,7 @@ function openDb(): Promise<IDBDatabase> {
   return dbPromise;
 }
 
-function run<T>(mode: IDBTransactionMode, fn: (store: IDBObjectStore) => IDBRequest, storeName = STORE): Promise<T> {
+export function run<T>(mode: IDBTransactionMode, fn: (store: IDBObjectStore) => IDBRequest, storeName = STORE): Promise<T> {
   return openDb().then(
     (db) =>
       new Promise<T>((resolve, reject) => {

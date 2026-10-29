@@ -197,7 +197,7 @@ Every send (message, file, call event, group rename) is encrypted **once** and s
 - **Decoys:** each send adds a random 0–N blobs of pure random bytes, N set by the admin (`decoys` in the signed member list, default 3, max 16).
 - **Nothing to tell apart:** heads, continuations and decoys contain no public key or fixed bytes, so they're indistinguishable. Upload order is random too: everything is shuffled, with the head somewhere in the first batch of 64 (recipients keep the last 128 unplaced blobs in memory, so a head can come after its continuations).
 - **Late members:** if a new member's send arrives before your member list has them, the blob waits in that memory window and opens when the list refreshes.
-- **Fetching:** every member downloads every blob once with `GET /api/blobs?since=<seq>` (binary pages), and the server pings all members' sockets after each upload.
+- **Fetching:** every member downloads every blob once with `GET /api/blobs?since=<seq>` (binary pages), and the server pings all members' sockets after each upload. Uploads take turns (a Postgres advisory lock around each batch's insert), so blobs become visible in `seq` order and a cursor never skips a batch that committed late.
 - **Attachments** travel the same way as messages, so they're indistinguishable from text and every member downloads them (a 5 MB photo costs every member 5 MB once). There's no size limit.
 - **Limits:** a send can have at most ⌊(S − 32) / 104⌋ recipients including yourself (629 at 64 KB). Trial decryption costs one small hash per member per blob: nothing at tens of members, seconds when catching up days of traffic at many hundreds.
 - **What the server still sees:** when uploads happen and how big each batch is, and (from IPs) roughly who uploads and downloads. Not who sent what to whom, or text vs. files.
@@ -207,7 +207,7 @@ Every send (message, file, call event, group rename) is encrypted **once** and s
 
 With fetch-all, re-downloading the whole window on every launch would cost up to ~77 MB, so clients keep a local cache:
 
-- **What's stored:** the sync cursor, the ids of blobs already processed (including ones that weren't for us, so they're never re-downloaded), decrypted messages, and downloaded attachments.
+- **What's stored:** the sync cursor and decrypted messages (attachments travel inside them since phase 5a). The cursor means blobs already processed are never re-downloaded, so their ids needn't be kept.
 - **At rest:** encrypted with a random AES-256-GCM cache key, kept as a non-extractable `CryptoKey` in IndexedDB. The cache data itself is also in IndexedDB.
 - **Self-copies:** keep sending them, so a cleared cache can recover your own messages from the last ~4 days.
 - **Settings → Storage tab:**
@@ -217,9 +217,19 @@ With fetch-all, re-downloading the whole window on every launch would cost up to
   - "Re-sync from server": wipe the cache and re-download what the server still has.
   - Logging out or removing the identity wipes the cache and its key.
 
+### As built (phase 5b): encrypted local cache
+
+- **What's kept** (`relay-web/src/lib/messageCache.ts`): every message that decrypted for you (yours included, from the self-copy) with its blob's `expiresAt`, and the sync cursor. Blobs that weren't for you aren't kept; the cursor means they're never downloaded again.
+- **At rest:** each message is its own IndexedDB record, AES-256-GCM encrypted and bound to its identity and `messageId`; the cursor likewise. Nothing about a message is stored in the clear.
+- **Cache key:** in folder mode it's derived from the passphrase at unlock (HKDF, alongside the identity file's other keys), so the cache can't be read without unlocking and the browser never holds a key for it. In app-storage mode it's a random non-extractable key in IndexedDB.
+- **Resuming:** the server stores each upload batch in one insert, so a finished sync has seen every batch whole. The saved cursor is the last blob seen, held back only to just before a send still waiting for pieces from a later batch (a send over 64 blobs). A launch downloads only what's new. Duplicates are dropped by `messageId`. The memory window for late members isn't saved, so a message from a brand-new member that arrives just before you close the app opens only after a re-sync.
+- **Retention:** a message goes at `expiresAt` + N days, N per server (default 7, 1–365), in Settings → Storage.
+- **Settings → Storage tab** (everyone): counts and sizes of messages and files on this device, retention, **Remove files only** (the message stays, marked "removed from this device"), **Clear conversation**, **Clear everything** (messages still on the server don't come back), **Re-sync from server** (clear, then download whatever the server still holds).
+- **Leaving a server or logging out** wipes that identity's cache, its cursor and (app mode) its cache key.
+
 ### Dropped: delete for me
 
-Planned for phase 5, dropped before it was built. It could only remove a message from your own device: recipients keep their copies and the blob stays on the server until it expires (~3–4 days), so it does little and could be mistaken for "unsend". There's no "delete for everyone" either, for the same reason: recipients have already downloaded and decrypted it. Clearing local data (Settings → Storage, phase 5b) still removes everything on your device.
+Planned for phase 5, dropped before it was built. It could only remove a message from your own device: recipients keep their copies and the blob stays on the server until it expires (~3–4 days), so it does little and could be mistaken for "unsend". There's no "delete for everyone" either, for the same reason: recipients have already downloaded and decrypted it. Settings → Storage (phase 5b) still clears files, a conversation or everything from your device.
 
 ---
 
@@ -442,7 +452,7 @@ Ordered by dependency. Each phase should land as its own reviewed change.
 | 2 | Self-generated identities | **Done**: client keygen + identity format v5 (adds an ECDSA signing key, drops `myUserNumber`); server `Member` table with public keys replacing `AllowedKey` hashes; admin keys in server config; signed QR codes with 3-minute expiry; admin-signed member directory with version check; key-change notices; retire `generate-20-identities.mjs`; hard cutover (wipe server, re-enroll everyone) | 0 |
 | 3 | Login, tokens and admin | **Done** (see §6 "As built (phase 3)"); also added join codes so one app build works with any server. Challenge-response login; RFC 9474 blind-token issuance, daily issuer-key rotation, key-consistency check, spent-token store; per-member token rate limit; move the TURN credentials endpoint behind a token; no request/IP logging; Settings → Admin tab (admin labels, camera QR scan, signed revocation list, server status; basic enroll/remove already shipped in phase 2) | 1, 2 |
 | 4 | Key storage | **Done**: desktop Chrome/Edge keep a passphrase-encrypted identity file in a folder you pick, with a setup popup and an unlock screen; other browsers and phones keep non-extractable keys in IndexedDB; in-app key generation; removed `public/identity/`, `/api/identity` and the plain `.bin` file; persistent-storage request; linked devices decided as per-device keys. The wallet and rollback version stay in `localStorage`: they're plain data cleared with the same site data, so IndexedDB would add nothing. | 2 |
-| 5 | Protocol v2 | **5a done** (§5 "As built (phase 5a)"): sealed sender + recipient-blind blobs, each send encrypted once with a slot per recipient; `GET /blobs?since=` cursor; admin-set blob size and decoys; attachments travel like messages; stable `messageId`. **Next:** 5b encrypted local cache + Settings → Storage tab; 5c `mentions` field + mention picker, `@everyone`, highlight and badge; 5d linked devices (per-device keys, device certificates, self-message sync, device list) | 3, 4 |
+| 5 | Protocol v2 | **5a done** (§5 "As built (phase 5a)"): sealed sender + recipient-blind blobs, each send encrypted once with a slot per recipient; `GET /blobs?since=` cursor; admin-set blob size and decoys; attachments travel like messages; stable `messageId`. **5b done** (§5 "As built (phase 5b)"): encrypted local cache, Settings → Storage tab. **Next:** 5c `mentions` field + mention picker, `@everyone`, highlight and badge; 5d linked devices (per-device keys, device certificates, self-message sync, device list) | 3, 4 |
 | 6 | Call security | Seal offer/answer/ICE with pairwise keys; random room ids; attach media only to verified peers; tiles for members not in the call | 3 |
 | 7 | Official PWA | Static export; manifest, icons, service worker; `storage.persist()`; strict CSP; deploy pipeline publishing commit + build hash; push registration (A, per device, no push logs, per-recipient rate limits) + service worker that decrypts and shows mention/ring notifications; call-tile **Notify** button with rate limit; install guide | 1, 3, 4 (5–6 before wide use) |
 | 8 | Plugins | Core/plugin boundary; sandboxed iframe host + versioned `postMessage` API; install from URL/file with hash pinning; plugin message types with fallback text; safe mode | 7 |
