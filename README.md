@@ -37,41 +37,67 @@ together, and (for pushes) who is being mentioned or rung at that moment. DESIGN
 
 ## 1. Hosting a server (once, by the first admin)
 
+You need two things: the **server** (`relay-server`, on a host you control) and the **app** somewhere people can
+open it (GitHub Pages, the same host via Caddy, or a local copy; see section 2). The first admin's own identity has
+to exist before the server's first start, because the server needs its signing key once.
+
 | Needs | |
 | --- | --- |
-| A Linux host with a domain name | e.g. a small VPS |
-| Node.js 20+ and PostgreSQL | |
-| Caddy (HTTPS) and coturn (calls across networks) | configs in `relay-server/deploy/` |
+| A Linux host with a domain name pointing at it | e.g. a small VPS; `relay.example.com` below |
+| Node.js 20+, PostgreSQL, Caddy (HTTPS), coturn (calls across networks) | configs in `relay-server/deploy/` |
 
-### 1.1 Create your admin identity
+### 1.1 Prepare the host
 
-Open the app (section 2), choose **I'm setting up a new server**, enter your server's address
-(e.g. `https://relay.example.com`) and your name. The next screen shows your signing key: it goes in
-`ADMIN_SIGNING_KEYS` below. It only authorizes the first member list; after that, admins are managed in the app.
+```bash
+sudo apt install -y postgresql
+sudo -u postgres createuser --pwprompt relay      # choose a password
+sudo -u postgres createdb --owner relay relay
+```
 
-### 1.2 Deploy
+Install Node.js 20+ and [Caddy](https://caddyserver.com/docs/install), and copy `relay-server/` to the host
+(git clone, rsync, …).
+
+### 1.2 Open the app and create your admin identity
+
+Open the app: the hosted one if it's already published (section 2.1), or your own copy (section 2.8, e.g.
+`npm run dev` on your computer). Choose **I'm setting up a new server**, enter the server's address exactly as it
+will be reached (e.g. `https://relay.example.com`) and your name. The next screen shows your **signing key**: copy it.
+It only authorizes the first member list; after that, admins are managed in the app.
+
+### 1.3 Configure and start the server
 
 ```bash
 cd relay-server
-cp .env.example .env    # DATABASE_URL, HOST=127.0.0.1, PORT=4000, PUBLIC_URL, ADMIN_SIGNING_KEYS, TURN_*, VAPID_*
+cp .env.example .env
+```
+
+In `.env`, set at least:
+
+| Setting | Value |
+| --- | --- |
+| `DATABASE_URL` | `postgresql://relay:PASSWORD@127.0.0.1:5432/relay` |
+| `HOST`, `PORT` | `127.0.0.1` and `4000` (only Caddy talks to it) |
+| `PUBLIC_URL` | the address from 1.2, e.g. `https://relay.example.com` (must match exactly: logins signed for any other address are refused) |
+| `ADMIN_SIGNING_KEYS` | the signing key from 1.2 |
+| `TURN_*` | see 1.6 |
+| `VAPID_*` | optional, for push notifications: `npm run vapid` prints a key pair; set `VAPID_SUBJECT` to a `mailto:` you read |
+
+Then:
+
+```bash
 npm ci
 npx prisma generate
 npx prisma db push
-npm run start           # API + Socket.io (pm2 start src/index.js --name relay-api)
-npm run worker          # deletes expired blobs (pm2 start src/worker.js --name relay-worker)
+npm run start    # API + Socket.io; for production: pm2 start src/index.js --name relay-api
+npm run worker   # deletes expired blobs;         pm2 start src/worker.js --name relay-worker
 ```
 
-Then, in the app, press **Create member list**: you're enrolled. Share the join code from **Settings → Admin**
-(QR or link) with each new member in person or over a channel you already trust, and enroll them there.
+`TOKEN_RATE_PER_MINUTE` (default 30, after a burst of `TOKEN_BURST`, default 200) limits how fast each member gets
+anonymous tokens; one token pays for one send batch, sync page or call setup.
 
-- `PUBLIC_URL` must match the address in your join code exactly: logins signed for any other address are refused.
-- `TOKEN_RATE_PER_MINUTE` (default 30, after a burst of `TOKEN_BURST`, default 200) limits how fast each member gets anonymous tokens. One token pays for one send batch, sync page or call setup.
-- **Push notifications** (optional): `npm run vapid` prints a key pair for `VAPID_PUBLIC_KEY` and `VAPID_PRIVATE_KEY`; set `VAPID_SUBJECT` to a `mailto:` you read. Without them the app says the server doesn't send notifications.
+### 1.4 HTTPS (required)
 
-### 1.3 HTTPS (required)
-
-Point a DNS record at the host and put [Caddy](https://caddyserver.com/docs/install) in front of the API; it gets and
-renews the certificate:
+Put Caddy in front of the API; it gets and renews the certificate:
 
 ```bash
 sudo cp deploy/Caddyfile /etc/caddy/Caddyfile   # change relay.example.com to your domain
@@ -79,9 +105,16 @@ sudo systemctl reload caddy
 sudo ufw allow 80/tcp && sudo ufw allow 443/tcp
 ```
 
-With `HOST=127.0.0.1`, the API's plain-HTTP port is only reachable through Caddy. Don't open port 4000.
+With `HOST=127.0.0.1`, the API's plain-HTTP port is only reachable through Caddy. Don't open port 4000. The same
+Caddyfile has an optional block to serve the app from this host too (`app.relay.example.com`).
 
-### 1.4 TURN (calls across networks)
+### 1.5 Enroll yourself, then everyone else
+
+Back in the app, press **Create member list**: you're enrolled and the server is live. In **Settings → Admin**, share
+the join code (QR or link) with each new member in person or over a channel you already trust. They open it, create
+their identity (section 2.4), and you scan or paste the code their app shows. Check the fingerprint matches.
+
+### 1.6 TURN (calls across networks)
 
 Calls are peer to peer; across different networks or strict NATs they need a TURN relay. Run coturn on the same host.
 Clients get credentials that expire (12 hours by default), never a fixed password.
@@ -95,7 +128,7 @@ openssl rand -hex 32   # the shared secret
 2. In `.env`, set `TURN_SECRET` to the same secret and `TURN_URLS`/`STUN_URLS` to your domain; restart the API.
 3. `sudo ufw allow 3478 && sudo ufw allow 5349/tcp && sudo ufw allow 49152:65535/udp`, then `sudo systemctl enable --now coturn`.
 
-### 1.5 Upgrading
+### 1.7 Upgrading
 
 Every phase so far has been a hard cutover: the message format, identity storage and member list changed in ways old
 data can't follow. Wipe the database (`npx prisma db push --force-reset`), then everyone joins with the join code,
@@ -110,7 +143,8 @@ creates a new identity and is enrolled again.
 The app is static files. The workflow in `.github/workflows/deploy-web.yml` tests it, builds it and publishes it to
 GitHub Pages on every push to `main` (one-time: repository **Settings → Pages → Source: GitHub Actions**). Each build
 publishes its git commit and a SHA-256 of every file; the app shows both in **Settings → General**, so people can
-check what they're running. Any static HTTPS host works the same way (`npm run build`, then publish `relay-web/out/`).
+check what they're running. Any static HTTPS host works the same way (`npm run build`, then publish `relay-web/out/`),
+including your relay host's own Caddy (the optional block in `relay-server/deploy/Caddyfile`).
 
 ### 2.2 On a phone: install it
 

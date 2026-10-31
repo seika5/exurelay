@@ -1,4 +1,4 @@
-# Caddy reverse proxy for the relay API + Socket.io.
+# Caddy reverse proxy for the relay API + Socket.io (and, optionally, the app itself).
 # Caddy gets and renews a Let's Encrypt certificate automatically; the domain's DNS A/AAAA record
 # must point at this host and ports 80 and 443 must be open.
 #
@@ -20,3 +20,23 @@ relay.example.com {
 	# The API listens on loopback only (HOST=127.0.0.1 in .env). WebSocket upgrades are proxied automatically.
 	reverse_proxy 127.0.0.1:4000
 }
+
+# Optional: serve the app (relay-web's static build) from this host too, on its own name, instead of GitHub Pages.
+# Build it (cd relay-web && npm ci && npm run build), copy relay-web/out/ to /srv/relay-web, add a DNS record for
+# app.relay.example.com, and uncomment:
+#
+# app.relay.example.com {
+# 	encode gzip
+# 	header {
+# 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+# 		X-Content-Type-Options "nosniff"
+# 		Referrer-Policy "no-referrer"
+# 		-Server
+# 	}
+# 	# The service worker must always be re-checked, or app updates would wait for it to expire.
+# 	@sw path /sw.js
+# 	header @sw Cache-Control "no-cache"
+# 	root * /srv/relay-web
+# 	try_files {path} {path}.html {path}/index.html
+# 	file_server
+# }
