@@ -103,6 +103,16 @@ export function registerSocketHandlers(io, prisma, auth) {
       }
     });
 
+    // A dropped socket (a phone changing networks, a closed tab) leaves its rooms without saying so: tell the others,
+    // so they close its connection. A reconnect joins again under a new socket id.
+    socket.on("disconnecting", () => {
+      for (const roomId of socket.rooms) {
+        if (roomId === socket.id) continue;
+        socket.to(roomId).emit("peer_left", socket.id);
+        if ((io.sockets.adapter.rooms.get(roomId)?.size ?? 0) <= 1) roomAllowedKeyHashes.delete(roomId);
+      }
+    });
+
     socket.on("call_state", (roomId, state) => {
       if (roomId && state && typeof state.muted === "boolean" && typeof state.deafened === "boolean") {
         socket.to(roomId).emit("peer_call_state", { id: socket.id, muted: state.muted, deafened: state.deafened });

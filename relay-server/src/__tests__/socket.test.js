@@ -123,4 +123,26 @@ describe("registerSocketHandlers (voice)", () => {
     signalHandler({ to: "receiver-id", sealed: "c2VhbGVk" });
     assert.strictEqual(emitted.length, 0, "signal should be dropped when no shared room");
   });
+
+  it("a dropped socket tells each of its call rooms it left", () => {
+    let connectionCb;
+    const io = {
+      on: (_, cb) => { connectionCb = cb; },
+      sockets: { adapter: { rooms: { get: () => new Set(["phone-id", "laptop-id"]) } }, sockets: new Map() },
+    };
+    registerSocketHandlers(io, null);
+    const told = [];
+    let disconnecting;
+    connectionCb({
+      id: "phone-id",
+      rooms: new Set(["phone-id", "call-room-1"]),
+      emit: () => {},
+      to: (room) => ({ emit: (event, payload) => told.push({ room, event, payload }) }),
+      on: (event, handler) => {
+        if (event === "disconnecting") disconnecting = handler;
+      },
+    });
+    disconnecting();
+    assert.deepStrictEqual(told, [{ room: "call-room-1", event: "peer_left", payload: "phone-id" }]);
+  });
 });

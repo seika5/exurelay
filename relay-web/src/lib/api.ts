@@ -78,16 +78,18 @@ export async function getDirectory(): Promise<DirectoryResponse> {
   return res.json();
 }
 
-async function postJson(path: string, body: unknown): Promise<void> {
+async function postJson(path: string, body: unknown, headers: Record<string, string> = {}): Promise<void> {
   const res = await fetch(`${getServerUrl()}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...headers },
     body: JSON.stringify(body),
   });
   if (!res.ok) throw await errorFrom(res);
 }
 
-export const publishDirectory = (envelope: SignedEnvelope) => postJson("/api/directory", envelope);
+/** setupCode: only for the first member list, on a server set up with a one-time setup code (deploy/install.sh). */
+export const publishDirectory = (envelope: SignedEnvelope, setupCode?: string) =>
+  postJson("/api/directory", envelope, setupCode ? { "X-Relay-Setup": setupCode.trim() } : {});
 export const publishProfile = (envelope: SignedEnvelope) => postJson("/api/directory/profile", envelope);
 /** Signed by the member themself: the server deletes them at once and drops their sessions and pending messages. */
 export const postLeave = (envelope: SignedEnvelope) => postJson("/api/directory/leave", envelope);

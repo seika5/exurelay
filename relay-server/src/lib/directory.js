@@ -1,3 +1,4 @@
+import { createHash, timingSafeEqual } from "node:crypto";
 import { keyHashOf, parseBody, verifySigned } from "./signed.js";
 
 export const MAX_NAME_LENGTH = 64;
@@ -31,6 +32,17 @@ export function trustedAdmins(latestBody, envKeys = adminKeysFromEnv()) {
     }
   }
   return envKeys;
+}
+
+/**
+ * The one-time setup code (SETUP_CODE, made by deploy/install.sh) instead of ADMIN_SIGNING_KEYS: before any directory
+ * exists, a directory sent with the right code may be signed by any key, and that key becomes the first admin.
+ * Once there's a directory the code does nothing. Compared by hash, in constant time.
+ */
+export function setupCodeMatches(expected, offered) {
+  if (typeof expected !== "string" || !expected || typeof offered !== "string" || !offered) return false;
+  const h = (s) => createHash("sha256").update(s.trim()).digest();
+  return timingSafeEqual(h(expected), h(offered));
 }
 
 /** The blob size every blob must have, from the newest directory (default before one sets it). */

@@ -1,0 +1,83 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  A Relay server on Amazon Lightsail: one Ubuntu instance with a static IP and its firewall ports open, set up on
+  first boot by relay-server/deploy/install.sh. When the stack is done, wait about 5 minutes, then open the
+  instance in the Lightsail console and press Connect: the login message shows the server's address and setup code.
+
+Parameters:
+  InstanceName:
+    Type: String
+    Default: relay
+    AllowedPattern: "[A-Za-z0-9][A-Za-z0-9_.-]*"
+    Description: Name of the Lightsail instance (its static IP is named after it).
+  BundleId:
+    Type: String
+    Default: micro_3_0
+    AllowedValues: [nano_3_0, micro_3_0, small_3_0, medium_3_0]
+    Description: >-
+      Instance size. micro (1 GB RAM) suits a small group; nano (512 MB) works but is tight; small/medium for larger
+      groups or many calls through TURN.
+  Domain:
+    Type: String
+    Default: ""
+    Description: >-
+      Optional. Your own domain, e.g. relay.example.com. Leave empty for the free https://<ip-with-dashes>.sslip.io
+      address. With a domain, point its A record at the StaticIp output as soon as the stack is created; the
+      certificate is requested once it resolves (rerun install.sh if it took longer than about 10 minutes).
+  RepoUrl:
+    Type: String
+    Default: https://github.com/seika5/relay.git
+    Description: Git repository to install from (a fork works).
+  Branch:
+    Type: String
+    Default: main
+
+Conditions:
+  HasDomain: !Not [!Equals [!Ref Domain, ""]]
+
+Resources:
+  Instance:
+    Type: AWS::Lightsail::Instance
+    Properties:
+      InstanceName: !Ref InstanceName
+      BlueprintId: ubuntu_24_04
+      BundleId: !Ref BundleId
+      Networking:
+        Ports:
+          - { FromPort: 22, ToPort: 22, Protocol: tcp }
+          - { FromPort: 80, ToPort: 80, Protocol: tcp }
+          - { FromPort: 443, ToPort: 443, Protocol: tcp }
+          - { FromPort: 3478, ToPort: 3478, Protocol: tcp }
+          - { FromPort: 3478, ToPort: 3478, Protocol: udp }
+          - { FromPort: 5349, ToPort: 5349, Protocol: tcp }
+          - { FromPort: 49152, ToPort: 65535, Protocol: udp }
+      UserData: !Sub |
+        #!/bin/bash
+        export RELAY_DOMAIN="${Domain}"
+        export RELAY_REPO="${RepoUrl}"
+        export RELAY_BRANCH="${Branch}"
+        set -e
+        exec > /var/log/relay-install.log 2>&1
+        apt-get update -q && apt-get install -y -q git
+        git clone -q --depth 1 --branch "$RELAY_BRANCH" "$RELAY_REPO" /opt/relay
+        bash /opt/relay/relay-server/deploy/install.sh
+
+  # Free while attached. install.sh waits for the address to settle, since this attaches just after first boot.
+  StaticIp:
+    Type: AWS::Lightsail::StaticIp
+    Properties:
+      StaticIpName: !Sub "${InstanceName}-ip"
+      AttachedTo: !Ref Instance
+
+Outputs:
+  StaticIp:
+    Value: !GetAtt StaticIp.IpAddress
+  ServerAddress:
+    Description: Enter this in the app (I'm setting up a new server).
+    Value: !If
+      - HasDomain
+      - !Sub "https://${Domain}"
+      - !Join ["", ["https://", !Join ["-", !Split [".", !GetAtt StaticIp.IpAddress]], ".sslip.io"]]
+  SetupCode:
+    Description: Where to find the one-time setup code.
+    Value: Lightsail console -> this instance -> Connect (or ssh ubuntu@the StaticIp); it's in the login message. Install log at /var/log/relay-install.log.

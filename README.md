@@ -38,101 +38,98 @@ together, and (for pushes) who is being mentioned or rung at that moment. DESIGN
 ## 1. Hosting a server (once, by the first admin)
 
 You need two things: the **server** (`relay-server`, on a host you control) and the **app** somewhere people can
-open it (GitHub Pages, the same host via Caddy, or a local copy; see section 2). The first admin's own identity has
-to exist before the server's first start, because the server needs its signing key once.
+open it (GitHub Pages, the same host via Caddy, or a local copy; see section 2). An Ubuntu 22.04 or 24.04 host
+with 1 GB of RAM is plenty for a small group.
 
-| Needs | |
+`relay-server/deploy/install.sh` sets up everything on that host: PostgreSQL, Node.js, Caddy (HTTPS), coturn
+(TURN for calls), the secrets, system services that restart on failure, and a **one-time setup code** that lets
+you claim the server from the app. Pick one of the three ways to run it (1.1), then claim the server (1.2).
+
+### 1.1 Create the server
+
+**Amazon Lightsail (CloudFormation).** In the AWS console, open **CloudFormation → Create stack → With new
+resources**, upload `relay-server/deploy/aws-lightsail.yaml`, and choose an instance size (default `micro_3_0`,
+1 GB). Leave **Domain** empty for a free address (1.3). The stack creates the instance, a static IP and the
+firewall ports. Its **Outputs** tab shows the `ServerAddress`.
+
+**DigitalOcean, EC2, Hetzner, Vultr… (user data).** Create an Ubuntu 22.04/24.04 server and paste
+`relay-server/deploy/cloud-init.sh` into its user data box (DigitalOcean: **Advanced options → Add
+initialization scripts**). Open ports 22, 80, 443, 3478 (TCP and UDP), 5349/TCP and 49152–65535/UDP in the
+provider's firewall if it has one. On AWS EC2, attach an Elastic IP so the address doesn't change when the
+instance stops.
+
+**A server you already have.**
+
+```bash
+git clone https://github.com/seika5/relay.git /tmp/relay
+sudo bash /tmp/relay/relay-server/deploy/install.sh                 # free sslip.io address
+sudo bash /tmp/relay/relay-server/deploy/install.sh --domain relay.example.com   # or your own domain
+```
+
+User data and CloudFormation run the install on first boot, which takes about 5 minutes (log:
+`/var/log/relay-install.log`). Then SSH in (Lightsail: the instance's **Connect** button): until the server is
+claimed, the login message shows its address and setup code.
+
+### 1.2 Claim it in the app and enroll everyone
+
+1. Open the app: the hosted one (section 2.1) or your own copy (section 2.8).
+2. Choose **I'm setting up a new server**, enter the server's address (e.g. `https://203-0-113-5.sslip.io`) and your name.
+3. Enter the setup code and press **Create member list**. You're enrolled as the admin and the code stops working. Whoever enters it first becomes the admin, so keep it to yourself until then.
+4. In **Settings → Admin**, share the join code (QR or link) with each new member in person or over a channel you already trust. They open it, create their identity (section 2.4), and you scan or paste the code their app shows. Check the fingerprint matches.
+
+### 1.3 The address: free sslip.io, or your own domain
+
+Browsers only let the app talk to a server over HTTPS, and certificates are issued for names. By default the
+installer uses a free [sslip.io](https://sslip.io) name built from the server's IP (`203.0.113.5` becomes
+`203-0-113-5.sslip.io`), so there's nothing to buy or configure. The trade-offs:
+
+- **The name is the IP.** A new IP is a new address, and members need a new join code to reach it. Cloud servers keep their IP (DigitalOcean droplets for life, Lightsail and EC2 with a static/Elastic IP), so this only bites when you move to a new server.
+- **sslip.io answers for your name.** If it went down, new connections would fail; if it turned malicious, it could point your name elsewhere. Messages stay end-to-end encrypted and the join code pins the admin keys, so it could see when people connect, not what they say.
+
+**Using your own domain** (survives a move to a new server, and doesn't depend on sslip.io):
+
+1. At your DNS provider, add an **A record** for the name (e.g. `relay.example.com`) pointing at the server's IP. On Lightsail, that's the stack's `StaticIp` output.
+2. Install with it: `install.sh --domain relay.example.com`, `RELAY_DOMAIN="relay.example.com"` in `cloud-init.sh`, or the **Domain** parameter of the CloudFormation stack. Create the record first or straight after; HTTPS starts working once it resolves.
+3. Switching an existing server from sslip.io to a domain later: add the record, then rerun `sudo bash /opt/relay/relay-server/deploy/install.sh --domain relay.example.com`. The address changes, so share the new join code from Settings → Admin.
+4. Moving to a new server later: install the new one with the same `--domain` and point the record at it; members keep their join codes. The installer doesn't move the data: either everyone enrolls again, or you copy the database (a standard PostgreSQL dump and restore) and the old `.env`'s secrets across yourself.
+
+### 1.4 Upgrading
+
+```bash
+sudo bash /opt/relay/relay-server/deploy/install.sh
+```
+
+It pulls the latest code, keeps the address and every secret, and restarts the services.
+
+Every phase so far has been a hard cutover: the message format, identity storage and member list changed in ways
+old data can't follow. If the installer stops because the database schema changed, wipe it
+(`cd /opt/relay/relay-server && sudo -u relay npx prisma db push --force-reset`), rerun the installer, and
+everyone joins with the join code, creates a new identity and is enrolled again.
+
+### 1.5 What the installer sets up
+
+| Piece | Where |
 | --- | --- |
-| A Linux host with a domain name pointing at it | e.g. a small VPS; `relay.example.com` below |
-| Node.js 20+, PostgreSQL, Caddy (HTTPS), coturn (calls across networks) | configs in `relay-server/deploy/` |
+| Code | `/opt/relay` (a git checkout), run as the `relay` user |
+| Settings and secrets | `/opt/relay/relay-server/.env` (database password, TURN secret, push keys, setup code). See `.env.example` for every setting, e.g. `TOKEN_RATE_PER_MINUTE` |
+| Services | `relay-api` (API + Socket.io on `127.0.0.1:4000`), `relay-worker` (deletes expired blobs), `caddy`, `coturn`, `postgresql`. Logs: `journalctl -u relay-api` |
+| HTTPS | `/etc/caddy/Caddyfile`, from `deploy/Caddyfile`; certificates from Let's Encrypt, renewed by Caddy |
+| TURN | `/etc/turnserver.conf`, from `deploy/turnserver.conf`; `relay-turn-certs.timer` copies Caddy's certificate for it twice a day. Clients get credentials that expire (12 hours), never a fixed password |
+| Firewall | ports added to `ufw` only if it's on; cloud firewalls (Lightsail's comes from the template) are separate |
 
-### 1.1 Prepare the host
+### 1.6 Setting it up by hand
 
-```bash
-sudo apt install -y postgresql
-sudo -u postgres createuser --pwprompt relay      # choose a password
-sudo -u postgres createdb --owner relay relay
-```
+Without the installer, on any Linux host:
 
-Install Node.js 20+ and [Caddy](https://caddyserver.com/docs/install), and copy `relay-server/` to the host
-(git clone, rsync, …).
-
-### 1.2 Open the app and create your admin identity
-
-Open the app: the hosted one if it's already published (section 2.1), or your own copy (section 2.8, e.g.
-`npm run dev` on your computer). Choose **I'm setting up a new server**, enter the server's address exactly as it
-will be reached (e.g. `https://relay.example.com`) and your name. The next screen shows your **signing key**: copy it.
-It only authorizes the first member list; after that, admins are managed in the app.
-
-### 1.3 Configure and start the server
-
-```bash
-cd relay-server
-cp .env.example .env
-```
-
-In `.env`, set at least:
-
-| Setting | Value |
-| --- | --- |
-| `DATABASE_URL` | `postgresql://relay:PASSWORD@127.0.0.1:5432/relay` |
-| `HOST`, `PORT` | `127.0.0.1` and `4000` (only Caddy talks to it) |
-| `PUBLIC_URL` | the address from 1.2, e.g. `https://relay.example.com` (must match exactly: logins signed for any other address are refused) |
-| `ADMIN_SIGNING_KEYS` | the signing key from 1.2 |
-| `TURN_*` | see 1.6 |
-| `VAPID_*` | optional, for push notifications: `npm run vapid` prints a key pair; set `VAPID_SUBJECT` to a `mailto:` you read |
-
-Then:
-
-```bash
-npm ci
-npx prisma generate
-npx prisma db push
-npm run start    # API + Socket.io; for production: pm2 start src/index.js --name relay-api
-npm run worker   # deletes expired blobs;         pm2 start src/worker.js --name relay-worker
-```
-
-`TOKEN_RATE_PER_MINUTE` (default 30, after a burst of `TOKEN_BURST`, default 200) limits how fast each member gets
-anonymous tokens; one token pays for one send batch, sync page or call setup.
-
-### 1.4 HTTPS (required)
-
-Put Caddy in front of the API; it gets and renews the certificate:
-
-```bash
-sudo cp deploy/Caddyfile /etc/caddy/Caddyfile   # change relay.example.com to your domain
-sudo systemctl reload caddy
-sudo ufw allow 80/tcp && sudo ufw allow 443/tcp
-```
-
-With `HOST=127.0.0.1`, the API's plain-HTTP port is only reachable through Caddy. Don't open port 4000. The same
-Caddyfile has an optional block to serve the app from this host too (`app.relay.example.com`).
-
-### 1.5 Enroll yourself, then everyone else
-
-Back in the app, press **Create member list**: you're enrolled and the server is live. In **Settings → Admin**, share
-the join code (QR or link) with each new member in person or over a channel you already trust. They open it, create
-their identity (section 2.4), and you scan or paste the code their app shows. Check the fingerprint matches.
-
-### 1.6 TURN (calls across networks)
-
-Calls are peer to peer; across different networks or strict NATs they need a TURN relay. Run coturn on the same host.
-Clients get credentials that expire (12 hours by default), never a fixed password.
-
-```bash
-sudo apt install -y coturn
-openssl rand -hex 32   # the shared secret
-```
-
-1. Copy `deploy/turnserver.conf` to `/etc/turnserver.conf`; set `static-auth-secret` to the secret, and `realm` and the certificate paths to your domain.
-2. In `.env`, set `TURN_SECRET` to the same secret and `TURN_URLS`/`STUN_URLS` to your domain; restart the API.
-3. `sudo ufw allow 3478 && sudo ufw allow 5349/tcp && sudo ufw allow 49152:65535/udp`, then `sudo systemctl enable --now coturn`.
-
-### 1.7 Upgrading
-
-Every phase so far has been a hard cutover: the message format, identity storage and member list changed in ways old
-data can't follow. Wipe the database (`npx prisma db push --force-reset`), then everyone joins with the join code,
-creates a new identity and is enrolled again.
+1. **Database:** `sudo apt install -y postgresql`, then `sudo -u postgres createuser --pwprompt relay` and `sudo -u postgres createdb --owner relay relay`.
+2. **Code:** install Node.js 20.12+ and copy `relay-server/` to the host, then `npm ci`, `npx prisma generate` and `npx prisma db push`.
+3. **Settings:** `cp .env.example .env` and set `DATABASE_URL`, `HOST=127.0.0.1`, `PORT=4000` and `PUBLIC_URL` (the exact `https://` address: logins signed for any other address are refused). The server reads `.env` itself.
+4. **Admin:** in the app, choose **I'm setting up a new server**, open **Set the server up by hand instead?** and copy the signing key into `ADMIN_SIGNING_KEYS` (or set `SETUP_CODE` to a long random string and enter that instead).
+5. **Run:** `npm run start` and `npm run worker` (for production, as services or with pm2).
+6. **HTTPS:** install [Caddy](https://caddyserver.com/docs/install), copy `deploy/Caddyfile` to `/etc/caddy/Caddyfile` with your name in place of `relay.example.com`, `sudo systemctl reload caddy`, and open ports 80 and 443. Don't open port 4000. The same Caddyfile has an optional block to serve the app from this host too.
+7. **TURN:** `sudo apt install -y coturn`, copy `deploy/turnserver.conf` to `/etc/turnserver.conf` and set `static-auth-secret` (from `openssl rand -hex 32`), `realm` and the certificate paths; behind NAT (AWS) add `external-ip=PUBLIC/PRIVATE`. In `.env`, set `TURN_SECRET` to the same secret and `TURN_URLS`/`STUN_URLS` to your name. Open 3478, 5349/TCP and 49152–65535/UDP, then `sudo systemctl enable --now coturn`.
+8. **Push (optional):** `npm run vapid` prints `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY`; set `VAPID_SUBJECT` to a `mailto:` or your `https://` address.
+9. Restart the API, then continue from 1.2 step 3 (with an empty setup code if you used `ADMIN_SIGNING_KEYS`).
 
 ---
 
@@ -210,6 +207,7 @@ To change more than plugins allow, see [FORKING.md](FORKING.md) and `relay-web/R
 
 | Task | Where | Command |
 | --- | --- | --- |
+| Install or upgrade a server | the host | `sudo bash relay-server/deploy/install.sh [--domain NAME]` |
 | Run the API | `relay-server/` | `npm run start` |
 | Run the expiry worker | `relay-server/` | `npm run worker` |
 | Make push (VAPID) keys | `relay-server/` | `npm run vapid` |

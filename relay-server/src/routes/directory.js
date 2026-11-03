@@ -1,5 +1,6 @@
 import express, { Router } from "express";
-import { trustedAdmins, validateDirectory, validateLeave, validateProfile } from "../lib/directory.js";
+import { setupCodeMatches, trustedAdmins, validateDirectory, validateLeave, validateProfile } from "../lib/directory.js";
+import { parseBody } from "../lib/signed.js";
 import { memberSigners, validateDeviceCert, validateDeviceRevoke } from "../lib/devices.js";
 
 const jsonBody = express.json({ limit: "512kb" });
@@ -17,7 +18,11 @@ const jsonBody = express.json({ limit: "512kb" });
  * directory drops them. Until then, clients verify the departure and treat them as gone, and the server
  * never re-adds them from an older-looking directory that still lists them.
  */
-export function directoryRouter(prisma, io, { envAdmins, onRemoved, onLeft, publicUrl = process.env.PUBLIC_URL || "" } = {}) {
+export function directoryRouter(
+  prisma,
+  io,
+  { envAdmins, onRemoved, onLeft, publicUrl = process.env.PUBLIC_URL || "", setupCode = process.env.SETUP_CODE || "" } = {}
+) {
   const router = Router();
 
   router.get("/", async (_req, res) => {
@@ -41,13 +46,21 @@ export function directoryRouter(prisma, io, { envAdmins, onRemoved, onLeft, publ
     }
   });
 
-  // Publishing needs no session: the admin signature on the directory is the authorization.
+  // Publishing needs no session: the admin signature on the directory is the authorization. The very first one may
+  // instead come with the server's one-time setup code (X-Relay-Setup), which makes its signer the first admin.
   router.post("/", jsonBody, async (req, res) => {
     try {
       const latest = await prisma.directory.findFirst({ orderBy: { version: "desc" }, select: { version: true, body: true } });
       const devices = await prisma.device.findMany({ select: { member: true, signingPublicKey: true } });
       const deviceSigsOf = (member) => devices.filter((x) => x.member === member).map((x) => x.signingPublicKey);
-      const result = await validateDirectory(req.body, trustedAdmins(latest?.body, envAdmins), latest?.version ?? 0, deviceSigsOf);
+      let admins = trustedAdmins(latest?.body, envAdmins);
+      const offered = req.get("x-relay-setup");
+      if (!latest && offered) {
+        if (!setupCodeMatches(setupCode, offered)) return res.status(403).json({ error: "That setup code isn't right." });
+        const signer = parseBody(req.body)?.signer;
+        if (typeof signer === "string") admins = [...admins, signer];
+      }
+      const result = await validateDirectory(req.body, admins, latest?.version ?? 0, deviceSigsOf);
       if (!result.ok) return res.status(400).json({ error: result.error });
       const d = result.directory;
       const departed = new Set((await prisma.departure.findMany({ select: { keyHash: true } })).map((x) => x.keyHash));

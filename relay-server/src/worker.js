@@ -3,6 +3,7 @@
  * once their key has expired (a token can't be replayed against an expired key).
  * Run via: npm run worker (or cron)
  */
+import "./env.js";
 import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();

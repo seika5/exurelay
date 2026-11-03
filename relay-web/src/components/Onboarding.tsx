@@ -177,7 +177,7 @@ export function JoinServer({ onClose }: { onClose?: () => void } = {}) {
           )}
           <p className="text-sm text-[var(--muted)]">
             Enter your server&apos;s address and your name there. This creates your identity for that server; you&apos;ll
-            be its first admin, and the next screen shows the key to put in the server&apos;s settings.
+            be its first admin. Have the setup code ready if your server showed one when it was installed.
           </p>
           <input
             type="url"
@@ -352,16 +352,19 @@ export function NotEnrolled() {
       <main className={screen} style={safeTop}>
         <h1 className="text-xl font-semibold">Set up Relay</h1>
         <p className="text-sm text-[var(--muted)] text-center max-w-sm">
-          1. Put this signing key in <code>ADMIN_SIGNING_KEYS</code> in the server&apos;s <code>.env</code> and restart
-          it. It only authorizes the first member list.
+          Enter the setup code your server showed when it was installed, then create the member list to enroll
+          yourself. After that, share the join code and enroll everyone else from Settings → Admin.
         </p>
-        <div className="w-full max-w-md">
-          <SigningKey value={identity.signingPublicKeyBase64} />
-        </div>
-        <p className="text-sm text-[var(--muted)] text-center max-w-sm">
-          2. Create the member list to enroll yourself. Then share the join code and enroll everyone else from Settings
-          → Admin.
-        </p>
+        <details className="w-full max-w-md text-sm text-[var(--muted)]">
+          <summary className="cursor-pointer text-center">Set the server up by hand instead?</summary>
+          <p className="mt-2 text-center">
+            Put this signing key in <code>ADMIN_SIGNING_KEYS</code> in the server&apos;s <code>.env</code>, restart it,
+            and leave the setup code empty. It only authorizes the first member list.
+          </p>
+          <div className="mt-2">
+            <SigningKey value={identity.signingPublicKeyBase64} />
+          </div>
+        </details>
         <div className="w-full max-w-md">
           <MembersAdmin />
         </div>

@@ -5,7 +5,7 @@
 import { describe, it, before } from "node:test";
 import assert from "node:assert";
 import { webcrypto } from "crypto";
-import { validateDirectory, validateLeave, validateProfile } from "../directory.js";
+import { setupCodeMatches, validateDirectory, validateLeave, validateProfile } from "../directory.js";
 import { keyHashOf } from "../signed.js";
 
 const subtle = webcrypto.subtle;
@@ -146,5 +146,16 @@ describe("admin devices", () => {
     assert.strictEqual((await validateDirectory(await dir([laptop.pub]), [admin.pub], 1, devicesOf)).ok, true);
     assert.match((await validateDirectory(await dir([laptop.pub]), [admin.pub], 1)).error, /member or one of their devices/);
     assert.match((await validateDirectory(await dir([stranger.pub]), [admin.pub], 1, devicesOf)).error, /member or one of their devices/);
+  });
+});
+
+describe("setupCodeMatches", () => {
+  it("accepts only the configured code, and nothing when none is configured", () => {
+    assert.strictEqual(setupCodeMatches("abc-123", "abc-123"), true);
+    assert.strictEqual(setupCodeMatches("abc-123", " abc-123\n"), true);
+    assert.strictEqual(setupCodeMatches("abc-123", "abc-124"), false);
+    assert.strictEqual(setupCodeMatches("", ""), false);
+    assert.strictEqual(setupCodeMatches("", "anything"), false);
+    assert.strictEqual(setupCodeMatches("abc-123", undefined), false);
   });
 });

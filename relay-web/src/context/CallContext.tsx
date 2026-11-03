@@ -110,7 +110,156 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
   mutedRef.current = muted;
   deafenedRef.current = deafened;
 
+  const inCallRef = useRef(inCall);
+  inCallRef.current = inCall;
+  /** The socket id we're in the room as: a reconnect gets a new id, which must join again (see the "connect" effect). */
+  const joinedAsRef = useRef<string | null>(null);
+  /** Peer socket id -> the device behind it, so a device that reconnected under a new id replaces its old tile. */
+  const peerDevicesRef = useRef<Map<string, string>>(new Map());
+  const restartTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+
   const { speaking, lastSpokeId } = useSpeakingDetection(localStream, remoteStreams, muted);
+
+  /**
+   * A peer connection with our handlers: remote tracks into remoteStreams, ICE candidates out, and recovery. When
+   * the media path breaks (a phone moving between Wi-Fi and cellular, a NAT rebinding) the connection goes
+   * "disconnected", then "failed"; one side (the lower socket id, so the two don't offer at once) replaces it with a
+   * fresh connection and offer, and the other side answers that as usual.
+   */
+  const newPeer = useCallback(function make(peerId: string, sock: Socket): RTCPeerConnection {
+    const pc = new RTCPeerConnection({ iceServers: iceServersRef.current });
+    pcRef.current.set(peerId, pc);
+    pc.ontrack = (e) => {
+      if (!e.track) return;
+      const track = e.track;
+      const removeTrack = () => {
+        setRemoteStreams((m) => {
+          const prev = m.get(peerId);
+          if (!prev) return m;
+          const remaining = prev.getTracks().filter((t) => t !== track);
+          const next = new Map(m);
+          next.set(peerId, new MediaStream(remaining));
+          return next;
+        });
+      };
+      track.onended = removeTrack;
+      setRemoteStreams((m) => {
+        const next = new Map(m);
+        const prev = next.get(peerId);
+        next.set(peerId, new MediaStream(prev ? [...prev.getTracks(), track] : [track]));
+        return next;
+      });
+    };
+    pc.onicecandidate = (e) => {
+      if (e.candidate) sock.emit("signal", { to: peerId, candidate: e.candidate.toJSON() });
+    };
+    const restart = async () => {
+      const stream = localStreamRef.current;
+      if (pcRef.current.get(peerId) !== pc || !stream || !sock.connected || !sock.id || sock.id > peerId) return;
+      pc.close();
+      iceQueueRef.current.delete(peerId);
+      setRemoteStreams((m) => {
+        const next = new Map(m);
+        next.delete(peerId);
+        return next;
+      });
+      const fresh = make(peerId, sock);
+      stream.getTracks().forEach((t) => fresh.addTrack(t, stream));
+      const offer = await fresh.createOffer();
+      await fresh.setLocalDescription(offer);
+      sock.emit("signal", { to: peerId, type: "offer", sdp: offer });
+    };
+    pc.onconnectionstatechange = () => {
+      const timers = restartTimersRef.current;
+      clearTimeout(timers.get(peerId));
+      timers.delete(peerId);
+      if (pc.connectionState === "failed") restart().catch(() => {});
+      // "disconnected" often recovers by itself within a few seconds; if it doesn't, don't wait for "failed".
+      else if (pc.connectionState === "disconnected") {
+        timers.set(peerId, setTimeout(() => {
+          timers.delete(peerId);
+          if (pc.connectionState !== "connected") restart().catch(() => {});
+        }, 5000));
+      }
+    };
+    return pc;
+  }, []);
+
+  /** Forget a peer: its connection, tile and state. */
+  const dropPeer = useCallback((id: string) => {
+    setPeers((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+    setPeerKeyHashes((prev) => {
+      const next = new Map(prev);
+      next.delete(id);
+      return next;
+    });
+    setPeerMutedDeafened((prev) => {
+      const next = new Map(prev);
+      next.delete(id);
+      return next;
+    });
+    pcRef.current.get(id)?.close();
+    pcRef.current.delete(id);
+    iceQueueRef.current.delete(id);
+    peerDevicesRef.current.delete(id);
+    clearTimeout(restartTimersRef.current.get(id));
+    restartTimersRef.current.delete(id);
+    setRemoteStreams((m) => {
+      const next = new Map(m);
+      next.delete(id);
+      return next;
+    });
+  }, []);
+
+  /** Drop every connection (hang up, or our socket came back under a new id). */
+  const dropAllPeers = useCallback(() => {
+    pcRef.current.forEach((pc) => pc.close());
+    pcRef.current.clear();
+    iceQueueRef.current.clear();
+    peerDevicesRef.current.clear();
+    restartTimersRef.current.forEach((t) => clearTimeout(t));
+    restartTimersRef.current.clear();
+    setRemoteStreams(new Map());
+    setPeers(new Set());
+    setPeerKeyHashes(new Map());
+    setPeerMutedDeafened(new Map());
+  }, []);
+
+  /**
+   * After join_room, offer to everyone already in the room. Delayed so: (1) the existing user's offer often arrives
+   * first so we become the answerer (replaceTrack path works), and (2) our audio track is fully "live" before we add
+   * it to the PC (same pattern as camera on: add track then offer after connection exists).
+   */
+  const offerToMembers = useCallback(
+    (sock: Socket, members: Array<{ id: string; keyHash: string | null }> | string[]) => {
+      const list =
+        Array.isArray(members) && members.length > 0 && typeof members[0] === "object" && "id" in members[0]
+          ? (members as Array<{ id: string }>)
+          : (members as string[]).map((id) => ({ id }));
+      // Only the first list after joining decides whether we started the call; a later rejoin never announces one.
+      const cb = onFirstInRoomRef.current;
+      onFirstInRoomRef.current = null;
+      if (list.length === 0 && cb) Promise.resolve(cb()).catch(() => {});
+      const offer = async (toId: string) => {
+        const stream = localStreamRef.current;
+        if (pcRef.current.has(toId) || !stream) return;
+        const pc = newPeer(toId, sock);
+        stream.getTracks().forEach((t) => pc.addTrack(t, stream));
+        const o = await pc.createOffer();
+        await pc.setLocalDescription(o);
+        sock.emit("signal", { to: toId, type: "offer", sdp: o });
+      };
+      const JOIN_OFFER_DELAY_MS = 450;
+      list.forEach(({ id }) => {
+        if (id !== sock.id) setTimeout(() => offer(id).catch(() => {}), JOIN_OFFER_DELAY_MS);
+      });
+    },
+    [newPeer]
+  );
 
   const setRoomId = useCallback((id: string) => setRoomIdState(id), []);
 
@@ -197,17 +346,22 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
         });
         return next;
       });
-      if (list.length === 0) {
-        const cb = onFirstInRoomRef.current;
-        if (cb) {
-          onFirstInRoomRef.current = null;
-          Promise.resolve(cb()).catch(() => {});
-        }
-      }
+      list.forEach((m) => {
+        const device = (m as { device?: string | null }).device;
+        if (device) peerDevicesRef.current.set(m.id, device);
+      });
+      // Announcing a call we started is offerToMembers' job (it runs on the same "members" list).
     });
-    socket.on("peer_joined", (payload: { id: string; keyHash: string | null } | string) => {
+    socket.on("peer_joined", (payload: { id: string; keyHash: string | null; device?: string | null } | string) => {
       const id = typeof payload === "string" ? payload : payload.id;
       const keyHash = typeof payload === "object" ? payload.keyHash : null;
+      const device = typeof payload === "object" ? payload.device : null;
+      // The same device under a new socket id reconnected (e.g. changed networks): its old connection is dead, even if
+      // the server hasn't noticed yet.
+      if (device) {
+        for (const [oldId, d] of peerDevicesRef.current) if (d === device && oldId !== id) dropPeer(oldId);
+        peerDevicesRef.current.set(id, device);
+      }
       setPeers((prev) => new Set(prev).add(id));
       if (keyHash) setPeerKeyHashes((prev) => new Map(prev).set(id, keyHash));
       // So the new joiner sees our mute/deafen state: re-send our state when someone joins.
@@ -216,31 +370,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
         socket.emit("call_state", rid, { muted: mutedRef.current, deafened: deafenedRef.current });
       }
     });
-    socket.on("peer_left", (id: string) => {
-      setPeers((prev) => {
-        const next = new Set(prev);
-        next.delete(id);
-        return next;
-      });
-      setPeerKeyHashes((prev) => {
-        const next = new Map(prev);
-        next.delete(id);
-        return next;
-      });
-      setPeerMutedDeafened((prev) => {
-        const next = new Map(prev);
-        next.delete(id);
-        return next;
-      });
-      pcRef.current.get(id)?.close();
-      pcRef.current.delete(id);
-      iceQueueRef.current.delete(id);
-      setRemoteStreams((m) => {
-        const next = new Map(m);
-        next.delete(id);
-        return next;
-      });
-    });
+    socket.on("peer_left", (id: string) => dropPeer(id));
     socket.on("peer_call_state", (payload: { id: string; muted: boolean; deafened: boolean }) => {
       const { id: peerId, muted: m, deafened: d } = payload;
       if (!peerId) return;
@@ -253,13 +383,8 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
       screenTrackRef.current = null;
       setLocalStream(null);
       setInCall(false);
-      setRemoteStreams(new Map());
-      setPeers(new Set());
-      setPeerKeyHashes(new Map());
-      setPeerMutedDeafened(new Map());
-      pcRef.current.forEach((pc) => pc.close());
-      pcRef.current.clear();
-      iceQueueRef.current.clear();
+      joinedAsRef.current = null;
+      dropAllPeers();
     });
     return () => {
       socket.off("members");
@@ -268,7 +393,29 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
       socket.off("peer_call_state");
       socket.off("room_join_error");
     };
-  }, [socket]);
+  }, [socket, dropPeer, dropAllPeers]);
+
+  // Our socket came back under a new id (the network changed, or the server restarted): the server no longer has us
+  // in the room and every peer connection was set up through the old id. Join again as if new; the others drop our
+  // old tile (peer_left, or our device rejoining) and connect to the new id.
+  useEffect(() => {
+    if (!socket) return;
+    const onConnect = () => {
+      const rid = roomIdRef.current;
+      const allowed = allowedRef.current;
+      if (!inCallRef.current || !rid || !allowed || !localStreamRef.current || socket.id === joinedAsRef.current) return;
+      dropAllPeers();
+      onFirstInRoomRef.current = null;
+      joinedAsRef.current = socket.id ?? null;
+      socket.once("members", (members: Array<{ id: string; keyHash: string | null }> | string[]) => offerToMembers(socket, members));
+      socket.emit("join_room", rid, null, [...allowed]);
+      socket.emit("call_state", rid, { muted: mutedRef.current, deafened: deafenedRef.current });
+    };
+    socket.on("connect", onConnect);
+    return () => {
+      socket.off("connect", onConnect);
+    };
+  }, [socket, dropAllPeers, offerToMembers]);
 
   const startOrJoinCall = useCallback(
     async (
@@ -304,68 +451,12 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
 
       // Register for "members" before emitting join_room so we never miss the list (avoids race where
       // server sends "members" before the effect that subscribes runs, which could break audio-only setup).
-      const createOfferToExisting = async (toId: string) => {
-        if (pcRef.current.has(toId)) return;
-        const pc = new RTCPeerConnection({ iceServers: iceServersRef.current });
-        pcRef.current.set(toId, pc);
-        stream.getTracks().forEach((t) => pc.addTrack(t, stream));
-        pc.ontrack = (e) => {
-          if (!e.track) return;
-          const track = e.track;
-          const peerId = toId;
-          const removeTrack = () => {
-            setRemoteStreams((m) => {
-              const prev = m.get(peerId);
-              if (!prev) return m;
-              const remaining = prev.getTracks().filter((t) => t !== track);
-              const next = new Map(m);
-              next.set(peerId, new MediaStream(remaining));
-              return next;
-            });
-          };
-          track.onended = removeTrack;
-          setRemoteStreams((m) => {
-            const next = new Map(m);
-            const prev = next.get(peerId);
-            const streamForPeer = new MediaStream(prev ? [...prev.getTracks(), track] : [track]);
-            next.set(peerId, streamForPeer);
-            return next;
-          });
-        };
-        pc.onicecandidate = (e) => {
-          if (e.candidate) socket.emit("signal", { to: toId, candidate: e.candidate.toJSON() });
-        };
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        socket.emit("signal", { to: toId, type: "offer", sdp: offer });
-      };
-      const onMembers = (members: Array<{ id: string; keyHash: string | null }> | string[]) => {
-        const list =
-          Array.isArray(members) && members.length > 0 && typeof members[0] === "object" && "id" in members[0]
-            ? (members as Array<{ id: string }>)
-            : (members as string[]).map((id) => ({ id }));
-        if (list.length === 0) {
-          const cb = onFirstInRoomRef.current;
-          if (cb) {
-            onFirstInRoomRef.current = null;
-            Promise.resolve(cb()).catch(() => {});
-          }
-        }
-        // Delay creating/sending offers so: (1) the existing user's offer often arrives first so we
-        // become the answerer (replaceTrack path works), and (2) our audio track is fully "live" before
-        // we add it to the PC (same pattern as camera on: add track then offer after connection exists).
-        const JOIN_OFFER_DELAY_MS = 450;
-        list.forEach((m) => {
-          const id = typeof m === "string" ? m : m.id;
-          if (id !== socket.id) {
-            setTimeout(() => createOfferToExisting(id), JOIN_OFFER_DELAY_MS);
-          }
-        });
-      };
+      const onMembers = (members: Array<{ id: string; keyHash: string | null }> | string[]) => offerToMembers(socket, members);
       socket.once("members", onMembers);
+      joinedAsRef.current = socket.id ?? null;
       socket.emit("join_room", rid.trim(), keyHash ?? null, allowed);
     },
-    [socket]
+    [socket, offerToMembers]
   );
 
   const dismissRoomJoinError = useCallback(() => setRoomJoinError(null), []);
@@ -376,16 +467,12 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
       const stream = localStreamRef.current;
 
       const clearCallState = () => {
-        pcRef.current.forEach((pc) => pc.close());
-        pcRef.current.clear();
-        iceQueueRef.current.clear();
+        joinedAsRef.current = null;
+        dropAllPeers();
         stream?.getTracks().forEach((t) => t.stop());
         screenTrackRef.current?.stop();
         screenTrackRef.current = null;
         setLocalStream(null);
-        setRemoteStreams(new Map());
-        setPeers(new Set());
-        setPeerKeyHashes(new Map());
         setInCall(false);
         setMuted(false);
         setDeafened(false);
@@ -413,7 +500,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
         socket.emit("leave_room", roomToLeave);
       });
     },
-    [socket]
+    [socket, dropAllPeers]
   );
 
   // A call belongs to one server: switching servers ends it.
@@ -554,34 +641,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
           }
           const streamToUse = localStreamRef.current ?? localStream;
           if (!pc && streamToUse) {
-            pc = new RTCPeerConnection({ iceServers: iceServersRef.current });
-            pcRef.current.set(from, pc);
-            pc.ontrack = (e) => {
-              if (!e.track) return;
-              const track = e.track;
-              const peerId = from;
-              const removeTrack = () => {
-                setRemoteStreams((m) => {
-                  const prev = m.get(peerId);
-                  if (!prev) return m;
-                  const remaining = prev.getTracks().filter((t) => t !== track);
-                  const next = new Map(m);
-                  next.set(peerId, new MediaStream(remaining));
-                  return next;
-                });
-              };
-              track.onended = removeTrack;
-              setRemoteStreams((m) => {
-                const next = new Map(m);
-                const prev = next.get(peerId);
-                const stream = new MediaStream(prev ? [...prev.getTracks(), track] : [track]);
-                next.set(peerId, stream);
-                return next;
-              });
-            };
-            pc.onicecandidate = (e) => {
-              if (e.candidate) socket.emit("signal", { to: from, candidate: e.candidate.toJSON() });
-            };
+            pc = newPeer(from, socket);
             try {
               await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
             } catch (err) {
@@ -644,7 +704,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
       socket.on("signal", handleSignal);
       return () => socket.off("signal", handleSignal);
     },
-    [drainIceQueue]
+    [drainIceQueue, newPeer]
   );
 
   useEffect(() => {
@@ -661,35 +721,9 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!inCall || !localStream || !socket) return;
     const createOfferTo = async (toId: string) => {
-      const pc = new RTCPeerConnection({ iceServers: iceServersRef.current });
-      pcRef.current.set(toId, pc);
+      if (pcRef.current.has(toId)) return;
+      const pc = newPeer(toId, socket);
       localStream.getTracks().forEach((t) => pc.addTrack(t, localStream));
-      pc.ontrack = (e) => {
-        if (!e.track) return;
-        const track = e.track;
-        const peerId = toId;
-        const removeTrack = () => {
-          setRemoteStreams((m) => {
-            const prev = m.get(peerId);
-            if (!prev) return m;
-            const remaining = prev.getTracks().filter((t) => t !== track);
-            const next = new Map(m);
-            next.set(peerId, new MediaStream(remaining));
-            return next;
-          });
-        };
-        track.onended = removeTrack;
-        setRemoteStreams((m) => {
-          const next = new Map(m);
-          const prev = next.get(peerId);
-          const stream = new MediaStream(prev ? [...prev.getTracks(), track] : [track]);
-          next.set(peerId, stream);
-          return next;
-        });
-      };
-      pc.onicecandidate = (e) => {
-        if (e.candidate) socket.emit("signal", { to: toId, candidate: e.candidate.toJSON() });
-      };
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       socket.emit("signal", { to: toId, type: "offer", sdp: offer });
@@ -704,7 +738,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
     return () => {
       socket.off("peer_joined", onPeerJoined);
     };
-  }, [inCall, localStream, socket]);
+  }, [inCall, localStream, socket, newPeer]);
 
   const value = useMemo<CallContextValue>(
     () => ({

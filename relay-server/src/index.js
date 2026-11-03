@@ -1,3 +1,4 @@
+import "./env.js";
 import express from "express";
 import { createServer } from "http";
 import { Server } from "socket.io";
@@ -27,7 +28,9 @@ app.use(cors(corsOptions));
 // No global JSON body parser: routes that take JSON add their own small limit.
 // No request logging, on purpose: requests must not be tied to IPs or times (DESIGN.md §1, §6).
 
-const io = new Server(httpServer, { cors: corsOptions });
+// Pings every 10s, dropped after 10 more: a socket left behind by a network change is noticed within ~20s (the
+// default is up to 45s), and the client notices a dead connection just as fast and reconnects.
+const io = new Server(httpServer, { cors: corsOptions, pingInterval: 10_000, pingTimeout: 10_000 });
 
 const auth = createAuth();
 const issuer = createIssuer(prisma);

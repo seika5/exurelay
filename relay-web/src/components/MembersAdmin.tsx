@@ -43,6 +43,7 @@ export function MembersAdmin() {
   const [scanning, setScanning] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [setupCode, setSetupCode] = useState("");
 
   const loadLabels = useCallback(() => {
     getAdminLabels().then(setLabels, () => {});
@@ -66,9 +67,20 @@ export function MembersAdmin() {
     }
   };
 
+  // The first member list. A server installed by deploy/install.sh takes its one-time setup code instead of having
+  // this admin's signing key in ADMIN_SIGNING_KEYS; a hand-configured one needs no code.
   if (!directory) {
     return (
       <div className="flex flex-col gap-2 items-center">
+        <input
+          type="text"
+          value={setupCode}
+          onChange={(e) => setSetupCode(e.target.value)}
+          placeholder="Setup code (if your server printed one)"
+          autoComplete="off"
+          spellCheck={false}
+          className="w-full px-2 py-1.5 rounded bg-[var(--bg)] border border-[var(--border)] text-sm font-mono"
+        />
         <button
           type="button"
           disabled={busy}
@@ -81,7 +93,8 @@ export function MembersAdmin() {
                   ecdh: identity.publicKeyBase64,
                   sig: me,
                   enrolledAt: Date.now(),
-                })
+                }),
+                setupCode
               )
             )
           }

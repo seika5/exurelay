@@ -139,7 +139,8 @@ type IdentityContextValue = {
    */
   leaveServer: (opts?: { force?: boolean }) => Promise<void>;
   /** Admin only: sign and publish the next directory version. */
-  publishSignedDirectory: (next: Directory) => Promise<void>;
+  /** setupCode: the server's one-time setup code, for the first member list only. */
+  publishSignedDirectory: (next: Directory, setupCode?: string) => Promise<void>;
   getMember: (keyHash: string) => DirectoryMember | undefined;
   isRemoved: (keyHash: string) => boolean;
   /** For others: a local nickname. For me: my display name, signed and published to the directory. */
@@ -618,10 +619,10 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
       });
   }, [base, enrolled, myMember, directoryLoaded, profiles, signAndPublishProfile, refreshDirectory]);
 
-  const publishSignedDirectory = useCallback(async (next: Directory) => {
+  const publishSignedDirectory = useCallback(async (next: Directory, setupCode?: string) => {
     if (!base || !isAdmin) throw new Error("Only an admin can change the member list");
     if (next.signer !== base.signingPublicKeyBase64) throw new Error("Directory signer must be this admin");
-    await publishDirectory(await signRecord(base.signingKeyPair.privateKey, next));
+    await publishDirectory(await signRecord(base.signingKeyPair.privateKey, next), setupCode);
     await refreshDirectory();
   }, [base, isAdmin, refreshDirectory]);
 
