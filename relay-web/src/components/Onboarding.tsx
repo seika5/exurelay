@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useIdentity } from "@/context/IdentityContext";
-import { normalizeServerUrl } from "@/lib/server";
+import { checkNewServer, normalizeServerUrl } from "@/lib/server";
 import { EnrollmentCode } from "@/components/EnrollmentCode";
 import { MembersAdmin } from "@/components/MembersAdmin";
 import { QrScanner } from "@/components/QrScanner";
@@ -92,6 +92,24 @@ export function JoinServer({ onClose }: { onClose?: () => void } = {}) {
   const [name, setName] = useState("");
   const [choosing, setChoosing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** Checking the new server, or waiting for it to finish installing (checked again every 10 seconds). */
+  const [waiting, setWaiting] = useState<"checking" | "starting" | null>(null);
+
+  const checkServer = async () => {
+    const status = await checkNewServer(url);
+    if (status === "starting") return setWaiting("starting");
+    setWaiting(null);
+    if (status === "claimed") setError("This server already has a member list. Ask its admin for a join code.");
+    else setChoosing(true);
+  };
+
+  useEffect(() => {
+    if (waiting !== "starting") return;
+    const t = setInterval(checkServer, 10_000);
+    return () => clearInterval(t);
+    // checkServer only reads url, which is a dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [waiting, url]);
 
   const tryJoin = (text: string) => {
     setError(null);
@@ -160,10 +178,11 @@ export function JoinServer({ onClose }: { onClose?: () => void } = {}) {
             setError(null);
             try {
               normalizeServerUrl(url);
-              setChoosing(true);
             } catch (err) {
-              setError(err instanceof Error ? err.message : "Invalid address");
+              return setError(err instanceof Error ? err.message : "Invalid address");
             }
+            setWaiting("checking");
+            void checkServer();
           }}
         >
           {choosing && (
@@ -182,7 +201,10 @@ export function JoinServer({ onClose }: { onClose?: () => void } = {}) {
           <input
             type="url"
             value={url}
-            onChange={(e) => setUrl(e.target.value)}
+            onChange={(e) => {
+              setUrl(e.target.value);
+              setWaiting(null);
+            }}
             placeholder="https://relay.example.com"
             className="px-3 py-2 rounded bg-[var(--surface)] border border-[var(--border)] text-sm"
           />
@@ -195,10 +217,20 @@ export function JoinServer({ onClose }: { onClose?: () => void } = {}) {
             className="px-3 py-2 rounded bg-[var(--surface)] border border-[var(--border)] text-sm"
           />
           {error && <p className="text-sm text-red-500">{error}</p>}
-          <button type="submit" disabled={!url.trim() || !name.trim()} className="py-2 rounded bg-[var(--accent)] text-white text-sm disabled:opacity-50">
-            Continue
+          {waiting === "starting" && (
+            <p className="text-sm text-[var(--muted)]" role="status">
+              This server isn&apos;t answering yet. If you just created it, it takes about 5 minutes to install and get
+              its HTTPS certificate. This page checks again every 10 seconds and carries on by itself once it&apos;s up.
+            </p>
+          )}
+          <button
+            type="submit"
+            disabled={!url.trim() || !name.trim() || waiting !== null}
+            className="py-2 rounded bg-[var(--accent)] text-white text-sm disabled:opacity-50"
+          >
+            {waiting === "checking" ? "Checking the server…" : waiting === "starting" ? "Waiting for the server…" : "Continue"}
           </button>
-          <button type="button" onClick={() => setNewServer(false)} className="text-xs text-[var(--muted)] underline">
+          <button type="button" onClick={() => { setWaiting(null); setNewServer(false); }} className="text-xs text-[var(--muted)] underline">
             Back
           </button>
         </form>

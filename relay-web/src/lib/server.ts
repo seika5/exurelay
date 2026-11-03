@@ -179,3 +179,19 @@ export function takeJoinFromLocation(): string | null {
   history.replaceState(null, "", window.location.pathname + window.location.search);
   return hash;
 }
+
+/**
+ * Whether a server someone is setting up is ready to claim: "ready" (answering, no member list yet), "claimed"
+ * (it already has one: join with a code instead), or "starting" (not answering yet, or answering with an error,
+ * as a freshly created server does for its first few minutes while it installs and gets its HTTPS certificate).
+ */
+export async function checkNewServer(url: string, timeoutMs = 8000): Promise<"ready" | "claimed" | "starting"> {
+  try {
+    const res = await fetch(`${normalizeServerUrl(url)}/api/directory`, { cache: "no-store", signal: AbortSignal.timeout(timeoutMs) });
+    if (!res.ok) return "starting";
+    const body = (await res.json()) as { directory?: unknown };
+    return body.directory ? "claimed" : "ready";
+  } catch {
+    return "starting";
+  }
+}

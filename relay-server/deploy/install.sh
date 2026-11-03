@@ -4,14 +4,18 @@
 #
 #   sudo bash install.sh                       # address from this host's public IP: https://203-0-113-5.sslip.io
 #   sudo bash install.sh --domain relay.example.com   # your own domain (its A record must point here first)
+#   sudo bash install.sh --setup-code 'pick-one-8+'   # choose the setup code instead of generating one
+#   sudo bash install.sh --restore relay-backup.tar.gz  # move a server: restore a backup made by relay-backup
 #
 # Run it again at any time to upgrade: it pulls the code, keeps every secret and restarts the services.
-# Environment overrides: RELAY_DOMAIN, RELAY_REPO, RELAY_BRANCH (same as the flags).
+# Environment overrides: RELAY_DOMAIN, RELAY_REPO, RELAY_BRANCH, RELAY_SETUP_CODE (same as the flags).
 set -euo pipefail
 
 DOMAIN="${RELAY_DOMAIN:-}"
 REPO="${RELAY_REPO:-https://github.com/seika5/relay.git}"
 BRANCH="${RELAY_BRANCH:-main}"
+CHOSEN_SETUP_CODE="${RELAY_SETUP_CODE:-}"
+RESTORE=""
 DIR=/opt/relay
 SERVER="$DIR/relay-server"
 ENV_FILE="$SERVER/.env"
@@ -21,7 +25,9 @@ while [ $# -gt 0 ]; do
     --domain) DOMAIN="$2"; shift 2 ;;
     --repo) REPO="$2"; shift 2 ;;
     --branch) BRANCH="$2"; shift 2 ;;
-    -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
+    --setup-code) CHOSEN_SETUP_CODE="$2"; shift 2 ;;
+    --restore) RESTORE="$(realpath "$2")"; shift 2 ;;
+    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
     *) echo "Unknown option: $1" >&2; exit 1 ;;
   esac
 done
@@ -33,6 +39,11 @@ die() { printf '\nError: %s\n' "$*" >&2; exit 1; }
 . /etc/os-release
 [ "${ID:-}" = ubuntu ] || die "this script is for Ubuntu (found ${ID:-unknown})"
 export DEBIAN_FRONTEND=noninteractive
+# Written into .env unquoted, so keep it to characters that need no quoting anywhere.
+if [ -n "$CHOSEN_SETUP_CODE" ] && ! [[ "$CHOSEN_SETUP_CODE" =~ ^[A-Za-z0-9._~@%+=,:-]{8,64}$ ]]; then
+  die "the setup code must be 8-64 letters, digits or . _ ~ @ % + = , : -"
+fi
+[ -z "$RESTORE" ] || [ -f "$RESTORE" ] || die "no backup at $RESTORE"
 
 # ---------------------------------------------------------------------------------------------------------------
 say "Installing packages"
@@ -42,7 +53,7 @@ if [ "$(awk '/MemTotal/ {print $2}' /proc/meminfo)" -lt 2000000 ] && ! swapon --
   grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
 fi
 apt-get update -q
-apt-get install -y -q ca-certificates curl gnupg git openssl postgresql coturn debian-keyring debian-archive-keyring apt-transport-https
+apt-get install -y -q ca-certificates curl gnupg git openssl postgresql coturn unattended-upgrades debian-keyring debian-archive-keyring apt-transport-https
 install -d -m 0755 /etc/apt/keyrings
 systemctl enable -q --now postgresql
 
@@ -86,7 +97,7 @@ fi
 URL="https://$DOMAIN"
 echo "Address: $URL"
 if [ -n "${OLD:-}" ] && [ "$OLD" != "$DOMAIN" ]; then
-  echo "Warning: the address changes from https://$OLD. Everyone needs a new join code (Settings -> Admin) to reach it."
+  echo "Warning: the address changes from https://$OLD. To every app it's a new server: share the new join code (Settings -> Admin) and enroll everyone again."
 fi
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -103,6 +114,12 @@ sudo -u relay npm ci --no-audit --no-fund --loglevel=error
 
 # ---------------------------------------------------------------------------------------------------------------
 say "Database and secrets"
+if [ -n "$RESTORE" ]; then
+  # The backup's .env carries the old server's secrets (TURN, push keys); the steps below keep them.
+  RESTORE_DIR="$(mktemp -d)"
+  tar -xzf "$RESTORE" -C "$RESTORE_DIR" relay.env relay.dump || die "$RESTORE isn't a backup made by relay-backup"
+  install -m 0600 -o relay -g relay "$RESTORE_DIR/relay.env" "$ENV_FILE"
+fi
 envget() { [ -f "$ENV_FILE" ] && sed -n "s|^$1=||p" "$ENV_FILE" | tr -d '"' || true; }
 DB_PASS="$(envget DATABASE_URL | sed -n 's|^postgresql://relay:\([^@]*\)@.*|\1|p')"
 [ -n "$DB_PASS" ] || DB_PASS="$(openssl rand -hex 24)"
@@ -112,9 +129,18 @@ else
   sudo -u postgres psql -qc "CREATE ROLE relay WITH LOGIN PASSWORD '$DB_PASS'"
 fi
 sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='relay'" | grep -q 1 || sudo -u postgres createdb --owner relay relay
+if [ -n "$RESTORE" ]; then
+  systemctl stop relay-api relay-worker 2>/dev/null || true
+  # Start from an empty database so nothing from before the restore is left mixed in.
+  sudo -u postgres dropdb relay && sudo -u postgres createdb --owner relay relay
+  # On stdin: the postgres user can't read root's temporary folder.
+  sudo -u postgres pg_restore --no-owner --role=relay --exit-on-error -d relay < "$RESTORE_DIR/relay.dump" \
+    || die "couldn't restore the database from $RESTORE"
+  rm -rf "$RESTORE_DIR"
+fi
 
 TURN_SECRET="$(envget TURN_SECRET)"; [ -n "$TURN_SECRET" ] || TURN_SECRET="$(openssl rand -hex 32)"
-SETUP_CODE="$(envget SETUP_CODE)"; [ -n "$SETUP_CODE" ] || SETUP_CODE="$(openssl rand -hex 16 | sed 's/..../&-/g; s/-$//')"
+SETUP_CODE="${CHOSEN_SETUP_CODE:-$(envget SETUP_CODE)}"; [ -n "$SETUP_CODE" ] || SETUP_CODE="$(openssl rand -hex 16 | sed 's/..../&-/g; s/-$//')"
 VAPID_PUBLIC_KEY="$(envget VAPID_PUBLIC_KEY)"; VAPID_PRIVATE_KEY="$(envget VAPID_PRIVATE_KEY)"
 if [ -z "$VAPID_PUBLIC_KEY" ] || [ -z "$VAPID_PRIVATE_KEY" ]; then
   eval "$(sudo -u relay node -e "const k=require('web-push').generateVAPIDKeys(); console.log('VAPID_PUBLIC_KEY='+k.publicKey+'; VAPID_PRIVATE_KEY='+k.privateKey)")"
@@ -141,7 +167,7 @@ EOF
 umask 022
 chown relay:relay "$ENV_FILE"
 sudo -u relay npx prisma generate >/dev/null
-sudo -u relay npx prisma db push --skip-generate || die "the database schema changed in a way that loses data. Read README.md §1.7 (Upgrading)."
+sudo -u relay npx prisma db push --skip-generate || die "the database schema changed in a way that loses data. Read README.md §1.4 (Upgrading)."
 
 # ---------------------------------------------------------------------------------------------------------------
 say "Services"
@@ -224,6 +250,67 @@ chown root:turnserver /etc/turnserver.conf && chmod 0640 /etc/turnserver.conf
 systemctl daemon-reload
 systemctl enable -q --now relay-turn-certs.timer
 systemctl enable -q coturn
+
+say "Backups and updates"
+# Nightly backup of what you can't easily rebuild: the member list, devices, profiles and the server's secrets.
+# Messages (Blob) are left out on purpose: a backup must not keep them past the 72-hour rule (DESIGN.md §5).
+# So are spent tokens and issuer keys: the server makes new keys on its own, and apps fetch new tokens.
+cat > /usr/local/bin/relay-backup <<EOF
+#!/bin/sh
+# Writes /var/backups/relay/relay-<date>.tar.gz (and latest.tar.gz) and keeps the last 14.
+# It holds the server's secrets: keep copies somewhere private.
+# Restore on a new server with: sudo bash install.sh --restore relay-<date>.tar.gz
+set -e
+umask 077
+dir=/var/backups/relay
+tmp="\$(mktemp -d)"
+trap 'rm -rf "\$tmp"' EXIT
+install -d -m 0700 "\$dir"
+cd /
+sudo -u postgres pg_dump -Fc --exclude-table-data='"Blob"' --exclude-table-data='"SpentToken"' \\
+  --exclude-table-data='"IssuerKey"' relay > "\$tmp/relay.dump"
+cp $ENV_FILE "\$tmp/relay.env"
+out="\$dir/relay-\$(date -u +%Y%m%d-%H%M%S).tar.gz"
+tar -czf "\$out" -C "\$tmp" relay.dump relay.env
+ln -sf "\$(basename "\$out")" "\$dir/latest.tar.gz"
+ls -1t "\$dir"/relay-*.tar.gz | tail -n +15 | xargs -r rm -f
+echo "\$out"
+EOF
+chmod 0755 /usr/local/bin/relay-backup
+cat > /etc/systemd/system/relay-backup.service <<'EOF'
+[Unit]
+Description=Back up the Relay member list and secrets (not messages)
+After=postgresql.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/relay-backup
+EOF
+cat > /etc/systemd/system/relay-backup.timer <<'EOF'
+[Unit]
+Description=Back up Relay nightly
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+systemctl daemon-reload
+systemctl enable -q --now relay-backup.timer
+
+# Security updates every day; reboot at 04:30 when one needs it (every service here starts again on boot).
+cat > /etc/apt/apt.conf.d/20auto-upgrades <<'EOF'
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+EOF
+cat > /etc/apt/apt.conf.d/52relay-unattended-upgrades <<'EOF'
+// Written by Relay's install.sh.
+Unattended-Upgrade::Automatic-Reboot "true";
+Unattended-Upgrade::Automatic-Reboot-Time "04:30";
+EOF
 
 # Firewall: only if ufw is on (cloud firewalls, e.g. Lightsail's, are set up separately).
 if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then

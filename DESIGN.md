@@ -164,6 +164,8 @@ Enrollment: the new user's app generates keys and shows a QR/short code containi
 | Decision | Status |
 | --- | --- |
 | Blobs are fixed 64 KB, stored ≤ ~96 h: expiry = UTC midnight of the send day + 72 h + random 0–24 h. Exact send time is never stored. | Current |
+| Server backups (`relay-backup`, nightly, 14 kept) hold the member list, devices, profiles, push subscriptions and `.env` secrets, never blobs, spent tokens or issuer keys, so no backup keeps a message past its expiry. Disk-level snapshots (Lightsail's automatic snapshots, EBS snapshots) would, so the docs say not to turn them on. | Current |
+| A deleted blob's bytes stay in PostgreSQL's table file (and possibly its WAL) until the space is reused. The worker runs `VACUUM "Blob"` hourly so the space is reused sooner; nothing promises the bytes are gone from disk. That's acceptable only because blobs are end-to-end encrypted and carry no sender. | Current |
 | No local message history; clients re-download and decrypt everything (including a self-addressed copy of their own messages). History ends when blobs expire. | **Current → Decided: replace** with an encrypted local cache (below) |
 | Server addresses each blob by **recipient key hash**. | **Removed** (phase 5a, below) |
 | The sender's public key was in **plaintext** in every blob header, so the server learned sender→recipient for every message. | **Fixed** (phase 5a: sealed sender, below) |
@@ -517,3 +519,4 @@ Ordered by dependency. Each phase should land as its own reviewed change.
 | 10 | Remove Capacitor app | **Done**: `relay-mobile/`, its README section and `@capacitor/*` removed; phones use the installed PWA | 7 |
 | 11 | Docs and tests | **Done**: README and relay-web/README rewritten for the PWA; tests for login/tokens, protocol v2 (plus vectors), devices, sealed signaling, push, plugins, mentions, the cache; CI workflow (`.github/workflows/test.yml`) | each phase |
 | 12 | Setup and call recovery | **Done**: `deploy/install.sh` (one command on any Ubuntu host, also an upgrade), `deploy/cloud-init.sh` (user data), `deploy/aws-lightsail.yaml` (CloudFormation); free `https://<ip>.sslip.io` addresses by default, own domain optional; one-time setup code instead of copying the admin key; the server loads `.env` itself; calls recover from network changes (§7) | 11 |
+| 13 | Easier setup and backups | **Done**: a setup code chosen when creating the server (CloudFormation `SetupCode`, `RELAY_SETUP_CODE`, `--setup-code`), so nobody needs to log in to the server; the app waits for a server that's still installing; nightly backups without messages (§5) and `install.sh --restore` to move a server; daily security updates; a Launch Stack link published to S3 by `.github/workflows/publish-template.yml` | 12 |

@@ -42,19 +42,21 @@ open it (GitHub Pages, the same host via Caddy, or a local copy; see section 2).
 with 1 GB of RAM is plenty for a small group.
 
 `relay-server/deploy/install.sh` sets up everything on that host: PostgreSQL, Node.js, Caddy (HTTPS), coturn
-(TURN for calls), the secrets, system services that restart on failure, and a **one-time setup code** that lets
-you claim the server from the app. Pick one of the three ways to run it (1.1), then claim the server (1.2).
+(TURN for calls), the secrets, system services that restart on failure, nightly backups (without messages) and
+security updates. You choose a **one-time setup code** that lets you claim the server from the app. Pick one of the
+three ways to run it (1.1), then claim the server (1.2).
 
 ### 1.1 Create the server
 
 **Amazon Lightsail (CloudFormation).** In the AWS console, open **CloudFormation → Create stack → With new
-resources**, upload `relay-server/deploy/aws-lightsail.yaml`, and choose an instance size (default `micro_3_0`,
-1 GB). Leave **Domain** empty for a free address (1.3). The stack creates the instance, a static IP and the
-firewall ports. Its **Outputs** tab shows the `ServerAddress`.
+resources**, upload `relay-server/deploy/aws-lightsail.yaml` (or use a Launch Stack link, 1.8), make up a
+**SetupCode** (8+ characters) and choose an instance size (default `micro_3_0`, 1 GB). Leave **Domain** empty for
+a free address (1.3). The stack creates the instance, a static IP and the firewall ports. Its **Outputs** tab
+shows the `ServerAddress`.
 
 **DigitalOcean, EC2, Hetzner, Vultr… (user data).** Create an Ubuntu 22.04/24.04 server and paste
 `relay-server/deploy/cloud-init.sh` into its user data box (DigitalOcean: **Advanced options → Add
-initialization scripts**). Open ports 22, 80, 443, 3478 (TCP and UDP), 5349/TCP and 49152–65535/UDP in the
+initialization scripts**), with your setup code in `RELAY_SETUP_CODE`. Open ports 22, 80, 443, 3478 (TCP and UDP), 5349/TCP and 49152–65535/UDP in the
 provider's firewall if it has one. On AWS EC2, attach an Elastic IP so the address doesn't change when the
 instance stops.
 
@@ -66,14 +68,17 @@ sudo bash /tmp/relay/relay-server/deploy/install.sh                 # free sslip
 sudo bash /tmp/relay/relay-server/deploy/install.sh --domain relay.example.com   # or your own domain
 ```
 
+Add `--setup-code 'your-code'` to choose the code, or let it generate one and print it at the end.
+
 User data and CloudFormation run the install on first boot, which takes about 5 minutes (log:
-`/var/log/relay-install.log`). Then SSH in (Lightsail: the instance's **Connect** button): until the server is
-claimed, the login message shows its address and setup code.
+`/var/log/relay-install.log`). You can go straight to 1.2: the app waits until the server is up. If you left the
+setup code empty, SSH in (Lightsail: the instance's **Connect** button): until the server is claimed, the login
+message shows its address and setup code.
 
 ### 1.2 Claim it in the app and enroll everyone
 
 1. Open the app: the hosted one (section 2.1) or your own copy (section 2.8).
-2. Choose **I'm setting up a new server**, enter the server's address (e.g. `https://203-0-113-5.sslip.io`) and your name.
+2. Choose **I'm setting up a new server**, enter the server's address (e.g. `https://203-0-113-5.sslip.io`) and your name. If the server is still installing, the app says so and carries on by itself once it answers.
 3. Enter the setup code and press **Create member list**. You're enrolled as the admin and the code stops working. Whoever enters it first becomes the admin, so keep it to yourself until then.
 4. In **Settings → Admin**, share the join code (QR or link) with each new member in person or over a channel you already trust. They open it, create their identity (section 2.4), and you scan or paste the code their app shows. Check the fingerprint matches.
 
@@ -83,15 +88,15 @@ Browsers only let the app talk to a server over HTTPS, and certificates are issu
 installer uses a free [sslip.io](https://sslip.io) name built from the server's IP (`203.0.113.5` becomes
 `203-0-113-5.sslip.io`), so there's nothing to buy or configure. The trade-offs:
 
-- **The name is the IP.** A new IP is a new address, and members need a new join code to reach it. Cloud servers keep their IP (DigitalOcean droplets for life, Lightsail and EC2 with a static/Elastic IP), so this only bites when you move to a new server.
+- **The name is the IP.** A new IP is a new address: members join it as a new server and are enrolled again. Cloud servers keep their IP (DigitalOcean droplets for life, Lightsail and EC2 with a static/Elastic IP), so this only bites when you move to a new server.
 - **sslip.io answers for your name.** If it went down, new connections would fail; if it turned malicious, it could point your name elsewhere. Messages stay end-to-end encrypted and the join code pins the admin keys, so it could see when people connect, not what they say.
 
 **Using your own domain** (survives a move to a new server, and doesn't depend on sslip.io):
 
 1. At your DNS provider, add an **A record** for the name (e.g. `relay.example.com`) pointing at the server's IP. On Lightsail, that's the stack's `StaticIp` output.
 2. Install with it: `install.sh --domain relay.example.com`, `RELAY_DOMAIN="relay.example.com"` in `cloud-init.sh`, or the **Domain** parameter of the CloudFormation stack. Create the record first or straight after; HTTPS starts working once it resolves.
-3. Switching an existing server from sslip.io to a domain later: add the record, then rerun `sudo bash /opt/relay/relay-server/deploy/install.sh --domain relay.example.com`. The address changes, so share the new join code from Settings → Admin.
-4. Moving to a new server later: install the new one with the same `--domain` and point the record at it; members keep their join codes. The installer doesn't move the data: either everyone enrolls again, or you copy the database (a standard PostgreSQL dump and restore) and the old `.env`'s secrets across yourself.
+3. Switching an existing server from sslip.io to a domain later: add the record, then rerun `sudo bash /opt/relay/relay-server/deploy/install.sh --domain relay.example.com`. The address changes, so to every app it's a new server: share the new join code from Settings → Admin and enroll everyone again.
+4. Moving to a new server later: restore a backup on the new one with the same `--domain` (1.7) and point the record at it; members keep their join codes and nobody enrolls again.
 
 ### 1.4 Upgrading
 
@@ -116,6 +121,8 @@ everyone joins with the join code, creates a new identity and is enrolled again.
 | HTTPS | `/etc/caddy/Caddyfile`, from `deploy/Caddyfile`; certificates from Let's Encrypt, renewed by Caddy |
 | TURN | `/etc/turnserver.conf`, from `deploy/turnserver.conf`; `relay-turn-certs.timer` copies Caddy's certificate for it twice a day. Clients get credentials that expire (12 hours), never a fixed password |
 | Firewall | ports added to `ufw` only if it's on; cloud firewalls (Lightsail's comes from the template) are separate |
+| Backups | `relay-backup.timer`, nightly into `/var/backups/relay` (14 kept). See 1.7 |
+| Updates | `unattended-upgrades`: security updates daily, and a reboot at 04:30 (server time) when one needs it. Relay itself updates only when you rerun the installer (1.4) |
 
 ### 1.6 Setting it up by hand
 
@@ -130,6 +137,47 @@ Without the installer, on any Linux host:
 7. **TURN:** `sudo apt install -y coturn`, copy `deploy/turnserver.conf` to `/etc/turnserver.conf` and set `static-auth-secret` (from `openssl rand -hex 32`), `realm` and the certificate paths; behind NAT (AWS) add `external-ip=PUBLIC/PRIVATE`. In `.env`, set `TURN_SECRET` to the same secret and `TURN_URLS`/`STUN_URLS` to your name. Open 3478, 5349/TCP and 49152–65535/UDP, then `sudo systemctl enable --now coturn`.
 8. **Push (optional):** `npm run vapid` prints `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY`; set `VAPID_SUBJECT` to a `mailto:` or your `https://` address.
 9. Restart the API, then continue from 1.2 step 3 (with an empty setup code if you used `ADMIN_SIGNING_KEYS`).
+
+### 1.7 Backups and moving a server
+
+Each night `relay-backup` saves what would be painful to rebuild: the member list, enrolled devices and
+revocations, profiles, push subscriptions and the server's `.env` (TURN secret, push keys, database password).
+Without it, a lost server means everyone enrolls again.
+
+**Messages are never in a backup.** They're end-to-end encrypted and the server deletes them after 3–4 days; a
+backup that kept them would break that promise. For the same reason, **don't turn on your provider's disk
+snapshots** (Lightsail automatic snapshots, EBS snapshots, DigitalOcean backups): they copy the whole disk,
+messages included, and keep it for days or weeks.
+
+The backups sit on the server itself, so they don't survive losing it. Copy the latest one somewhere private
+(it holds the server's secrets) now and then:
+
+```bash
+ssh ubuntu@203.0.113.5 'sudo cat /var/backups/relay/latest.tar.gz' > relay-backup.tar.gz
+```
+
+Run `sudo relay-backup` for one right now. To restore, or to move to a new server, copy the file there and:
+
+```bash
+sudo bash relay-server/deploy/install.sh --restore relay-backup.tar.gz [--domain relay.example.com]
+```
+
+With your own domain, point its record at the new server and everyone carries on. With an sslip.io address the
+new server has a new address, and apps keep one identity per address, so it's a new server to them: share the new
+join code (Settings → Admin) and enroll everyone again. Use your own domain if you expect to move.
+Messages waiting on the old server aren't moved: send anything important again after the move.
+
+### 1.8 Publishing a Launch Stack link (maintainers and forks)
+
+CloudFormation opens a template from a link only if it's in S3. `.github/workflows/publish-template.yml` uploads
+`aws-lightsail.yaml` to a public bucket on each change, with its `RepoUrl` set to your repository, and prints the
+link in the run summary. One-time setup: create an S3 bucket with a policy allowing public `s3:GetObject`, an IAM
+role your repository can assume through GitHub's OIDC provider with `s3:PutObject` on it, and set the repository
+variables `TEMPLATE_BUCKET` and `AWS_TEMPLATE_ROLE_ARN`. The link looks like:
+
+```text
+https://console.aws.amazon.com/cloudformation/home#/stacks/quickcreate?templateURL=https://BUCKET.s3.amazonaws.com/aws-lightsail.yaml&stackName=relay
+```
 
 ---
 
@@ -207,7 +255,8 @@ To change more than plugins allow, see [FORKING.md](FORKING.md) and `relay-web/R
 
 | Task | Where | Command |
 | --- | --- | --- |
-| Install or upgrade a server | the host | `sudo bash relay-server/deploy/install.sh [--domain NAME]` |
+| Install or upgrade a server | the host | `sudo bash relay-server/deploy/install.sh [--domain NAME] [--setup-code CODE]` |
+| Back up now / restore | the host | `sudo relay-backup` / `install.sh --restore FILE` |
 | Run the API | `relay-server/` | `npm run start` |
 | Run the expiry worker | `relay-server/` | `npm run worker` |
 | Make push (VAPID) keys | `relay-server/` | `npm run vapid` |

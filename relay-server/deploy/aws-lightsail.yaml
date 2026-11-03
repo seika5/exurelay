@@ -1,10 +1,20 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
   A Relay server on Amazon Lightsail: one Ubuntu instance with a static IP and its firewall ports open, set up on
-  first boot by relay-server/deploy/install.sh. When the stack is done, wait about 5 minutes, then open the
-  instance in the Lightsail console and press Connect: the login message shows the server's address and setup code.
+  first boot by relay-server/deploy/install.sh. When the stack is done, wait about 5 minutes, then enter the
+  ServerAddress output in the app (I'm setting up a new server) with the setup code you chose here.
 
 Parameters:
+  SetupCode:
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    MaxLength: 64
+    AllowedPattern: "[A-Za-z0-9._~@%+=,:-]*"
+    ConstraintDescription: "8-64 letters, digits or . _ ~ @ % + = , : -"
+    Description: >-
+      Make one up (8+ characters). You enter it in the app to become this server's first admin; it works once, and
+      only until someone has used it.
   InstanceName:
     Type: String
     Default: relay
@@ -53,6 +63,7 @@ Resources:
           - { FromPort: 49152, ToPort: 65535, Protocol: udp }
       UserData: !Sub |
         #!/bin/bash
+        export RELAY_SETUP_CODE="${SetupCode}"
         export RELAY_DOMAIN="${Domain}"
         export RELAY_REPO="${RepoUrl}"
         export RELAY_BRANCH="${Branch}"
@@ -78,6 +89,9 @@ Outputs:
       - HasDomain
       - !Sub "https://${Domain}"
       - !Join ["", ["https://", !Join ["-", !Split [".", !GetAtt StaticIp.IpAddress]], ".sslip.io"]]
-  SetupCode:
-    Description: Where to find the one-time setup code.
-    Value: Lightsail console -> this instance -> Connect (or ssh ubuntu@the StaticIp); it's in the login message. Install log at /var/log/relay-install.log.
+  NextStep:
+    Description: What to do once the stack is created.
+    Value: >-
+      Wait about 5 minutes for the install, then in the app choose "I'm setting up a new server", enter ServerAddress
+      and your name, then the setup code you chose. If it isn't up after 15 minutes, open the instance in the
+      Lightsail console, press Connect and read /var/log/relay-install.log.
