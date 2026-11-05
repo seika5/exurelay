@@ -30,6 +30,7 @@ import { Icon, IconButton } from "@/components/icons";
 import { Modal, confirmDialog } from "@/components/Modal";
 import { btn, btnPrimary, field } from "@/components/ui";
 import { PageLock, useVisibleViewport } from "@/lib/useVisibleViewport";
+import { ChatFile } from "@/components/ChatFile";
 
 const GROUP_BREAK_MS = 10 * 60 * 1000;
 
@@ -353,7 +354,24 @@ function Chat() {
     const list = messagesListRef.current;
     if (!list) return;
     wasAtBottomRef.current = list.scrollHeight - list.clientHeight <= list.scrollTop + 80;
+    fromBottomRef.current = list.scrollHeight - list.clientHeight - list.scrollTop;
   };
+
+  // When the list gets shorter or taller (the keyboard opening or closing), keep the newest visible messages just
+  // above the message box instead of letting them slide under the keyboard.
+  const fromBottomRef = useRef(0);
+  useEffect(() => {
+    const list = messagesListRef.current;
+    if (!list) return;
+    let height = list.clientHeight;
+    const ro = new ResizeObserver(() => {
+      if (list.clientHeight === height) return;
+      height = list.clientHeight;
+      list.scrollTop = list.scrollHeight - list.clientHeight - fromBottomRef.current;
+    });
+    ro.observe(list);
+    return () => ro.disconnect();
+  }, [selected]);
 
   useEffect(() => { wasAtBottomRef.current = true; }, [selected]);
 
@@ -899,8 +917,10 @@ function Chat() {
             <ul
               ref={messagesListRef}
               onScroll={handleMessagesScroll}
-              className="flex-1 overflow-auto px-3 py-2"
+              className="flex-1 overflow-auto px-3 py-2 flex flex-col"
             >
+              {/* Pushes a short chat to the bottom, so new messages push older ones up. */}
+              <li aria-hidden className="mt-auto" />
               {filteredMessages.length === 0 && (
                 <li className="py-8 text-sm text-center text-[var(--muted)]">No messages yet.</li>
               )}
@@ -951,23 +971,13 @@ function Chat() {
                         />
                       )}
                       {m.type === "file" && (
-                        <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1 max-w-full">
-                          <span className="inline-flex items-center gap-2 min-w-0 max-w-full rounded border border-[var(--border)] bg-[var(--surface)] pl-2 pr-1 py-1">
-                            <Icon name="chatFile" />
-                            <span className="min-w-0 truncate">{safeFilename(m.filename || "file")}</span>
-                            {typeof m.fileSize === "number" && (
-                              <span className="shrink-0 text-xs text-[var(--muted)]">· {formatSize(m.fileSize)}</span>
-                            )}
-                            {!m.removed && (
-                              <IconButton
-                                icon="chatDownload"
-                                label={`Download ${safeFilename(m.filename || "file")}`}
-                                onClick={() => downloadFile(m.body, m.filename || "download")}
-                              />
-                            )}
-                          </span>
-                          {m.removed && <span className="text-xs text-[var(--muted)]">Removed from this device</span>}
-                        </span>
+                        <ChatFile
+                          name={safeFilename(m.filename || "file")}
+                          size={typeof m.fileSize === "number" ? formatSize(m.fileSize) : null}
+                          body={m.body}
+                          removed={m.removed}
+                          onDownload={() => downloadFile(m.body, m.filename || "download")}
+                        />
                       )}
                       {m.type === "contact" && (
                         <span className="inline-flex items-center gap-2 max-w-full rounded border border-[var(--border)] bg-[var(--surface)] px-2 py-1">
