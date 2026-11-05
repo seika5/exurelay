@@ -164,7 +164,7 @@ function Chat() {
   } = useCall();
   // Messages need a login, which needs membership: nothing is fetched until we're enrolled on a server.
   // Wait for the cache key too, so the first sync resumes from the cached cursor instead of starting over.
-  const { messages, conversations, sendMessage, retrySend, cancelSend, storage, readMarks, markRead, error } = useMessages(
+  const { messages, conversations, sendMessage, sendHistory, retrySend, cancelSend, storage, readMarks, markRead, error } = useMessages(
     enrolled && server && cacheKey !== undefined ? identity : null,
     useMemo(() => blobSettings(directory), [directory]),
     cacheKey ?? null,
@@ -1048,6 +1048,7 @@ function Chat() {
         <SettingsModal
           onClose={() => setSettingsOpen(false)}
           storage={storage}
+          sendHistory={sendHistory}
           conversations={conversations.map((c) => ({ conv: c, label: conversationLabel(c, identity.keyHash, getDisplayName, groupNamesFromMessages) }))}
         />
       )}

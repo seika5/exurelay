@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useIdentity } from "@/context/IdentityContext";
 import { QrScanner } from "@/components/QrScanner";
 import { fingerprint, readEnrollmentCode } from "@/lib/signed";
+import type { HistoryPlan } from "@/lib/historyTransfer";
 
 const button = "px-3 py-1.5 rounded border border-[var(--border)] text-sm disabled:opacity-50";
 
@@ -11,7 +12,7 @@ const button = "px-3 py-1.5 rounded border border-[var(--border)] text-sm disabl
  * Settings → Devices (DESIGN.md §4 "Decided: linked devices"): my devices, linking a new one from its enrollment
  * code, and unlinking. Each device has its own keys; any of mine can link or unlink the others, with no admin.
  */
-export function DevicesPanel() {
+export function DevicesPanel({ sendHistory }: { sendHistory?: () => Promise<HistoryPlan> }) {
   const { identity, linkDevice, unlinkDevice, moveAdmin, isAdmin, directory } = useIdentity();
   const [code, setCode] = useState("");
   const [scanning, setScanning] = useState(false);
@@ -38,12 +39,12 @@ export function DevicesPanel() {
     setChecked({ fp: await fingerprint(r.request.ecdh) });
   };
 
-  const run = async (fn: () => Promise<void>, done: string) => {
+  /** Run an action, then show `done`, or the message the action returns. */
+  const run = async (fn: () => Promise<void | string>, done = "") => {
     setBusy(true);
     setMessage(null);
     try {
-      await fn();
-      setMessage(done);
+      setMessage((await fn()) || done);
     } catch (e) {
       setMessage(e instanceof Error ? e.message : "Something went wrong");
     } finally {
@@ -108,6 +109,34 @@ export function DevicesPanel() {
           {isAdmin && " Admin works from one device at a time: the admin device. Move it before unlinking that device."}
         </p>
       </section>
+
+      {sendHistory && identity.myDevices.length > 1 && (
+        <section className="flex flex-col gap-2">
+          <h3 className="font-medium">Message history</h3>
+          <p className="text-xs text-[var(--muted)]">
+            A newly linked device only gets messages sent after it was linked. Copy the messages saved on this device to
+            your other devices, encrypted for them only. They keep their delete dates, and files stay here (they show
+            as &quot;removed from this device&quot; there).
+          </p>
+          <button
+            type="button"
+            disabled={busy}
+            className={`${button} self-start`}
+            onClick={() => {
+              if (!window.confirm("Copy the messages saved on this device to your other devices? Each copy is encrypted for your devices only.")) return;
+              run(async () => {
+                const p = await sendHistory();
+                if (p.copied === 0) throw new Error("Nothing saved here to copy.");
+                const files = p.filesWithoutContent ? ` (${p.filesWithoutContent} without their files)` : "";
+                const left = p.leftOut ? `; ${p.leftOut} older ones left out to keep it small` : "";
+                return `Sending ${p.copied} message${p.copied === 1 ? "" : "s"}${files}${left}. They appear on your other devices next time those open.`;
+              });
+            }}
+          >
+            Copy my message history to my other devices
+          </button>
+        </section>
+      )}
 
       <section className="flex flex-col gap-2">
         <h3 className="font-medium">Link a device</h3>

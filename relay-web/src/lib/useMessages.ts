@@ -5,6 +5,7 @@ import { ApiError, getBlobsSince, postBlobs } from "@/lib/api";
 import { createSocket } from "@/lib/socket";
 import { checkPeerIssuer, currentIssuerId, RateLimitError } from "@/lib/tokens";
 import { decodeMessage, encodeMessage, type DecryptedMessage } from "@/lib/blobPayload";
+import { acceptHistory, planHistory, type HistoryPlan } from "@/lib/historyTransfer";
 import type { Contact, ContactSettings } from "@/lib/keystore";
 import { BATCH, Opener, sealSend, DEFAULT_BLOB_SIZE, DEFAULT_DECOYS, type Opened } from "@/lib/sealed";
 import {
@@ -169,7 +170,7 @@ export function useMessages(
   const messages = useMemo(() => {
     const list: ShownMessage[] = [...receivedMessages];
     for (const o of outbox) {
-      if (o.message.type === "device_sync") continue;
+      if (o.message.type === "device_sync" || o.message.type === "history") continue;
       if (!receivedMessages.some((m) => outboxMatch(m, o.message))) list.push({ ...o.message, outbox: { id: o.id, status: o.status } });
     }
     list.sort((a, b) => a.sentAt - b.sentAt);
@@ -216,6 +217,17 @@ export function useMessages(
         if (msg.type === "device_sync") {
           // From another of my devices: apply it, never show it.
           if (msg.senderKeyHash === identity.keyHash) onDeviceSync?.(msg);
+          syncedIds.current.add(msg.messageId);
+          return;
+        }
+        if (msg.type === "history") {
+          // Messages another of my devices had saved: keep the ones I don't have, with their original expiry.
+          if (msg.senderKeyHash === identity.keyHash) {
+            for (const item of acceptHistory(msg.items, (id) => received.current.has(id), readRetention())) {
+              received.current.set(item.message.messageId, item);
+              fresh.push(item);
+            }
+          }
           syncedIds.current.add(msg.messageId);
           return;
         }
@@ -441,6 +453,16 @@ export function useMessages(
     [identity, contactByKeyHash, setOutbox, drain, blobs.blobSize, blobs.decoys]
   );
 
+  /** Copy the messages saved here to my other devices (historyTransfer.ts). Returns what was sent. */
+  const sendHistory = useCallback(async (): Promise<HistoryPlan> => {
+    await cacheLoaded.current;
+    const plan = planHistory([...received.current.values()], { retentionDays: readRetention() });
+    for (const items of plan.batches) {
+      await sendMessage({ type: "history", items } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">, []);
+    }
+    return plan;
+  }, [sendMessage]);
+
   const retrySend = useCallback(
     (id: string) => {
       setStatus(id, "sending");
@@ -562,5 +584,5 @@ export function useMessages(
     [receivedMessages, retentionDays, setRetentionDays, clearFiles, clearConversation, clearAll, resync]
   );
 
-  return { messages, conversations, loadBlobs, sendMessage, retrySend, cancelSend, storage, readMarks, markRead, error };
+  return { messages, conversations, loadBlobs, sendMessage, sendHistory, retrySend, cancelSend, storage, readMarks, markRead, error };
 }

@@ -11,6 +11,7 @@ import { PluginsPanel } from "@/components/PluginsPanel";
 import { BuildInfo, NotificationsSection } from "@/components/GeneralExtras";
 import type { Conversation } from "@/lib/useMessages";
 import { ApiError } from "@/lib/api";
+import type { HistoryPlan } from "@/lib/historyTransfer";
 
 type Tab = "general" | "devices" | "storage" | "plugins" | "admin";
 
@@ -55,10 +56,12 @@ export function SettingsModal({
   onClose,
   storage,
   conversations,
+  sendHistory,
 }: {
   onClose: () => void;
   storage: StorageControls;
   conversations: { conv: Conversation; label: string }[];
+  sendHistory?: () => Promise<HistoryPlan>;
 }) {
   const { identity, isAdmin, directory, directoryError, setDisplayName, server, servers, leaveServer, identityStorage } = useIdentity();
   const [tab, setTab] = useState<Tab>("general");
@@ -107,7 +110,7 @@ export function SettingsModal({
         {tab === "plugins" ? (
           <PluginsPanel />
         ) : tab === "devices" ? (
-          <DevicesPanel />
+          <DevicesPanel sendHistory={sendHistory} />
         ) : tab === "storage" ? (
           <StoragePanel storage={storage} conversations={conversations} />
         ) : tab === "admin" && isAdmin ? (
