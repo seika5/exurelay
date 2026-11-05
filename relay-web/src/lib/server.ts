@@ -159,7 +159,7 @@ export function readJoinCode(text: string): { ok: true; config: ServerConfig } |
     const m = t.match(/#join=([A-Za-z0-9_-]+)/);
     if (m) payload = m[1];
   }
-  if (!payload) return { ok: false, error: "Not a Relay join code or link." };
+  if (!payload) return { ok: false, error: "Not an Exurelay join code or link." };
   try {
     const c = JSON.parse(unb64url(payload)) as JoinCode;
     if (c.type !== "relay-join" || typeof c.server !== "string" || !Array.isArray(c.admins) || c.admins.length === 0) {

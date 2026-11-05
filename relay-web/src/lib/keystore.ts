@@ -83,7 +83,7 @@ function openDb(): Promise<IDBDatabase> {
         resolve(req.result);
       };
       req.onerror = () => reject(req.error);
-      req.onblocked = () => reject(new Error("Close Relay in your other tabs, then reload."));
+      req.onblocked = () => reject(new Error("Close Exurelay in your other tabs, then reload."));
     });
     dbPromise.catch(() => {
       dbPromise = null;

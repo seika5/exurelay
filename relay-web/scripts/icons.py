@@ -1,4 +1,4 @@
-"""Draw Relay's app icons (a speech bubble on the accent color) as PNGs, with no image libraries.
+"""Draw Exurelay's app icons (a speech bubble on the accent color) as PNGs, with no image libraries.
 Run: python3 scripts/icons.py  (writes public/icon-192.png, icon-512.png, apple-touch-icon.png, icon-maskable-512.png)"""
 import struct, zlib, math, os
 

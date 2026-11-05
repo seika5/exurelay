@@ -18,8 +18,8 @@ export function NotificationsSection() {
   const text: Record<PushState, string> = {
     on: "On for this device. You're notified only when someone @mentions you or rings you in a call.",
     off: "Off. Turn on to be notified when someone @mentions you or rings you in a call. Nothing else notifies.",
-    denied: "Blocked in your browser or phone settings. Allow notifications for Relay there, then come back.",
-    unsupported: "Not available here. On iPhone, install Relay to the Home Screen first (iOS 16.4 or later).",
+    denied: "Blocked in your browser or phone settings. Allow notifications for Exurelay there, then come back.",
+    unsupported: "Not available here. On iPhone, install Exurelay to the Home Screen first (iOS 16.4 or later).",
     "server-off": "This server doesn't send notifications (its admin hasn't set them up).",
   };
 

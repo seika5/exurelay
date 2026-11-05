@@ -7,11 +7,11 @@ import { appPath } from "@/lib/basePath";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Relay",
+  title: "Exurelay",
   description: "E2EE messaging and voice/video for a closed circle",
   manifest: appPath("/manifest.webmanifest"),
   icons: { icon: appPath("/icon-192.png"), apple: appPath("/apple-touch-icon.png") },
-  appleWebApp: { capable: true, title: "Relay", statusBarStyle: "black-translucent" },
+  appleWebApp: { capable: true, title: "Exurelay", statusBarStyle: "black-translucent" },
 };
 
 export const viewport: Viewport = {

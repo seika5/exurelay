@@ -36,4 +36,4 @@ createServer((req, res) => {
     "Cache-Control": file.endsWith("sw.js") || file.endsWith(".html") ? "no-cache" : "public, max-age=3600",
   });
   res.end(readFileSync(file));
-}).listen(port, "127.0.0.1", () => console.log(`Relay: http://127.0.0.1:${port}`));
+}).listen(port, "127.0.0.1", () => console.log(`Exurelay: http://127.0.0.1:${port}`));

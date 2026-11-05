@@ -1,6 +1,6 @@
 {
-  "name": "Relay",
-  "short_name": "Relay",
+  "name": "Exurelay",
+  "short_name": "Exurelay",
   "description": "End-to-end encrypted messages and calls for a closed group.",
   "start_url": "./",
   "scope": "./",

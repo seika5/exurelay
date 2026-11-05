@@ -46,7 +46,7 @@ jobs:
         run: |
           cat out/build.json
           {
-            echo "### Relay web build"
+            echo "### Exurelay web build"
             echo '```json'
             cat out/build.json
             echo '```'

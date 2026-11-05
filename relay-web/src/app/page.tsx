@@ -557,7 +557,7 @@ function Chat() {
         className="min-h-screen flex flex-col items-center justify-center p-6 bg-[var(--bg)] text-[var(--text)]"
         style={{ paddingTop: "env(safe-area-inset-top, 0px)" }}
       >
-        <h1 className="text-xl font-semibold mb-3">Relay</h1>
+        <h1 className="text-xl font-semibold mb-3">Exurelay</h1>
         <p className="text-center max-w-sm font-medium mb-2">{headline}</p>
         {detail && (
           <pre className="text-[var(--muted)] text-xs text-left max-w-sm whitespace-pre-wrap bg-[var(--surface)] rounded p-3 mb-4 border border-[var(--border)]">

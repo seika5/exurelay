@@ -57,7 +57,7 @@ if aws iam get-role --role-name "$ROLE" >/dev/null 2>&1; then
   aws iam update-assume-role-policy --role-name "$ROLE" --policy-document "$TRUST"
 else
   aws iam create-role --role-name "$ROLE" --assume-role-policy-document "$TRUST" \
-    --description "GitHub Actions in $REPO: upload the Relay Lightsail template" >/dev/null
+    --description "GitHub Actions in $REPO: upload the Exurelay Lightsail template" >/dev/null
 fi
 aws iam put-role-policy --role-name "$ROLE" --policy-name upload-template --policy-document "$(cat <<EOF
 {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:PutObject","Resource":"arn:aws:s3:::$BUCKET/$KEY"}]}
@@ -71,7 +71,7 @@ gh variable set TEMPLATE_REGION --repo "$REPO" --body "$REGION"
 
 # Same as the workflow does, so the link works before its first run.
 TMP="$(mktemp)"
-sed "s|Default: https://github.com/seika5/relay.git|Default: https://github.com/$REPO.git|" \
+sed "s|Default: https://github.com/seika5/exurelay.git|Default: https://github.com/$REPO.git|" \
   "$(dirname "$0")/../relay-server/deploy/$KEY" > "$TMP"
 aws s3 cp "$TMP" "s3://$BUCKET/$KEY" --content-type text/yaml --cache-control max-age=300 >/dev/null
 rm -f "$TMP"

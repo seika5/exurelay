@@ -324,7 +324,7 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
     let keys = { keyPair: ecdh, signingKeyPair: signing };
     if (storage.kind === "folder") {
       const fileName = identityFileName(serverUrl);
-      if (!(await ensureFolderAccess(storage.dir))) throw new Error("Relay needs access to that folder to save your identity.");
+      if (!(await ensureFolderAccess(storage.dir))) throw new Error("Exurelay needs access to that folder to save your identity.");
       if (await readFolderFile(storage.dir, fileName)) {
         throw new Error(`That folder already has an identity for this server (${fileName}). Use "I already have an identity file", or pick another folder.`);
       }
@@ -375,7 +375,7 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
 
   const unlockIdentity = useCallback(async (passphrase: string) => {
     if (!locked) return;
-    if (!(await ensureFolderAccess(locked.dir))) throw new Error("Relay needs access to the folder to read your identity.");
+    if (!(await ensureFolderAccess(locked.dir))) throw new Error("Exurelay needs access to the folder to read your identity.");
     const bytes = await readFolderFile(locked.dir, locked.fileName);
     if (!bytes) throw new Error(`${locked.fileName} isn't in the folder "${locked.dir.name}" any more. Choose the folder it's in now.`);
     const { keys, settings, session } = await openIdentityFile(bytes, passphrase);

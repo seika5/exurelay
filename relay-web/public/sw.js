@@ -1,8 +1,8 @@
 /**
- * Relay service worker (DESIGN.md §9): keeps the app working offline and shows push notifications.
+ * Exurelay service worker (DESIGN.md §9): keeps the app working offline and shows push notifications.
  *
  * - Offline: the app's own files only (same origin, GET). Pages are network-first, hashed build files cache-first.
- *   Nothing from any Relay server (messages, keys) is ever cached here.
+ *   Nothing from any Exurelay server (messages, keys) is ever cached here.
  * - Push: only @mentions and call rings. The payload is encrypted device to device (relay-web/src/lib/push.ts). In
  *   app-storage mode this device's key is in IndexedDB as a non-extractable CryptoKey, which a service worker can
  *   use: decrypt, then show it with *your* name for the sender. Otherwise (folder mode, or anything unexpected) the
@@ -102,9 +102,9 @@ async function openPush(data) {
 function text(kind, c) {
   const who = c?.name || "Someone";
   const where = c?.group ? ` in ${c.group}` : "";
-  if (kind === "ring") return c ? `${who} is calling you${where}` : "Someone is calling you in Relay";
-  if (kind === "everyone") return c ? `${who} mentioned everyone${where}` : "You were mentioned in Relay";
-  return c ? `${who} mentioned you${where}` : "You were mentioned in Relay";
+  if (kind === "ring") return c ? `${who} is calling you${where}` : "Someone is calling you in Exurelay";
+  if (kind === "everyone") return c ? `${who} mentioned everyone${where}` : "You were mentioned in Exurelay";
+  return c ? `${who} mentioned you${where}` : "You were mentioned in Exurelay";
 }
 
 self.addEventListener("push", (event) => {
@@ -123,7 +123,7 @@ self.addEventListener("push", (event) => {
         content = null;
       }
       // Every push must show a notification (Safari revokes subscriptions that don't).
-      await self.registration.showNotification("Relay", {
+      await self.registration.showNotification("Exurelay", {
         body: text(data.kind, content),
         icon: `${BASE}icon-192.png`,
         badge: `${BASE}icon-192.png`,

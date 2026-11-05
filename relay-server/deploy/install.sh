@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install (or upgrade) a Relay server on a fresh Ubuntu 22.04/24.04 host: PostgreSQL, Node.js, Caddy (HTTPS) and
+# Install (or upgrade) an Exurelay server on a fresh Ubuntu 22.04/24.04 host: PostgreSQL, Node.js, Caddy (HTTPS) and
 # coturn (TURN for calls), with secrets generated, system services and a one-time setup code for the first admin.
 #
 #   sudo bash install.sh                       # address from this host's public IP: https://203-0-113-5.sslip.io
@@ -12,7 +12,7 @@
 set -euo pipefail
 
 DOMAIN="${RELAY_DOMAIN:-}"
-REPO="${RELAY_REPO:-https://github.com/seika5/relay.git}"
+REPO="${RELAY_REPO:-https://github.com/seika5/exurelay.git}"
 BRANCH="${RELAY_BRANCH:-main}"
 CHOSEN_SETUP_CODE="${RELAY_SETUP_CODE:-}"
 RESTORE=""
@@ -175,7 +175,7 @@ for svc in api worker; do
   entry=index.js; [ "$svc" = worker ] && entry=worker.js
   cat > "/etc/systemd/system/relay-$svc.service" <<EOF
 [Unit]
-Description=Relay $svc
+Description=Exurelay $svc
 After=network-online.target postgresql.service
 Wants=network-online.target
 
@@ -220,7 +220,7 @@ EOF
 chmod 0755 /usr/local/bin/relay-turn-certs
 cat > /etc/systemd/system/relay-turn-certs.service <<'EOF'
 [Unit]
-Description=Copy the Relay HTTPS certificate for coturn
+Description=Copy the Exurelay HTTPS certificate for coturn
 
 [Service]
 Type=oneshot
@@ -228,7 +228,7 @@ ExecStart=/usr/local/bin/relay-turn-certs
 EOF
 cat > /etc/systemd/system/relay-turn-certs.timer <<'EOF'
 [Unit]
-Description=Copy the Relay HTTPS certificate for coturn, twice a day
+Description=Copy the Exurelay HTTPS certificate for coturn, twice a day
 
 [Timer]
 OnBootSec=2min
@@ -279,7 +279,7 @@ EOF
 chmod 0755 /usr/local/bin/relay-backup
 cat > /etc/systemd/system/relay-backup.service <<'EOF'
 [Unit]
-Description=Back up the Relay member list and secrets (not messages)
+Description=Back up the Exurelay member list and secrets (not messages)
 After=postgresql.service
 
 [Service]
@@ -288,7 +288,7 @@ ExecStart=/usr/local/bin/relay-backup
 EOF
 cat > /etc/systemd/system/relay-backup.timer <<'EOF'
 [Unit]
-Description=Back up Relay nightly
+Description=Back up Exurelay nightly
 
 [Timer]
 OnCalendar=*-*-* 03:30:00
@@ -307,7 +307,7 @@ APT::Periodic::Update-Package-Lists "1";
 APT::Periodic::Unattended-Upgrade "1";
 EOF
 cat > /etc/apt/apt.conf.d/52relay-unattended-upgrades <<'EOF'
-// Written by Relay's install.sh.
+// Written by Exurelay's install.sh.
 Unattended-Upgrade::Automatic-Reboot "true";
 Unattended-Upgrade::Automatic-Reboot-Time "04:30";
 EOF
@@ -333,7 +333,7 @@ cat > /etc/update-motd.d/99-relay <<EOF
 #!/bin/sh
 if curl -fsS --max-time 3 http://127.0.0.1:4000/api/directory 2>/dev/null | grep -q '"directory":null'; then
   echo
-  echo "Relay server: $URL"
+  echo "Exurelay server: $URL"
   echo "Setup code:   \$(sed -n 's/^SETUP_CODE=//p' $ENV_FILE)"
   echo "In the app: I'm setting up a new server -> this address -> your name -> the setup code -> Create member list."
   echo
@@ -345,7 +345,7 @@ say "Done"
 if curl -fsS --max-time 3 http://127.0.0.1:4000/api/directory 2>/dev/null | grep -q '"directory":null'; then
   cat <<EOF
 
-  Relay server: $URL
+  Exurelay server: $URL
   Setup code:   $SETUP_CODE
 
   In the app, choose "I'm setting up a new server", enter the address above and your name, then enter the setup

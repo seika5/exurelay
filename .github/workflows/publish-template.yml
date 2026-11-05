@@ -37,7 +37,7 @@ jobs:
           REGION: ${{ vars.TEMPLATE_REGION || 'us-east-2' }}
           REPO_URL: https://github.com/${{ github.repository }}.git
         run: |
-          sed "s|Default: https://github.com/seika5/relay.git|Default: $REPO_URL|" relay-server/deploy/aws-lightsail.yaml > aws-lightsail.yaml
+          sed "s|Default: https://github.com/seika5/exurelay.git|Default: $REPO_URL|" relay-server/deploy/aws-lightsail.yaml > aws-lightsail.yaml
           grep -q "Default: $REPO_URL" aws-lightsail.yaml
           aws s3 cp aws-lightsail.yaml "s3://$BUCKET/aws-lightsail.yaml" --content-type text/yaml --cache-control max-age=300
           url="https://$BUCKET.s3.$REGION.amazonaws.com/aws-lightsail.yaml"
