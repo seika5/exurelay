@@ -147,6 +147,30 @@ export async function readIntroduction(code: string, members: DirectoryMember[])
   }
 }
 
+/**
+ * A member's name signed by one of their devices (profileSeal.ts `signed` / `relay`): { type: "relay-profile", keyHash,
+ * name, updatedAt }. Null unless it's well formed and signed by a current device of that member.
+ */
+export async function readSignedName(
+  json: string,
+  devicesOf: (member: string) => { sig: string }[] | undefined
+): Promise<{ keyHash: string; name: string; updatedAt: number } | null> {
+  try {
+    const env = JSON.parse(json) as SignedEnvelope;
+    if (typeof env?.body !== "string" || typeof env?.signature !== "string") return null;
+    const p = parse<Profile>(env);
+    if (!p || p.type !== "relay-profile" || typeof p.keyHash !== "string" || typeof p.name !== "string" || !Number.isSafeInteger(p.updatedAt)) return null;
+    const signers = devicesOf(p.keyHash);
+    if (!signers?.length) return null;
+    let ok = false;
+    for (const d of signers) if (!ok && (await verifyRecord(env, d.sig))) ok = true;
+    const name = p.name.trim().slice(0, MAX_NAME_LENGTH);
+    return ok && name ? { keyHash: p.keyHash, name, updatedAt: p.updatedAt } : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Decode and check an enrollment code: signed by the key it carries, and less than 3 minutes old. */
 export async function readEnrollmentCode(
   code: string,

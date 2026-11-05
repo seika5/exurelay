@@ -12,6 +12,7 @@ import {
   keyHashOf,
   readEnrollmentCode,
   readIntroduction,
+  readSignedName,
   signRecord,
   verifyDepartures,
   verifyDevices,
@@ -35,6 +36,23 @@ async function newMember(): Promise<{ ecdh: CryptoKeyPair; signing: CryptoKeyPai
 }
 
 describe("enrollment codes", () => {
+  it("reads a signed name from any of the member's devices, and nothing else", async () => {
+    const ana = await newMember();
+    const laptop = await newMember();
+    const mallory = await newMember();
+    const devicesOf = (m: string) => (m === ana.entry.keyHash ? [{ sig: ana.entry.sig }, { sig: laptop.entry.sig }] : undefined);
+    const name = (by: typeof ana, n: string, keyHash = ana.entry.keyHash) =>
+      signRecord(by.signing.privateKey, { type: "relay-profile", keyHash, name: n, updatedAt: 7 }).then((e) => JSON.stringify(e));
+    expect(await readSignedName(await name(ana, "Ana"), devicesOf)).toEqual({ keyHash: ana.entry.keyHash, name: "Ana", updatedAt: 7 });
+    expect((await readSignedName(await name(laptop, "Ana B"), devicesOf))?.name).toBe("Ana B");
+    expect(await readSignedName(await name(mallory, "Not Ana"), devicesOf)).toBeNull();
+    expect(await readSignedName(await name(ana, "Ana", mallory.entry.keyHash), devicesOf)).toBeNull();
+    const env = JSON.parse(await name(ana, "Ana"));
+    env.body = env.body.replace("Ana", "Eve");
+    expect(await readSignedName(JSON.stringify(env), devicesOf)).toBeNull();
+    expect(await readSignedName("not json", devicesOf)).toBeNull();
+  });
+
   it("reads an introduction: the name in a member's own signed code, with no expiry", async () => {
     const ecdh = await generateKeyPair();
     const sig = await generateSigningKeyPair();

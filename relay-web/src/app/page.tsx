@@ -191,6 +191,8 @@ function Chat() {
   const [newGroupName, setNewGroupName] = useState("");
   const [dismissedError, setDismissedError] = useState<string | null>(null);
   const [displayNameModal, setDisplayNameModal] = useState<{ keyHash: string } | null>(null);
+  const [membersOpen, setMembersOpen] = useState(false);
+  const closeMembers = useCallback(() => setMembersOpen(false), []);
   const [displayNameValue, setDisplayNameValue] = useState("");
   const [displayNameSaveError, setDisplayNameSaveError] = useState<string | null>(null);
   const [displayNameSaving, setDisplayNameSaving] = useState(false);
@@ -879,6 +881,9 @@ function Chat() {
                   </span>
                 </button>
               </div>
+              {selected.type === "group" && (
+                <IconButton icon="chatMembers" label="Members" onClick={() => setMembersOpen(true)} />
+              )}
               {!inCall && !selectedInactive && (
                 <button type="button" onClick={handleStartCall} className={`${btnPrimary} flex-shrink-0`}>
                   {ongoingRoom ? "Join call" : "Call"}
@@ -1175,8 +1180,22 @@ function Chat() {
         </Modal>
       )}
 
+      {membersOpen && selected?.type === "group" && identity && (
+        <Modal title="Members" onClose={closeMembers} compact>
+          <ul className="flex flex-col gap-1">
+            {[...selected.memberKeyHashes]
+              .sort((x, y) => (x === identity.keyHash ? -1 : y === identity.keyHash ? 1 : 0))
+              .map((k) => (
+                <li key={k} className="flex items-center gap-2 py-1 text-sm">
+                  <span className="truncate">{k === identity.keyHash ? "You" : getDisplayName(k) || k.slice(0, 8)}</span>
+                  {k !== identity.keyHash && isRemoved(k) && <span className="text-xs text-[var(--muted)]">left</span>}
+                </li>
+              ))}
+          </ul>
+        </Modal>
+      )}
       {displayNameModal && (
-        <Modal title="Set nickname" onClose={closeNickname} closeLabel={null}>
+        <Modal title="Set nickname" onClose={closeNickname} closeLabel={null} compact>
           <form
             className="flex flex-col gap-3"
             onSubmit={(e) => {
@@ -1207,7 +1226,7 @@ function Chat() {
       )}
 
       {groupRenameModal && groupRenameModal.type === "group" && (
-        <Modal title="Rename group" onClose={closeGroupRename} closeLabel={null}>
+        <Modal title="Rename group" onClose={closeGroupRename} closeLabel={null} compact>
           <form
             className="flex flex-col gap-3"
             onSubmit={(e) => {

@@ -22,6 +22,10 @@ export type ProfilePayload = {
    * signed by that member's key, so the name in it is theirs; receivers check that (signed.ts readIntroduction).
    */
   intros?: string[];
+  /** The author's name signed with their signing key (a SignedEnvelope as JSON), so others can pass it along. */
+  signed?: string;
+  /** Other members' signed names (as `signed`), passed along so a new member gets everyone's name from whoever is online. */
+  relay?: string[];
 };
 
 /** A copy as posted: addressed to `recipient` (a device key hash). */
@@ -30,7 +34,7 @@ export type SealedCopy = { recipient: string; nonce: string; ciphertext: string;
 export type ReceivedCopy = { author: string; sender: string; nonce: string; ciphertext: string; updatedAt: number };
 
 const INFO_PREFIX = new TextEncoder().encode("exurelay-profile-v1:");
-const NAME_ONLY_SIZE = 512;
+const NAME_ONLY_SIZE = 1024;
 const WITH_DEVICES_STEP = 2048;
 
 const b64 = (u: Uint8Array) => btoa(String.fromCharCode(...u));
@@ -46,10 +50,10 @@ function info(nonce: Uint8Array): Uint8Array {
 const aad = (author: string, sender: string, recipient: string, updatedAt: number) =>
   new TextEncoder().encode(`exurelay-profile-v1|${author}|${sender}|${recipient}|${updatedAt}`);
 
-/** JSON, then zero bytes up to 512 bytes (name only) or the next multiple of 2048 (with device names or intros). */
+/** JSON, then zero bytes up to 1024 bytes (name only) or the next multiple of 2048 (with device names, intros or relayed names). */
 export function padPayload(p: ProfilePayload): Uint8Array {
   const json = new TextEncoder().encode(JSON.stringify(p));
-  const size = p.devices || p.intros ? Math.ceil((json.length + 1) / WITH_DEVICES_STEP) * WITH_DEVICES_STEP : Math.max(NAME_ONLY_SIZE, json.length + 1);
+  const size = p.devices || p.intros || p.relay ? Math.ceil((json.length + 1) / WITH_DEVICES_STEP) * WITH_DEVICES_STEP : Math.max(NAME_ONLY_SIZE, json.length + 1);
   const out = new Uint8Array(size);
   out.set(json);
   return out;
@@ -62,6 +66,8 @@ function unpad(bytes: Uint8Array): ProfilePayload | null {
     if (!p || typeof p.name !== "string" || !Number.isSafeInteger(p.updatedAt)) return null;
     if (p.devices !== undefined && (typeof p.devices !== "object" || Array.isArray(p.devices))) return null;
     if (p.intros !== undefined && (!Array.isArray(p.intros) || !p.intros.every((x: unknown) => typeof x === "string"))) return null;
+    if (p.relay !== undefined && (!Array.isArray(p.relay) || !p.relay.every((x: unknown) => typeof x === "string"))) return null;
+    if (p.signed !== undefined && typeof p.signed !== "string") return null;
     return p as ProfilePayload;
   } catch {
     return null;
