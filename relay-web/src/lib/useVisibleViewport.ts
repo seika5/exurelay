@@ -9,26 +9,31 @@ function editable(el: Element | null): boolean {
   return el instanceof HTMLElement && el.isContentEditable;
 }
 
+type Visible = { top: number; height: number | null; keyboard: boolean };
+
 /**
- * The part of the screen not covered by the on-screen keyboard. iOS doesn't resize the page when the keyboard opens:
- * it scrolls the whole page to keep the focused field visible, which pushes a full-height layout's header off the top
- * and leaves a gap that depends on how far it scrolled. A layout pinned to this area (top and height) stays put
- * instead.
+ * The part of the screen not covered by the on-screen keyboard, for a layout pinned to it.
+ *
+ * iOS doesn't resize the page when the keyboard opens: it scrolls the page to keep the focused field visible, which
+ * carried the header off the top, and correcting that afterwards made the screen overshoot and flick back. So while
+ * the chat screen shows, the page itself is locked (PageLock below, html.page-locked in globals.css) and can't scroll; iOS can still pan the
+ * visible area, and the layout follows it on every animation frame while the keyboard moves, instead of once at the
+ * end.
  *
  * `keyboard` is true while the keyboard is up. In an installed iPhone app window.innerHeight can shrink with the
- * keyboard, so comparing against it misses the keyboard; this compares against the tallest height seen in this
- * orientation, and on touch screens also counts a focused text field.
+ * keyboard, so this compares against the tallest height seen in this orientation, and on touch screens also counts a
+ * focused text field.
  */
-export function useVisibleViewport(): { top: number; height: number | null; keyboard: boolean } {
-  const [state, setState] = useState<{ top: number; height: number | null; keyboard: boolean }>({ top: 0, height: null, keyboard: false });
+export function useVisibleViewport(): Visible {
+  const [state, setState] = useState<Visible>({ top: 0, height: null, keyboard: false });
   useEffect(() => {
     const vv = window.visualViewport;
     if (!vv) return;
     const touch = window.matchMedia("(pointer: coarse)").matches;
     let tallest = 0;
     let width = 0;
-    const update = () => {
-      // The page itself must not scroll: everything scrollable lives inside the layout.
+    let last = "";
+    const read = () => {
       if (window.scrollY !== 0) window.scrollTo(0, 0);
       if (window.innerWidth !== width) {
         width = window.innerWidth;
@@ -36,21 +41,46 @@ export function useVisibleViewport(): { top: number; height: number | null; keyb
       }
       const focused = touch && editable(document.activeElement);
       if (!focused) tallest = Math.max(tallest, vv.height, window.innerHeight);
-      setState({ top: vv.offsetTop, height: vv.height, keyboard: focused || vv.height < tallest - 100 });
+      const next = { top: vv.offsetTop, height: vv.height, keyboard: focused || vv.height < tallest - 100 };
+      const key = `${next.top}|${next.height}|${next.keyboard}`;
+      if (key !== last) {
+        last = key;
+        setState(next);
+      }
     };
-    // Focus changes before the keyboard's own resize events, and on some iOS versions without them.
-    const soon = () => setTimeout(update, 0);
-    update();
-    vv.addEventListener("resize", update);
-    vv.addEventListener("scroll", update);
-    document.addEventListener("focusin", soon);
-    document.addEventListener("focusout", soon);
+    // While the keyboard slides in or out, follow it every frame for a moment (its events alone come too late).
+    let frame = 0;
+    let until = 0;
+    const tick = () => {
+      read();
+      frame = performance.now() < until ? requestAnimationFrame(tick) : 0;
+    };
+    const follow = () => {
+      read();
+      until = performance.now() + 800;
+      if (!frame) frame = requestAnimationFrame(tick);
+    };
+    read();
+    vv.addEventListener("resize", follow);
+    vv.addEventListener("scroll", follow);
+    document.addEventListener("focusin", follow);
+    document.addEventListener("focusout", follow);
     return () => {
-      vv.removeEventListener("resize", update);
-      vv.removeEventListener("scroll", update);
-      document.removeEventListener("focusin", soon);
-      document.removeEventListener("focusout", soon);
+      cancelAnimationFrame(frame);
+      vv.removeEventListener("resize", follow);
+      vv.removeEventListener("scroll", follow);
+      document.removeEventListener("focusin", follow);
+      document.removeEventListener("focusout", follow);
     };
   }, []);
   return state;
+}
+
+/** Locks the page (no scrolling of the page itself) while mounted: render it inside the chat screen only. */
+export function PageLock() {
+  useEffect(() => {
+    document.documentElement.classList.add("page-locked");
+    return () => document.documentElement.classList.remove("page-locked");
+  }, []);
+  return null;
 }

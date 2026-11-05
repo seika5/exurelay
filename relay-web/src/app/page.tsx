@@ -29,7 +29,7 @@ import { CallControls } from "@/components/CallControls";
 import { Icon, IconButton } from "@/components/icons";
 import { Modal, confirmDialog } from "@/components/Modal";
 import { btn, btnPrimary, field } from "@/components/ui";
-import { useVisibleViewport } from "@/lib/useVisibleViewport";
+import { PageLock, useVisibleViewport } from "@/lib/useVisibleViewport";
 
 const GROUP_BREAK_MS = 10 * 60 * 1000;
 
@@ -685,8 +685,9 @@ function Chat() {
   return (
     <main
       className="fixed inset-x-0 flex h-[100dvh] overflow-hidden bg-[var(--bg)] text-[var(--text)]"
-      style={visible.height ? { top: visible.top, height: visible.height } : { top: 0 }}
+      style={visible.height ? { top: 0, height: visible.height, transform: `translateY(${visible.top}px)` } : { top: 0 }}
     >
+      <PageLock />
       <TokenWarning />
 
       {/* ── Sidebar ────────────────────────────────────────────────────────── */}
@@ -1080,7 +1081,7 @@ function Chat() {
                     if (e.key === "Enter") handleSend();
                   }}
                   onBlur={() => setMentionQuery(null)}
-                  placeholder="Message... (@ to mention)"
+                  placeholder={selected ? `Message ${conversationLabel(selected, me, getDisplayName, groupNamesFromMessages)}` : "Message"}
                   className="flex-1 min-w-0 px-3 py-2 touch:min-h-10 rounded bg-[var(--surface)] border border-[var(--border)] text-[var(--text)] placeholder-[var(--muted)]"
                 />
                 <button type="button" onClick={handleSend} disabled={!canSend} className={`${btnPrimary} flex-shrink-0 px-4`}>
