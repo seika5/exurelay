@@ -32,11 +32,10 @@ body {
   }
 }
 
-/* The chat screen (useVisibleViewport.ts): the page itself can't scroll, so the keyboard can't push it around. */
+/* The chat screen (useVisibleViewport.ts): the page itself can't scroll, so the keyboard can't push it around. Not
+   position: fixed: on an installed iPhone app that shrinks the area fixed elements fill, leaving a gap at the bottom. */
 html.page-locked,
 html.page-locked body {
-  position: fixed;
-  inset: 0;
   overflow: hidden;
   overscroll-behavior: none;
 }
