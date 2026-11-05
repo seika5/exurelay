@@ -4,8 +4,10 @@
 fixed-size encrypted blobs that carry no sender and no recipient. There's no public sign-up: an admin enrolls each
 person in person, from a code their own device made.
 
+**The official app is at [exurelay.com](https://exurelay.com).**
+
 ```
-relay/
+exurelay/
 ├── relay-server/   Node.js API, Socket.io signaling and expiry worker. Hosted once.
 ├── relay-web/      The app: a static web app (PWA). Installed from the official build, a fork, or run locally.
 └── .github/        Tests on every push; publishes relay-web to GitHub Pages.
@@ -78,7 +80,7 @@ message shows its address and setup code.
 
 ### 1.2 Claim it in the app and enroll everyone
 
-1. Open the app: the hosted one (section 2.1) or your own copy (section 2.8).
+1. Open the app: the official one at [exurelay.com](https://exurelay.com) (section 2.1) or your own copy (section 2.8).
 2. Choose **I'm setting up a new server**, enter the server's address (e.g. `https://203-0-113-5.sslip.io`) and your name. If the server is still installing, the app says so and carries on by itself once it answers.
 3. Enter the setup code and press **Create member list**. You're enrolled as the admin and the code stops working. Whoever enters it first becomes the admin, so keep it to yourself until then.
 4. In **Settings → Admin**, share the join code (QR or link) with each new member in person or over a channel you already trust. They open it, create their identity (section 2.4), and you scan or paste the code their app shows. Check the fingerprint matches.
@@ -193,8 +195,12 @@ https://console.aws.amazon.com/cloudformation/home#/stacks/quickcreate?templateU
 
 ### 2.1 Hosted (recommended)
 
+Use the official app at **[exurelay.com](https://exurelay.com)**: it's built from this repository's `main` by the
+workflow below, and works with any Exurelay server.
+
 The app is static files. The workflow in `.github/workflows/deploy-web.yml` tests it, builds it and publishes it to
-GitHub Pages on every push to `main` (one-time: repository **Settings → Pages → Source: GitHub Actions**). Each build
+GitHub Pages on every push to `main` (one-time: repository **Settings → Pages → Source: GitHub Actions**, plus
+**Custom domain** for your own address). Each build
 publishes its git commit and a SHA-256 of every file; the app shows both in **Settings → General**, so people can
 check what they're running. Any static HTTPS host works the same way (`npm run build`, then publish `relay-web/out/`),
 including your relay host's own Caddy (the optional block in `relay-server/deploy/Caddyfile`).
