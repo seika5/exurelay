@@ -36,6 +36,16 @@ describe("sealed profiles", () => {
     expect(await openProfile(recipient.privateKey, sender.publicKey, R, received(A, S, { ...c, updatedAt: 2000 }))).toBeNull();
   });
 
+  it("carries introductions, padded like device names", async () => {
+    const { sender, recipient } = await setup();
+    const ids = { author: A, sender: S, recipient: R };
+    const payload = { name: "Ana", updatedAt: 5, intros: ["RELAY-ENROLL:abc", "RELAY-ENROLL:def"] };
+    const c = await sealProfile(sender.privateKey, recipient.publicKey, ids, payload);
+    expect(await openProfile(recipient.privateKey, sender.publicKey, R, received(A, S, c))).toEqual(payload);
+    const one = await sealProfile(sender.privateKey, recipient.publicKey, ids, { name: "Ana", updatedAt: 5, intros: ["RELAY-ENROLL:abc"] });
+    expect(one.ciphertext.length).toBe(c.ciphertext.length);
+  });
+
   it("is the same size whatever the name's length", async () => {
     const { sender, recipient } = await setup();
     const ids = { author: A, sender: S, recipient: R };

@@ -127,6 +127,26 @@ export async function createEnrollmentCode(
   return ENROLL_PREFIX + btoa(JSON.stringify(env));
 }
 
+/**
+ * The member and name in an enrollment code passed along as an introduction (profileSeal.ts `intros`): the code's keys
+ * must be a current member's, and it must be signed by their signing key. No expiry: it only vouches for a name.
+ */
+export async function readIntroduction(code: string, members: DirectoryMember[]): Promise<{ keyHash: string; name: string } | null> {
+  const trimmed = code.trim();
+  if (trimmed.slice(0, ENROLL_PREFIX.length).toUpperCase() !== ENROLL_PREFIX) return null;
+  try {
+    const env = JSON.parse(atob(trimmed.slice(ENROLL_PREFIX.length))) as SignedEnvelope;
+    const req = parse<EnrollmentRequest>(env);
+    if (!req || req.type !== "relay-enroll" || typeof req.name !== "string") return null;
+    const member = members.find((m) => m.ecdh === req.ecdh && m.sig === req.sig);
+    if (!member || !(await verifyRecord(env, member.sig))) return null;
+    const name = req.name.trim().slice(0, MAX_NAME_LENGTH);
+    return name ? { keyHash: member.keyHash, name } : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Decode and check an enrollment code: signed by the key it carries, and less than 3 minutes old. */
 export async function readEnrollmentCode(
   code: string,
