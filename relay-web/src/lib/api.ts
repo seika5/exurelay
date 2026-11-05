@@ -117,18 +117,3 @@ export async function getServerStatus(): Promise<ServerStatus> {
   if (!res.ok) throw await errorFrom(res);
   return res.json();
 }
-
-export async function getAdminLabels(): Promise<Record<string, string>> {
-  const res = await sessionFetch("/api/admin/labels", { cache: "no-store" });
-  if (!res.ok) throw await errorFrom(res);
-  return (await res.json()).labels ?? {};
-}
-
-export async function setAdminLabel(keyHash: string, label: string): Promise<void> {
-  const res = await sessionFetch(`/api/admin/labels/${encodeURIComponent(keyHash)}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ label }),
-  });
-  if (!res.ok) throw await errorFrom(res);
-}
