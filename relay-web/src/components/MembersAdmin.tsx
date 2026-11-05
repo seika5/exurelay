@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useIdentity } from "@/context/IdentityContext";
 import { QrScanner } from "@/components/QrScanner";
+import { SectionTitle } from "@/components/InfoTip";
 import {
   directoryWithAdmins,
   directoryWithMember,
@@ -141,7 +142,7 @@ export function MembersAdmin() {
 
   const remove = (m: DirectoryMember) => {
     const label = getDisplayName(m.keyHash) || m.keyHash.slice(0, 8);
-    if (!window.confirm(`Remove ${label}? They'll no longer be able to use this server.`)) return;
+    if (!window.confirm(`Remove ${label}? They lose access to this server.`)) return;
     run(() => publishSignedDirectory(directoryWithoutMember(directory, me, m.keyHash, Date.now(), memberDevices)));
   };
 
@@ -176,7 +177,9 @@ export function MembersAdmin() {
       </ul>
 
       <div className="border-t border-[var(--border)] pt-3 flex flex-col gap-2">
-        <h3 className="text-sm font-medium">Enroll a member</h3>
+        <SectionTitle tip="Scan the QR on their waiting screen, or paste its code. Then check the fingerprint matches theirs.">
+          Enroll a member
+        </SectionTitle>
         {scanning ? (
           <QrScanner
             onClose={() => setScanning(false)}
@@ -208,10 +211,10 @@ export function MembersAdmin() {
               <span className="font-medium">{pending.request.name || "(no name)"}</span>
             </p>
             <p className="text-xs text-[var(--muted)]">
-              Check this fingerprint matches the one on their screen: <Fingerprint keyB64={pending.request.ecdh} />
+              Check the fingerprint matches theirs: <Fingerprint keyB64={pending.request.ecdh} />
             </p>
             <label className="text-xs text-[var(--muted)] flex flex-col gap-1">
-              Re-enrolling someone who lost their device? Pick their old key to replace it:
+              Replacing a lost device? Pick their old key:
               <select
                 value={replaces}
                 onChange={(e) => setReplaces(e.target.value)}

@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { usePlugins } from "@/context/PluginContext";
 import { preparePlugin, type StoredPlugin } from "@/lib/plugins";
+import { InfoTip, SectionTitle } from "@/components/InfoTip";
 
 const button = "px-3 py-1.5 rounded border border-[var(--border)] text-sm disabled:opacity-50";
 
@@ -39,10 +40,12 @@ export function PluginsPanel() {
 
   return (
     <div className="flex flex-col gap-4 text-sm">
-      <p className="text-xs text-[var(--muted)]">
-        Plugins can change colors, show custom message types, and offer their own screen. Each runs sandboxed: it
-        can&apos;t see your keys or stored messages, reach the network, or change how messages are encrypted and sent,
-        and anything it wants to send needs your OK. Only install plugins from people you trust.
+      <p className="text-xs text-[var(--muted)] flex items-center gap-1.5">
+        Plugins add themes, message types and screens.
+        <InfoTip>
+          Each runs sandboxed. It can&apos;t see your keys or messages, reach the network, or change how messages are sent, and
+          anything it sends needs your OK. Only install plugins from people you trust.
+        </InfoTip>
       </p>
 
       <ul className="flex flex-col gap-2">
@@ -87,7 +90,7 @@ export function PluginsPanel() {
           </div>
           <code className="text-[10px] break-all">sha256 {pending.sha256}</code>
           <p className="text-xs text-[var(--muted)]">
-            Compare this hash with the one its author published. This exact code is pinned: updates need your OK again.
+            Check this hash matches the one its author published. Updates need your OK again.
           </p>
           <div className="flex gap-2">
             <button
@@ -111,7 +114,7 @@ export function PluginsPanel() {
         </div>
       ) : (
         <section className="flex flex-col gap-2">
-          <h3 className="font-medium">Install a plugin</h3>
+          <SectionTitle>Install a plugin</SectionTitle>
           <div className="flex gap-2">
             <input
               type="url"

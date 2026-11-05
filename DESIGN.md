@@ -119,7 +119,7 @@ Keys aren't copied between devices (they're non-extractable once loaded, §4 "wh
 1. **Link:** on the new device, choose "Link to existing account". It makes its own keys and shows a QR with its public keys, valid for 3 minutes.
 2. **Approve:** on an existing device, scan it and compare the short code on both screens. The existing device signs a device certificate for the new keys (no device name: that goes sealed, "Names" below) and publishes it. No admin is needed: the member's devices vouch for each other, and clients only accept certificates signed by one of that member's devices in the admin-signed directory.
 3. **Sending:** a message is encrypted once per device of each recipient (and to your own other devices for sync), so it costs more upload with more devices. Receiving is unchanged.
-4. **Staying in sync:** contact, name and setting changes go to your other devices as encrypted self-messages. Each device keeps its own cache; self-copies of sent messages appear everywhere. A new device doesn't get old messages unless you copy them to it ("History to a new device", §5).
+4. **Staying in sync:** contact, name and setting changes go to your other devices as encrypted self-messages. Each device keeps its own cache; self-copies of sent messages appear everywhere. The device that links a new one copies its saved messages to it ("History to a new device", §5).
 5. **Push:** each device registers its own push endpoint, and a mention notifies all of them.
 6. **Device list:** Settings shows your devices by name. Any of your devices can unlink another (a signed revocation); unlinking the one you're on wipes its data.
 7. **Lost or stolen device:** unlink it from another device. Only that device's key is exposed, and nobody else has to re-verify you. With no other device left, the admin re-enrolls you as before.
@@ -262,12 +262,12 @@ With fetch-all, re-downloading the whole window on every launch would cost up to
 
 ### As built: history to a new device
 
-A newly linked device can't read older messages: each was sealed to the devices that existed when it was sent. **Settings → Devices → Copy my message history** sends the messages saved on that device to my other devices, as hidden `history` messages sealed to my devices only (like `device_sync`), in batches of at most 192 KB (`relay-web/src/lib/historyTransfer.ts`).
+A newly linked device can't read older messages: each was sealed to the devices that existed when it was sent. When a device links a new one, it sends the messages saved on it to my other devices, as hidden `history` messages sealed to my devices only (like `device_sync`), in batches of at most 192 KB (`relay-web/src/lib/historyTransfer.ts`).
 
 - **Kept as they were:** each message keeps its blob's `expiresAt`, so the receiving device deletes it on the same retention schedule as the sender. Messages past retention aren't sent; ones the receiver already has are skipped.
 - **Small on purpose:** every member downloads every blob (recipient-blind storage), so a copy costs the whole group bandwidth. File contents stay behind (they show as "removed from this device"), and the copy stops at 2 MB, newest messages first; the app says how many were left out.
 - **Trust:** a device accepts history only from another of the member's own devices (the sealed slot proves which device sent it). That device could put words in other members' mouths in its copy, but it's the member's own device, which they already trust with everything.
-- **Only on request:** copying puts old messages on more devices, so it's a button, never automatic.
+- **When:** right after linking, once the new device is in the linking device's device list (so the copy is sealed to it). Linking is the member's own choice, and the new device is theirs.
 - **Older versions:** a device still on a version that doesn't know `history` saves it like a message. Apps show only the message kinds they know, so it never appears as a blank message, and once updated, the app unpacks any saved `history` from the member's own devices when it loads its cache.
 
 ### Dropped: delete for me

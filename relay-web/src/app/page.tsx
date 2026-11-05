@@ -153,7 +153,7 @@ export default function Home() {
 function Chat() {
   const {
     identity, loading, needsSetup, lockedFile, enrolled, directory, directoryLoaded, error: identityError, server, cacheKey,
-    applyDeviceSync, settingsChangedAt,
+    applyDeviceSync, settingsChangedAt, justLinked, clearJustLinked,
     getDisplayName, getMyDisplayName, setDisplayName, getMember, isRemoved,
   } = useIdentity();
   const {
@@ -170,6 +170,13 @@ function Chat() {
     cacheKey ?? null,
     applyDeviceSync
   );
+
+  // A device I just linked: once it's in my device list (so messages are sealed to it too), send it my history.
+  useEffect(() => {
+    if (!justLinked || !identity?.myDevices.some((d) => d.keyHash === justLinked)) return;
+    clearJustLinked();
+    sendHistory().catch(() => {});
+  }, [justLinked, identity?.myDevices, clearJustLinked, sendHistory]);
 
   // My name or contact settings changed here (or a device was just linked): send them to my other devices.
   useEffect(() => {
@@ -1048,7 +1055,6 @@ function Chat() {
         <SettingsModal
           onClose={() => setSettingsOpen(false)}
           storage={storage}
-          sendHistory={sendHistory}
           conversations={conversations.map((c) => ({ conv: c, label: conversationLabel(c, identity.keyHash, getDisplayName, groupNamesFromMessages) }))}
         />
       )}

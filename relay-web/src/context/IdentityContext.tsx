@@ -155,6 +155,9 @@ type IdentityContextValue = {
   logout: () => void;
   /** Approve a new device of mine from its enrollment code (shown on its waiting screen). */
   linkDevice: (code: string, name: string) => Promise<void>;
+  /** A device this one just linked, until its message history has been sent to it (page.tsx). */
+  justLinked: string | null;
+  clearJustLinked: () => void;
   /** Unlink one of my devices; unlinking this one also wipes it here. */
   unlinkDevice: (deviceKeyHash: string) => Promise<void>;
   /** Apply name and contact settings synced from another of my devices, if newer. */
@@ -278,6 +281,8 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
   const deviceNamesRef = useRef(deviceNames);
   deviceNamesRef.current = deviceNames;
   const publishingProfile = useRef(false);
+  const [justLinked, setJustLinked] = useState<string | null>(null);
+  const clearJustLinked = useCallback(() => setJustLinked(null), []);
 
   const [server, setServer] = useState<ServerConfig | null>(null);
   const [servers, setServers] = useState<ServerConfig[]>([]);
@@ -898,6 +903,7 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
     const names = { at: Date.now(), names: { ...deviceNamesRef.current.names, [r.keyHash]: name.trim().slice(0, MAX_NAME_LENGTH) } };
     setDeviceNames(names);
     writeJson(`${DEVICE_NAMES_KEY}:${base.keyHash}`, names);
+    setJustLinked(r.keyHash);
     await refreshDirectory();
     // The new device starts without my nicknames and settings: send them (the chat sends on this bump).
     setSettingsChangedAt(Date.now());
@@ -958,6 +964,8 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
         settingsChangedAt,
         unlinked: !!base && revokedDevices.has(base.keyHash),
         memberDevices: namedDevices,
+        justLinked,
+        clearJustLinked,
         moveAdmin,
         startOver,
         error,

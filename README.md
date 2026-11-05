@@ -242,9 +242,8 @@ the device. The last admin can't leave.
 
 Each device has its own keys. To add one: on the new device, join the server and create an identity as above; on a
 device you already have, go to **Settings → Devices**, scan or paste the new device's code, check the fingerprint and
-name it. The new device opens by itself. Lost one? Unlink it from another. A new device doesn't get old messages:
-to bring them over, use **Settings → Devices → Copy my message history** on a device that has them (text only; files
-stay behind). It shows someone's name once one of their devices has been online since (their key fingerprint until then).
+name it. The new device opens by itself. Lost one? Unlink it from another. The device you link from copies your saved
+messages to the new one (text only; files stay behind). It shows someone's name once one of their devices has been online since (their key fingerprint until then).
 Device names are only ever seen by your own devices.
 Admins: admin works from one device at a time; move it with **Make admin device** (and before unlinking that device).
 

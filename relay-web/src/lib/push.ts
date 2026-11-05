@@ -9,7 +9,7 @@
  */
 
 import { importPublicKey } from "./crypto";
-import { getServerUrl } from "./server";
+import { getServerUrl, listServers, serverScopedKey } from "./server";
 import { sessionFetch } from "./session";
 import { tokenFetch } from "./tokens";
 
@@ -124,12 +124,50 @@ function urlBase64ToBytes(s: string): Uint8Array {
   return unb64((s + pad).replace(/-/g, "+").replace(/_/g, "/"));
 }
 
+/** The browser has one push subscription per app address, shared by every server joined; this marks one server off. */
+const PUSH_OFF_KEY = "relay.pushOff";
+const isOffHere = (url = getServerUrl()) => {
+  try {
+    return localStorage.getItem(`${PUSH_OFF_KEY}:${url}`) === "1";
+  } catch {
+    return false;
+  }
+};
+function setOffHere(off: boolean) {
+  try {
+    if (off) localStorage.setItem(serverScopedKey(PUSH_OFF_KEY), "1");
+    else localStorage.removeItem(serverScopedKey(PUSH_OFF_KEY));
+  } catch {
+    // Storage blocked: the state just isn't remembered.
+  }
+}
+
 export async function pushState(): Promise<PushState> {
   if (!pushSupported()) return "unsupported";
   if (Notification.permission === "denied") return "denied";
   const reg = await navigator.serviceWorker.getRegistration();
   const sub = await reg?.pushManager.getSubscription();
-  return sub && Notification.permission === "granted" ? "on" : "off";
+  return sub && Notification.permission === "granted" && !isOffHere() ? "on" : "off";
+}
+
+/** Turn notifications off for this device on the active server; in the browser too if no other server uses them. */
+export async function disablePush(): Promise<PushState> {
+  if (!pushSupported()) return "unsupported";
+  const reg = await navigator.serviceWorker.getRegistration();
+  const sub = await reg?.pushManager.getSubscription();
+  if (sub) {
+    const r = await sessionFetch("/api/push/unsubscribe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ endpoint: sub.endpoint }),
+    });
+    if (!r.ok) throw new Error(`Couldn't turn off notifications (${r.status})`);
+  }
+  setOffHere(true);
+  const elsewhere = listServers().some((s) => s.url !== getServerUrl() && !isOffHere(s.url));
+  if (sub && !elsewhere) await sub.unsubscribe().catch(() => {});
+  pushable = null;
+  return "off";
 }
 
 /** Turn notifications on for this device on the active server. Must run from a click (the permission prompt). */
@@ -152,6 +190,7 @@ export async function enablePush(): Promise<PushState> {
     body: JSON.stringify({ endpoint: json.endpoint, keys: json.keys }),
   });
   if (!r.ok) throw new Error(`Couldn't turn on notifications (${r.status})`);
+  setOffHere(false);
   pushable = null;
   return "on";
 }

@@ -1,12 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { enablePush, pushState, type PushState } from "@/lib/push";
+import { disablePush, enablePush, pushState, type PushState } from "@/lib/push";
+import { InfoTip, SectionTitle } from "@/components/InfoTip";
 import { appPath } from "@/lib/basePath";
 
 const button = "self-start px-3 py-1.5 rounded border border-[var(--border)] text-sm disabled:opacity-50";
 
-/** Settings → General: turn on push for @mentions and call rings on this device (DESIGN.md §9). */
+/** Settings → General: push for @mentions and call rings on this device, on or off (DESIGN.md §9). */
 export function NotificationsSection() {
   const [state, setState] = useState<PushState | null>(null);
   const [busy, setBusy] = useState(false);
@@ -16,35 +17,36 @@ export function NotificationsSection() {
   }, []);
 
   const text: Record<PushState, string> = {
-    on: "On for this device. You're notified only when someone @mentions you or rings you in a call.",
-    off: "Off. Turn on to be notified when someone @mentions you or rings you in a call. Nothing else notifies.",
-    denied: "Blocked in your browser or phone settings. Allow notifications for Exurelay there, then come back.",
-    unsupported: "Not available here. On iPhone, install Exurelay to the Home Screen first (iOS 16.4 or later).",
-    "server-off": "This server doesn't send notifications (its admin hasn't set them up).",
+    on: "On for this device.",
+    off: "Off.",
+    denied: "Blocked in your browser or phone settings.",
+    unsupported: "Not available here. On iPhone, add Exurelay to the Home Screen first.",
+    "server-off": "This server doesn't send notifications.",
+  };
+  const change = async (to: () => Promise<PushState>, failed: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      setState(await to());
+    } catch (e) {
+      setError(e instanceof Error ? e.message : failed);
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
     <section className="flex flex-col gap-2">
-      <h3 className="text-sm font-medium">Notifications</h3>
+      <SectionTitle tip="Only @mentions and call rings notify you. Nothing else does.">Notifications</SectionTitle>
       {state && <p className="text-xs text-[var(--muted)]">{text[state]}</p>}
       {state === "off" && (
-        <button
-          type="button"
-          disabled={busy}
-          className={button}
-          onClick={async () => {
-            setBusy(true);
-            setError(null);
-            try {
-              setState(await enablePush());
-            } catch (e) {
-              setError(e instanceof Error ? e.message : "Couldn't turn on notifications");
-            } finally {
-              setBusy(false);
-            }
-          }}
-        >
-          Turn on notifications
+        <button type="button" disabled={busy} className={button} onClick={() => change(enablePush, "Couldn't turn on notifications")}>
+          Turn on
+        </button>
+      )}
+      {state === "on" && (
+        <button type="button" disabled={busy} className={button} onClick={() => change(disablePush, "Couldn't turn off notifications")}>
+          Turn off
         </button>
       )}
       {error && <p className="text-xs text-red-500">{error}</p>}
@@ -52,7 +54,7 @@ export function NotificationsSection() {
   );
 }
 
-/** Settings → General: which build this is, to compare with the published one for its commit (DESIGN.md §9). */
+/** Settings → General, at the bottom: which build this is, to compare with the published one (DESIGN.md §9). */
 export function BuildInfo() {
   const [build, setBuild] = useState<{ commit: string; hash: string } | null>(null);
   useEffect(() => {
@@ -62,12 +64,9 @@ export function BuildInfo() {
   }, []);
   if (!build) return null;
   return (
-    <section className="flex flex-col gap-1">
-      <h3 className="text-sm font-medium">About this app</h3>
-      <p className="text-xs text-[var(--muted)]">
-        Build <code>{build.hash.slice(0, 16)}</code> from commit <code>{build.commit.slice(0, 12)}</code>. The deploy
-        publishes both, so you can check this is the code you expect.
-      </p>
-    </section>
+    <p className="flex items-center gap-1.5 flex-wrap">
+      Build <code>{build.hash.slice(0, 16)}</code> · commit <code>{build.commit.slice(0, 12)}</code>
+      <InfoTip>The deploy publishes both, so you can check this is the code you expect.</InfoTip>
+    </p>
   );
 }
