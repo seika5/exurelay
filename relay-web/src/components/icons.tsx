@@ -77,6 +77,13 @@ const PATHS = {
   chatPencil: <path d="M4 20h4L19 9l-4-4L4 16zM13.5 6.5l4 4" />,
   chatDownload: <path d="M12 4v11M7 10l5 5 5-5M5 20h14" />,
   chatFile: <path d="M14 3H6v18h12V7zM14 3v4h4" />,
+  chatShow: (
+    <>
+      <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z" />
+      <circle cx="12" cy="12" r="3" />
+    </>
+  ),
+  chatHide: <path d="M3 3l18 18M10.6 5.1A10 10 0 0 1 12 5c6.4 0 10 7 10 7a17 17 0 0 1-3 3.8M6.6 6.6C3.8 8.4 2 12 2 12s3.6 7 10 7c1.9 0 3.6-.6 5-1.5M9.9 9.9a3 3 0 0 0 4.2 4.2" />,
   chatContact: (
     <>
       <rect x="3" y="5" width="18" height="14" rx="2" />
