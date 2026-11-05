@@ -6,7 +6,7 @@ import { confirmDialog } from "@/components/Modal";
 import { createIdentityFile, openIdentityFile, rewriteSettings, type FileSession } from "@/lib/identityFile";
 import { getKeyHashFromKeyPair } from "@/lib/e2ee";
 import { ApiError, getDirectory, getProfileCopies, postDeviceCert, postDeviceRevoke, postLeave, postProfileCopies, publishDirectory } from "@/lib/api";
-import { openProfile, sealProfile, type ReceivedCopy } from "@/lib/profileSeal";
+import { openProfile, sealProfile, type ProfilePayload, type ReceivedCopy } from "@/lib/profileSeal";
 import {
   deleteFolderRef,
   deleteIdentity,
@@ -40,6 +40,7 @@ import {
   type MemberDevice,
   verifyDirectory,
   readIntroduction,
+  readSignedName,
   type Directory,
   type DirectoryMember,
   type Profile,
@@ -219,6 +220,10 @@ const MAX_DEVICE_NAMES = 24;
  */
 const INTROS_KEY = "relay.intros";
 const MAX_INTROS = 6;
+/** Signed names of others passed along in each copy (each about 300 bytes). */
+const MAX_RELAY = 10;
+/** A copy's padded plaintext must stay within 4096 bytes (the server takes ciphertexts up to 8192 base64 characters). */
+const COPY_BUDGET = 4000;
 
 function readJson<T>(key: string, fallback: T): T {
   try {
@@ -245,16 +250,24 @@ async function openProfiles(
   members: DirectoryMember[],
   /** Introductions this device keeps itself (members it enrolled). */
   localIntros: string[] = []
-): Promise<{ profiles: Map<string, Profile>; ownDevices: Map<string, { at: number; names: Record<string, string> }> }> {
+): Promise<{
+  profiles: Map<string, Profile>;
+  ownDevices: Map<string, { at: number; names: Record<string, string> }>;
+  /** Each member's newest verified signed name (JSON), to pass along to others. */
+  signed: Map<string, { json: string; updatedAt: number }>;
+}> {
   const profiles = new Map<string, Profile>();
   const ownDevices = new Map<string, { at: number; names: Record<string, string> }>();
   const intros = [...localIntros];
+  const signedJson: string[] = [];
   for (const c of copies) {
     const sender = devices.get(c.author)?.find((d) => d.keyHash === c.sender);
     if (!sender) continue;
     const p = await openProfile(myEcdh, await importPublicKey(sender.ecdh), myDeviceKeyHash, c);
     if (!p) continue;
     if (p.intros) intros.push(...p.intros.slice(0, MAX_INTROS));
+    if (p.signed) signedJson.push(p.signed);
+    if (p.relay) signedJson.push(...p.relay.slice(0, MAX_RELAY));
     if (!p.name.trim()) continue;
     const prev = profiles.get(c.author);
     if (!prev || p.updatedAt > prev.updatedAt) {
@@ -271,6 +284,17 @@ async function openProfiles(
       if (!prevOwn || p.updatedAt > prevOwn.at) ownDevices.set(c.author, { at: p.updatedAt, names });
     }
   }
+  // Signed names, the author's own or passed along by others: verified against that member's devices. A newer one
+  // than what arrived directly wins, so a new member learns everyone's current name from whoever is online.
+  const signed = new Map<string, { json: string; updatedAt: number }>();
+  for (const json of new Set(signedJson)) {
+    const n = await readSignedName(json, (m) => (members.some((x) => x.keyHash === m) ? devices.get(m) : undefined));
+    if (!n) continue;
+    if ((signed.get(n.keyHash)?.updatedAt ?? -1) < n.updatedAt) signed.set(n.keyHash, { json, updatedAt: n.updatedAt });
+    if ((profiles.get(n.keyHash)?.updatedAt ?? -1) < n.updatedAt) {
+      profiles.set(n.keyHash, { type: "relay-profile", keyHash: n.keyHash, name: n.name, updatedAt: n.updatedAt });
+    }
+  }
   // Members whose own name hasn't arrived: the name from their signed enrollment code, if anyone passed it along.
   // updatedAt 0 marks it as an introduction, so their own copy replaces it as soon as it comes.
   for (const code of new Set(intros)) {
@@ -279,7 +303,7 @@ async function openProfiles(
       profiles.set(intro.keyHash, { type: "relay-profile", keyHash: intro.keyHash, name: intro.name, updatedAt: 0 });
     }
   }
-  return { profiles, ownDevices };
+  return { profiles, ownDevices, signed };
 }
 
 export function IdentityProvider({ children }: { children: React.ReactNode }) {
@@ -308,6 +332,8 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
   const publishingProfile = useRef(false);
   const [justLinked, setJustLinked] = useState<string | null>(null);
   const [intros, setIntros] = useState<Record<string, string>>({});
+  const [signedNames, setSignedNames] = useState<Map<string, { json: string; updatedAt: number }>>(new Map());
+  const ownSigned = useRef<{ key: string; json: string } | null>(null);
   const introsRef = useRef(intros);
   introsRef.current = intros;
   const clearJustLinked = useCallback(() => setJustLinked(null), []);
@@ -613,6 +639,7 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
             Object.values(introsRef.current)
           );
           setProfiles(opened.profiles);
+          setSignedNames(opened.signed);
           const own = opened.ownDevices.get(meMember);
           if (own && own.at > deviceNamesRef.current.at) {
             setDeviceNames(own);
@@ -741,43 +768,67 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
         .filter(([k]) => mine.some((d) => d.keyHash === k))
         .slice(0, MAX_DEVICE_NAMES)
     );
-    const targets: { keyHash: string; ecdh: string; own: boolean }[] = [];
+    const targets: { keyHash: string; ecdh: string; own: boolean; member: string }[] = [];
     for (const m of directory.members) {
       if (departed.has(m.keyHash)) continue;
       for (const d of devices.get(m.keyHash) ?? [{ keyHash: m.keyHash, ecdh: m.ecdh }]) {
-        if (d.keyHash !== base.keyHash) targets.push({ keyHash: d.keyHash, ecdh: d.ecdh, own: m.keyHash === myMember });
+        if (d.keyHash !== base.keyHash) targets.push({ keyHash: d.keyHash, ecdh: d.ecdh, own: m.keyHash === myMember, member: m.keyHash });
       }
     }
+    // Others' signed names I know, newest first, for passing along (not theirs back to them).
+    const known = [...signedNames]
+      .filter(([k]) => k !== myMember && directory.members.some((m) => m.keyHash === k) && !departed.has(k))
+      .sort((x, y) => y[1].updatedAt - x[1].updatedAt);
+    const relayFor = (member: string) => known.filter(([k]) => k !== member).slice(0, MAX_RELAY).map(([, v]) => v.json);
     // Members I enrolled whose own name hasn't arrived yet: pass their signed codes along.
     const shared = Object.entries(intros)
       .filter(([k]) => k !== myMember && !departed.has(k) && directory.members.some((m) => m.keyHash === k) && !profiles.get(k)?.updatedAt)
       .map(([, code]) => code)
       .slice(0, MAX_INTROS);
-    const digest = (own: boolean) => JSON.stringify([updatedAt, name, own ? ownNames : null, shared]);
+    const digest = (t: { own: boolean; member: string }) => JSON.stringify(["v2", updatedAt, name, t.own ? ownNames : null, shared, relayFor(t.member)]);
     const sentKey = `${PROFILE_SENT_KEY}:${base.keyHash}`;
     const sent = readJson<Record<string, string>>(sentKey, {});
-    const todo = targets.filter((t) => sent[t.keyHash] !== digest(t.own));
+    const todo = targets.filter((t) => sent[t.keyHash] !== digest(t));
     if (todo.length === 0) return;
     publishingProfile.current = true;
     (async () => {
+      // My name, signed, so others can pass it along (re-signed only when it changes).
+      const signKey = `${myMember}|${name}|${updatedAt}`;
+      if (ownSigned.current?.key !== signKey) {
+        const env = await signRecord(base.signingKeyPair.privateKey, { type: "relay-profile", keyHash: myMember, name, updatedAt });
+        ownSigned.current = { key: signKey, json: JSON.stringify(env) };
+      }
+      const signedJson = ownSigned.current.json;
+      // Fit each copy in the budget: drop passed-along names first, then introductions.
+      const fit = (p: ProfilePayload): ProfilePayload => {
+        const next = { ...p, relay: [...(p.relay ?? [])], intros: [...(p.intros ?? [])] };
+        const size = () => new TextEncoder().encode(JSON.stringify(next)).length;
+        while (size() > COPY_BUDGET && next.relay.length) next.relay.pop();
+        while (size() > COPY_BUDGET && next.intros.length) next.intros.pop();
+        if (!next.relay.length) delete (next as { relay?: string[] }).relay;
+        if (!next.intros.length) delete (next as { intros?: string[] }).intros;
+        return next;
+      };
       const copies = await Promise.all(
         todo.map(async (t) =>
           sealProfile(
             base.keyPair.privateKey,
             await importPublicKey(t.ecdh),
             { author: myMember, sender: base.keyHash, recipient: t.keyHash },
-            {
+            fit({
               name,
               updatedAt,
+              signed: signedJson,
               ...(t.own ? { devices: ownNames } : {}),
               ...(shared.length ? { intros: shared } : {}),
-            }
+              ...(relayFor(t.member).length ? { relay: relayFor(t.member) } : {}),
+            })
           )
         )
       );
       await postProfileCopies(copies);
       const next = Object.fromEntries(targets.filter((t) => sent[t.keyHash] !== undefined).map((t) => [t.keyHash, sent[t.keyHash]]));
-      for (const t of todo) next[t.keyHash] = digest(t.own);
+      for (const t of todo) next[t.keyHash] = digest(t);
       writeJson(sentKey, next);
     })()
       .catch(() => {
@@ -786,7 +837,7 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
       .finally(() => {
         publishingProfile.current = false;
       });
-  }, [base, enrolled, myMember, directory, devices, departed, deviceNames, intros, profiles]);
+  }, [base, enrolled, myMember, directory, devices, departed, deviceNames, intros, profiles, signedNames]);
 
   // Forget introductions once the member's own name has arrived, or they're no longer a member.
   useEffect(() => {

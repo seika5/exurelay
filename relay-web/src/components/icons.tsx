@@ -68,6 +68,12 @@ const PATHS = {
     </>
   ),
   chatBack: <path d="M15 5l-7 7 7 7" />,
+  chatMembers: (
+    <>
+      <circle cx="9" cy="8" r="3.5" />
+      <path d="M2.5 20c0-3.6 2.9-6.5 6.5-6.5s6.5 2.9 6.5 6.5M16 4.5a3.5 3.5 0 0 1 0 7M18 13.7c2.1.8 3.5 2.9 3.5 5.3" />
+    </>
+  ),
   chatPencil: <path d="M4 20h4L19 9l-4-4L4 16zM13.5 6.5l4 4" />,
   chatDownload: <path d="M12 4v11M7 10l5 5 5-5M5 20h14" />,
   chatFile: <path d="M14 3H6v18h12V7zM14 3v4h4" />,

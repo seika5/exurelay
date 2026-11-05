@@ -12,6 +12,7 @@ export function Modal({
   title,
   children,
   wide = false,
+  compact = false,
   closeLabel = "Done",
 }: {
   onClose: () => void;
@@ -19,6 +20,8 @@ export function Modal({
   children: React.ReactNode;
   /** 512px instead of 448px on larger screens. */
   wide?: boolean;
+  /** A small centered card on phones too (short dialogs: a name, a list), instead of a full-screen sheet. */
+  compact?: boolean;
   /** The header button's label; null for none (e.g. when the dialog has its own buttons). */
   closeLabel?: string | null;
 }) {
@@ -36,7 +39,7 @@ export function Modal({
 
   return (
     <div
-      className="fixed inset-0 z-30 bg-black/60 flex justify-center sm:items-start sm:p-4 sm:pt-[8vh]"
+      className={`fixed inset-0 z-30 bg-black/60 flex justify-center ${compact ? "items-center p-4" : "sm:items-start sm:p-4 sm:pt-[8vh]"}`}
       onMouseDown={(e) => e.target === e.currentTarget && close.current()}
     >
       <div
@@ -45,13 +48,21 @@ export function Modal({
         aria-modal="true"
         aria-label={title}
         tabIndex={-1}
-        className={`bg-[var(--surface)] w-full h-full overflow-auto flex flex-col gap-4 outline-none sm:h-auto sm:max-h-[84vh] sm:rounded-lg sm:border sm:border-[var(--border)] ${wide ? "sm:max-w-lg" : "sm:max-w-md"}`}
-        style={{
-          paddingTop: "max(1rem, env(safe-area-inset-top, 0px))",
-          paddingBottom: "max(1rem, env(safe-area-inset-bottom, 0px))",
-          paddingLeft: "max(1rem, env(safe-area-inset-left, 0px))",
-          paddingRight: "max(1rem, env(safe-area-inset-right, 0px))",
-        }}
+        className={
+          compact
+            ? "bg-[var(--surface)] w-full max-w-sm max-h-[80vh] overflow-auto flex flex-col gap-4 outline-none rounded-lg border border-[var(--border)] p-4"
+            : `bg-[var(--surface)] w-full h-full overflow-auto flex flex-col gap-4 outline-none sm:h-auto sm:max-h-[84vh] sm:rounded-lg sm:border sm:border-[var(--border)] ${wide ? "sm:max-w-lg" : "sm:max-w-md"}`
+        }
+        style={
+          compact
+            ? undefined
+            : {
+                paddingTop: "max(1rem, env(safe-area-inset-top, 0px))",
+                paddingBottom: "max(1rem, env(safe-area-inset-bottom, 0px))",
+                paddingLeft: "max(1rem, env(safe-area-inset-left, 0px))",
+                paddingRight: "max(1rem, env(safe-area-inset-right, 0px))",
+              }
+        }
       >
         <div className="flex items-center justify-between gap-3">
           <h2 className="font-semibold">{title}</h2>
