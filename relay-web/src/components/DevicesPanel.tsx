@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useIdentity } from "@/context/IdentityContext";
 import { QrScanner } from "@/components/QrScanner";
 import { fingerprint, readEnrollmentCode } from "@/lib/signed";
-import type { HistoryPlan } from "@/lib/historyTransfer";
+import { SectionTitle } from "@/components/InfoTip";
 
 const button = "px-3 py-1.5 rounded border border-[var(--border)] text-sm disabled:opacity-50";
 
@@ -12,7 +12,7 @@ const button = "px-3 py-1.5 rounded border border-[var(--border)] text-sm disabl
  * Settings → Devices (DESIGN.md §4 "Decided: linked devices"): my devices, linking a new one from its enrollment
  * code, and unlinking. Each device has its own keys; any of mine can link or unlink the others, with no admin.
  */
-export function DevicesPanel({ sendHistory }: { sendHistory?: () => Promise<HistoryPlan> }) {
+export function DevicesPanel() {
   const { identity, linkDevice, unlinkDevice, moveAdmin, isAdmin, directory } = useIdentity();
   const [code, setCode] = useState("");
   const [scanning, setScanning] = useState(false);
@@ -55,7 +55,11 @@ export function DevicesPanel({ sendHistory }: { sendHistory?: () => Promise<Hist
   return (
     <div className="flex flex-col gap-4 text-sm">
       <section className="flex flex-col gap-2">
-        <h3 className="font-medium">Your devices</h3>
+        <SectionTitle
+          tip={`Each device has its own keys. Lost one? Unlink it from another device. Only the admin can replace the enrolled device.${isAdmin ? " Admin works from one device at a time: move it before unlinking that device." : ""}`}
+        >
+          Your devices
+        </SectionTitle>
         <ul className="flex flex-col gap-1.5">
           {identity.myDevices.map((d) => {
             const isThis = d.keyHash === identity.deviceKeyHash;
@@ -76,7 +80,7 @@ export function DevicesPanel({ sendHistory }: { sendHistory?: () => Promise<Hist
                     disabled={busy}
                     className={button}
                     onClick={() => {
-                      if (window.confirm(`Make "${d.primary ? "Enrolled device" : d.name || "this device"}" your admin device? This device stops being one.`)) {
+                      if (window.confirm(`Make "${d.primary ? "Enrolled device" : d.name || "this device"}" your admin device?`)) {
                         run(() => moveAdmin(d.keyHash), "Admin moved.");
                       }
                     }}
@@ -91,8 +95,8 @@ export function DevicesPanel({ sendHistory }: { sendHistory?: () => Promise<Hist
                     className={button}
                     onClick={() => {
                       const text = isThis
-                        ? "Unlink this device? It stops being part of your account and its keys and messages here are deleted."
-                        : `Unlink "${d.name || "this device"}"? It can no longer read or send as you.`;
+                        ? "Unlink this device? Its keys and messages here are deleted."
+                        : `Unlink "${d.name || "this device"}"? It won't be able to read or send as you.`;
                       if (window.confirm(text)) run(() => unlinkDevice(d.keyHash), "Unlinked.");
                     }}
                   >
@@ -103,47 +107,12 @@ export function DevicesPanel({ sendHistory }: { sendHistory?: () => Promise<Hist
             );
           })}
         </ul>
-        <p className="text-xs text-[var(--muted)]">
-          Each device has its own keys. Lost one? Unlink it here; nobody has to check your key again. The enrolled
-          device can only be replaced by the admin (or by leaving the server).
-          {isAdmin && " Admin works from one device at a time: the admin device. Move it before unlinking that device."}
-        </p>
       </section>
 
-      {sendHistory && identity.myDevices.length > 1 && (
-        <section className="flex flex-col gap-2">
-          <h3 className="font-medium">Message history</h3>
-          <p className="text-xs text-[var(--muted)]">
-            A newly linked device only gets messages sent after it was linked. Copy the messages saved on this device to
-            your other devices, encrypted for them only. They keep their delete dates, and files stay here (they show
-            as &quot;removed from this device&quot; there).
-          </p>
-          <button
-            type="button"
-            disabled={busy}
-            className={`${button} self-start`}
-            onClick={() => {
-              if (!window.confirm("Copy the messages saved on this device to your other devices? Each copy is encrypted for your devices only.")) return;
-              run(async () => {
-                const p = await sendHistory();
-                if (p.copied === 0) throw new Error("Nothing saved here to copy.");
-                const files = p.filesWithoutContent ? ` (${p.filesWithoutContent} without their files)` : "";
-                const left = p.leftOut ? `; ${p.leftOut} older ones left out to keep it small` : "";
-                return `Sending ${p.copied} message${p.copied === 1 ? "" : "s"}${files}${left}. They appear on your other devices next time those open.`;
-              });
-            }}
-          >
-            Copy my message history to my other devices
-          </button>
-        </section>
-      )}
-
       <section className="flex flex-col gap-2">
-        <h3 className="font-medium">Link a device</h3>
-        <p className="text-xs text-[var(--muted)]">
-          On the new device, join this server and create an identity. Its waiting screen shows a code: scan or paste it
-          here, and check the fingerprint matches.
-        </p>
+        <SectionTitle tip="On the new device, join this server and create an identity. Then scan or paste the code it shows. Your messages are copied to it (text only, not files).">
+          Link a device
+        </SectionTitle>
         {scanning ? (
           <QrScanner
             onClose={() => setScanning(false)}
@@ -197,7 +166,7 @@ export function DevicesPanel({ sendHistory }: { sendHistory?: () => Promise<Hist
                   setCode("");
                   setName("");
                   setChecked(null);
-                }, "Linked. The new device opens by itself.")
+                }, "Linked. Copying your messages to it.")
               }
             >
               Link device

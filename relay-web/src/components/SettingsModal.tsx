@@ -9,9 +9,9 @@ import { StoragePanel, type StorageControls } from "@/components/StoragePanel";
 import { DevicesPanel } from "@/components/DevicesPanel";
 import { PluginsPanel } from "@/components/PluginsPanel";
 import { BuildInfo, NotificationsSection } from "@/components/GeneralExtras";
+import { InfoTip, SectionTitle } from "@/components/InfoTip";
 import type { Conversation } from "@/lib/useMessages";
 import { ApiError } from "@/lib/api";
-import type { HistoryPlan } from "@/lib/historyTransfer";
 
 type Tab = "general" | "devices" | "storage" | "plugins" | "admin";
 
@@ -56,12 +56,10 @@ export function SettingsModal({
   onClose,
   storage,
   conversations,
-  sendHistory,
 }: {
   onClose: () => void;
   storage: StorageControls;
   conversations: { conv: Conversation; label: string }[];
-  sendHistory?: () => Promise<HistoryPlan>;
 }) {
   const { identity, isAdmin, directory, directoryError, setDisplayName, server, servers, leaveServer, identityStorage } = useIdentity();
   const [tab, setTab] = useState<Tab>("general");
@@ -110,25 +108,29 @@ export function SettingsModal({
         {tab === "plugins" ? (
           <PluginsPanel />
         ) : tab === "devices" ? (
-          <DevicesPanel sendHistory={sendHistory} />
+          <DevicesPanel />
         ) : tab === "storage" ? (
           <StoragePanel storage={storage} conversations={conversations} />
         ) : tab === "admin" && isAdmin ? (
           <>
             <section className="flex flex-col gap-2">
-              <h3 className="text-sm font-medium">Join code</h3>
+              <SectionTitle tip="It points a new member's app at this server and carries the admin keys their app will trust. It isn't secret, but give it to them directly. You still enroll them after.">
+                Join code
+              </SectionTitle>
               <JoinCodePanel />
             </section>
             <section className="flex flex-col gap-2">
-              <h3 className="text-sm font-medium">Members</h3>
+              <SectionTitle>Members</SectionTitle>
               <MembersAdmin />
             </section>
             <section className="flex flex-col gap-2">
-              <h3 className="text-sm font-medium">Message blobs</h3>
+              <SectionTitle tip="Every message, file and call note is stored as blobs of one size, so the server can't tell them apart, and every member downloads every blob. Bigger blobs hide longer messages but use more data. Decoys hide how many blobs a send needs.">
+                Message blobs
+              </SectionTitle>
               <BlobSettingsPanel />
             </section>
             <section className="flex flex-col gap-2">
-              <h3 className="text-sm font-medium">Server status</h3>
+              <SectionTitle>Server status</SectionTitle>
               <ServerStatusPanel />
             </section>
           </>
@@ -136,8 +138,7 @@ export function SettingsModal({
           <>
 
         <section className="flex flex-col gap-2">
-          <h3 className="text-sm font-medium">Your name</h3>
-          <p className="text-xs text-[var(--muted)]">Everyone sees this name. You sign it, so only you can change it.</p>
+          <SectionTitle tip="Everyone on this server sees it. It's encrypted, so the server can't.">Your name</SectionTitle>
           <div className="flex gap-2">
             <input
               type="text"
@@ -172,25 +173,18 @@ export function SettingsModal({
         </section>
 
         <section className="flex flex-col gap-1">
-          <h3 className="text-sm font-medium">Your key fingerprint</h3>
-          <code className="text-xs text-[var(--muted)]">{fp}</code>
-          {directory && <p className="text-xs text-[var(--muted)]">Member list version {directory.version}</p>}
-          {directoryError && <p className="text-xs text-red-500">{directoryError}</p>}
-        </section>
-
-        <section className="flex flex-col gap-1">
           <h3 className="text-sm font-medium">Server</h3>
           <code className="text-xs text-[var(--muted)] break-all">{server?.url}</code>
           {servers.length > 1 && (
             <p className="text-xs text-[var(--muted)]">
-              Joined {servers.length} servers; switch with the menu above your chats. Each has its own identity.
+              {servers.length} servers joined. Switch above your chats.
             </p>
           )}
           <button
             type="button"
             disabled={leaving}
             onClick={async () => {
-              if (!window.confirm("Leave this server? You're removed as a member right away, and your identity and unspent tokens for it are deleted. To come back you'd need a new join code and the admin's approval.")) return;
+              if (!window.confirm("Leave this server? Your identity for it is deleted. Coming back needs a new join code and the admin's approval.")) return;
               setLeaving(true);
               setLeaveError(null);
               try {
@@ -200,7 +194,7 @@ export function SettingsModal({
                 // The server answered and said no (e.g. the last admin): leaving anyway would strand it.
                 if (e instanceof ApiError && e.status < 500) {
                   setLeaveError(e.message);
-                } else if (window.confirm("Couldn't reach the server to tell it you're leaving. Leave on this device anyway? You'll stay listed as a member until an admin removes you.")) {
+                } else if (window.confirm("Can't reach the server. Leave on this device only? You'll stay listed until an admin removes you.")) {
                   await leaveServer({ force: true });
                   onClose();
                 }
@@ -217,22 +211,28 @@ export function SettingsModal({
 
         <NotificationsSection />
 
-        <section className="flex flex-col gap-1">
-          <h3 className="text-sm font-medium">Your keys</h3>
-          {identityStorage?.kind === "folder" ? (
-            <p className="text-xs text-[var(--muted)]">
-              In <code>{identityStorage.fileName}</code> in the folder &ldquo;{identityStorage.folder}&rdquo;, encrypted with your passphrase.
-              Keep a copy somewhere safe: if you lose the file or forget the passphrase, ask your admin to enroll you again.
-            </p>
-          ) : (
-            <p className="text-xs text-[var(--muted)]">
-              Made on this device and kept only in this app. They can&apos;t be exported or backed up. If you lose this
-              device or clear the app&apos;s data, ask your admin to enroll you again.
-            </p>
-          )}
-        </section>
-
-        <BuildInfo />
+        <div className="border-t border-[var(--border)] pt-3 flex flex-col gap-1 text-xs text-[var(--muted)]">
+          <p>
+            Key fingerprint <code>{fp}</code>
+            {directory && <> · member list v{directory.version}</>}
+          </p>
+          {directoryError && <p className="text-red-500">{directoryError}</p>}
+          <p className="flex items-center gap-1.5 flex-wrap">
+            {identityStorage?.kind === "folder" ? (
+              <>
+                Keys in <code>{identityStorage.fileName}</code> in &ldquo;{identityStorage.folder}&rdquo;, locked with your passphrase.
+              </>
+            ) : (
+              <>Keys kept in this app only.</>
+            )}
+            <InfoTip>
+              {identityStorage?.kind === "folder"
+                ? "Keep a copy of the file somewhere safe. If you lose it or forget the passphrase, the admin has to enroll you again."
+                : "They can't be exported or backed up. If you lose this device or clear the app's data, the admin has to enroll you again."}
+            </InfoTip>
+          </p>
+          <BuildInfo />
+        </div>
           </>
         )}
       </div>

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import type { Conversation, StorageStats } from "@/lib/useMessages";
 import { MAX_RETENTION_DAYS } from "@/lib/messageCache";
+import { SectionTitle } from "@/components/InfoTip";
 
 const button = "px-3 py-1.5 rounded border border-[var(--border)] text-sm disabled:opacity-50";
 
@@ -53,17 +54,16 @@ export function StoragePanel({
   return (
     <div className="flex flex-col gap-4 text-sm">
       <section className="flex flex-col gap-1">
-        <h3 className="font-medium">On this device</h3>
-        <p className="text-xs text-[var(--muted)]">
-          Messages are kept here encrypted, so the app only downloads what&apos;s new. Your own messages too.
-        </p>
+        <SectionTitle tip="Messages are saved here encrypted, so the app only downloads what's new.">On this device</SectionTitle>
         <div className="text-xs">
           Messages: {stats.messages} ({fmt(stats.messageBytes)}) · Files: {stats.files} ({fmt(stats.fileBytes)})
         </div>
       </section>
 
       <section className="flex flex-col gap-1">
-        <h3 className="font-medium">Keep messages for</h3>
+        <SectionTitle tip="The server deletes messages after 3 to 4 days. Counting from then means the time a message disappears here doesn't show when it was sent. Default 7.">
+          Keep messages for
+        </SectionTitle>
         <div className="flex items-center gap-2">
           <input
             type="number"
@@ -77,21 +77,17 @@ export function StoragePanel({
             }}
             className="w-20 px-2 py-1 rounded bg-[var(--bg)] border border-[var(--border)]"
           />
-          <span>days after the server deletes them (default 7)</span>
+          <span>days after the server deletes them</span>
         </div>
-        <p className="text-xs text-[var(--muted)]">
-          The server keeps messages about 3–4 days. Counting from then (not from when they were sent) means the time
-          they disappear here doesn&apos;t reveal when they were sent.
-        </p>
       </section>
 
       <section className="flex flex-col gap-2">
-        <h3 className="font-medium">Clear</h3>
+        <SectionTitle>Clear</SectionTitle>
         <button
           type="button"
           disabled={busy || stats.files === 0}
           className={`${button} self-start`}
-          onClick={() => act("Remove all files from this device? The messages stay, marked as removed.", storage.clearFiles, "Files removed.")}
+          onClick={() => act("Remove all files from this device? The messages stay.", storage.clearFiles, "Files removed.")}
         >
           Remove files only
         </button>
@@ -127,7 +123,7 @@ export function StoragePanel({
           className={`${button} self-start`}
           onClick={() =>
             act(
-              "Clear every message from this device? Others keep their copies. Messages still on the server won't come back unless you re-sync.",
+              "Clear every message from this device? Others keep their copies.",
               storage.clearAll,
               "Everything cleared."
             )
@@ -141,7 +137,7 @@ export function StoragePanel({
           className={`${button} self-start`}
           onClick={() =>
             act(
-              "Clear this device and download again whatever the server still has (about the last 3–4 days)? Older messages won't come back.",
+              "Clear this device and download what the server still has (the last 3 to 4 days)?",
               storage.resync,
               "Re-synced from the server."
             )

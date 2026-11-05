@@ -30,10 +30,7 @@ export function JoinCodePanel() {
 
   return (
     <div className="flex flex-col items-center gap-2">
-      <p className="text-xs text-[var(--muted)]">
-        New members scan this (or open the link) to point their app at this server. It isn&apos;t secret, but it carries the
-        admin keys their app will trust, so hand it over directly. They still need to be enrolled.
-      </p>
+      <p className="text-xs text-[var(--muted)]">New members scan this or open the link.</p>
       {qr && (
         // eslint-disable-next-line @next/next/no-img-element
         <img src={qr} alt="Join QR code" className="w-64 h-64 max-w-full rounded bg-white" />
@@ -72,11 +69,6 @@ export function BlobSettingsPanel() {
   // Each send is about (blobs for the content) + decoys/2 extra blobs, downloaded by every member.
   return (
     <div className="flex flex-col gap-2 text-xs">
-      <p className="text-[var(--muted)]">
-        Every message, file and call note is stored as blobs of one size, so the server can&apos;t tell them apart, and
-        every member downloads every blob. Bigger blobs hide longer messages but cost more data; decoys hide how many
-        blobs a send really needs.
-      </p>
       <label className="flex items-center gap-2">
         Blob size
         <select value={size} onChange={(e) => setSize(Number(e.target.value))} className="px-2 py-1 rounded bg-[var(--bg)] border border-[var(--border)]">
@@ -100,7 +92,7 @@ export function BlobSettingsPanel() {
         decoy blobs per send (default 3)
       </label>
       <p className="text-[var(--muted)]">
-        A short text costs each member about {Math.round(((1 + decoys / 2) * size) / 1024)} KB to download.
+        A short text costs each member about {Math.round(((1 + decoys / 2) * size) / 1024)} KB.
       </p>
       <button
         type="button"

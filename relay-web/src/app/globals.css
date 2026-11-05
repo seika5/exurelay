@@ -16,3 +16,13 @@ body {
   color: var(--text);
   min-height: 100vh;
 }
+
+/* iOS zooms into any text field under 16px when it's focused. On touch screens, keep form fields at 16px so it
+   doesn't (pinch-zoom still works, unlike maximum-scale=1). */
+@media (pointer: coarse) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}
