@@ -163,45 +163,48 @@ export function SettingsModal({
                 {servers.length} servers joined. Switch above your chats.
               </p>
             )}
-            <button
-              type="button"
-              disabled={leaving}
-              onClick={async () => {
-                const ok = await confirmDialog("Leave this server? Your identity for it is deleted. Coming back needs a new join link and the admin's approval.", {
-                  ok: "Leave",
-                  danger: true,
-                });
-                if (!ok) return;
-                setLeaving(true);
-                setLeaveError(null);
-                try {
-                  await leaveServer();
-                  onClose();
-                } catch (e) {
-                  // The server answered and said no (e.g. the last admin): leaving anyway would strand it.
-                  if (e instanceof ApiError && e.status < 500) {
-                    setLeaveError(e.message);
-                  } else if (
-                    await confirmDialog("Can't reach the server. Leave on this device only? You stay listed until an admin removes you.", {
-                      ok: "Leave",
-                      danger: true,
-                    })
-                  ) {
-                    await leaveServer({ force: true });
-                    onClose();
-                  }
-                } finally {
-                  setLeaving(false);
-                }
-              }}
-              className={`${btnDanger} self-start`}
-            >
-              {leaving ? "Leaving…" : "Leave server"}
-            </button>
-            {leaveError && <p className="text-xs text-red-500">{leaveError}</p>}
           </section>
 
           <NotificationsSection />
+
+          <div className="flex flex-col gap-1">
+              <button
+                type="button"
+                disabled={leaving}
+                onClick={async () => {
+                  const ok = await confirmDialog("Leave this server? Your identity for it is deleted. Coming back needs a new join link and the admin's approval.", {
+                    ok: "Leave",
+                    danger: true,
+                  });
+                  if (!ok) return;
+                  setLeaving(true);
+                  setLeaveError(null);
+                  try {
+                    await leaveServer();
+                    onClose();
+                  } catch (e) {
+                    // The server answered and said no (e.g. the last admin): leaving anyway would strand it.
+                    if (e instanceof ApiError && e.status < 500) {
+                      setLeaveError(e.message);
+                    } else if (
+                      await confirmDialog("Can't reach the server. Leave on this device only? You stay listed until an admin removes you.", {
+                        ok: "Leave",
+                        danger: true,
+                      })
+                    ) {
+                      await leaveServer({ force: true });
+                      onClose();
+                    }
+                  } finally {
+                    setLeaving(false);
+                  }
+                }}
+                className={`${btnDanger} self-start`}
+              >
+                {leaving ? "Leaving…" : "Leave server"}
+              </button>
+              {leaveError && <p className="text-xs text-red-500">{leaveError}</p>}
+          </div>
 
           <div className="border-t border-[var(--border)] pt-3 flex flex-col gap-1 text-xs text-[var(--muted)]">
             <p className="flex items-center gap-1.5 flex-wrap">
