@@ -38,7 +38,18 @@ export function NotificationsSection() {
     <section className="flex flex-col gap-2">
       <div className="flex items-center justify-between gap-3">
         <SectionTitle tip="Only @mentions and call rings notify you. Nothing else does.">Notifications</SectionTitle>
-        {(state === "on" || state === "off") && <Switch on={on} onChange={toggle} label="Notifications" disabled={busy} />}
+        {(state === "on" || state === "off") && (
+          <span className="flex items-center gap-2">
+            {busy && (
+              <span
+                role="status"
+                aria-label={on ? "Turning off notifications" : "Turning on notifications"}
+                className="inline-block h-4 w-4 rounded-full border-2 border-[var(--muted)] border-t-transparent animate-spin"
+              />
+            )}
+            <Switch on={on} onChange={toggle} label="Notifications" disabled={busy} />
+          </span>
+        )}
       </div>
       {state && blocked[state] && <p className="text-xs text-[var(--muted)]">{blocked[state]}</p>}
       {error && <p className="text-xs text-red-500">{error}</p>}
