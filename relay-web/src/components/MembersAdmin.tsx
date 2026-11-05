@@ -76,7 +76,7 @@ export function MembersAdmin() {
           type="text"
           value={setupCode}
           onChange={(e) => setSetupCode(e.target.value)}
-          placeholder="Setup code (if your server printed one)"
+          placeholder="Setup code"
           autoComplete="off"
           spellCheck={false}
           className="w-full px-2 py-1.5 rounded bg-[var(--bg)] border border-[var(--border)] text-sm font-mono"

@@ -12,6 +12,45 @@ import { BuildInfo, NotificationsSection } from "@/components/GeneralExtras";
 import type { Conversation } from "@/lib/useMessages";
 import { ApiError } from "@/lib/api";
 
+type Tab = "general" | "devices" | "storage" | "plugins" | "admin";
+
+const TAB_LABELS: Record<Tab, string> = { general: "General", devices: "Devices", storage: "Storage", plugins: "Plugins", admin: "Admin" };
+
+/** Simple stroke icons (24×24), drawn here so the app needs no icon library. */
+const TAB_ICONS: Record<Tab, React.ReactNode> = {
+  general: (
+    <>
+      <path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1" />
+      <circle cx="15" cy="6" r="2" />
+      <circle cx="9" cy="12" r="2" />
+      <circle cx="17" cy="18" r="2" />
+    </>
+  ),
+  devices: (
+    <>
+      <rect x="3" y="4" width="10" height="16" rx="2" />
+      <rect x="15" y="9" width="6" height="11" rx="1.5" />
+      <path d="M7 17h2" />
+    </>
+  ),
+  storage: (
+    <>
+      <ellipse cx="12" cy="5.5" rx="7" ry="2.5" />
+      <path d="M5 5.5v13c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5v-13M5 12c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5" />
+    </>
+  ),
+  plugins: <path d="M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4" />,
+  admin: <path d="M12 3l7 3v5c0 4.5-3 8.4-7 10-4-1.6-7-5.5-7-10V6zM9 12l2 2 4-4" />,
+};
+
+function TabIcon({ tab }: { tab: Tab }) {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="shrink-0">
+      {TAB_ICONS[tab]}
+    </svg>
+  );
+}
+
 export function SettingsModal({
   onClose,
   storage,
@@ -22,7 +61,7 @@ export function SettingsModal({
   conversations: { conv: Conversation; label: string }[];
 }) {
   const { identity, isAdmin, directory, directoryError, setDisplayName, server, servers, leaveServer, identityStorage } = useIdentity();
-  const [tab, setTab] = useState<"general" | "devices" | "storage" | "plugins" | "admin">("general");
+  const [tab, setTab] = useState<Tab>("general");
   const [name, setName] = useState(identity?.myName ?? "");
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -46,15 +85,21 @@ export function SettingsModal({
           </button>
         </div>
 
-        <div className="flex flex-wrap gap-1 text-sm">
+        {/* One row at any width: every tab has an icon, and only the selected one also shows its name. */}
+        <div className="flex gap-1 text-sm" role="tablist">
           {(isAdmin ? (["general", "devices", "storage", "plugins", "admin"] as const) : (["general", "devices", "storage", "plugins"] as const)).map((t) => (
             <button
               key={t}
               type="button"
+              role="tab"
+              aria-selected={tab === t}
+              aria-label={TAB_LABELS[t]}
+              title={TAB_LABELS[t]}
               onClick={() => setTab(t)}
-              className={`px-3 py-1 rounded ${tab === t ? "bg-[var(--accent)] text-white" : "border border-[var(--border)]"}`}
+              className={`flex items-center justify-center gap-1.5 px-2 py-1.5 rounded whitespace-nowrap ${tab === t ? "flex-[2.2] bg-[var(--accent)] text-white" : "flex-1 border border-[var(--border)]"}`}
             >
-              {t === "general" ? "General" : t === "devices" ? "Devices" : t === "storage" ? "Storage" : t === "plugins" ? "Plugins" : "Admin"}
+              <TabIcon tab={t} />
+              {tab === t && <span>{TAB_LABELS[t]}</span>}
             </button>
           ))}
         </div>

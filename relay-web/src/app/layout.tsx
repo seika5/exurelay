@@ -8,7 +8,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Exurelay",
-  description: "E2EE messaging and voice/video for a closed circle",
+  description: "E2EE messaging and voice/video",
   manifest: appPath("/manifest.webmanifest"),
   icons: { icon: appPath("/icon-192.png"), apple: appPath("/apple-touch-icon.png") },
   appleWebApp: { capable: true, title: "Exurelay", statusBarStyle: "black-translucent" },

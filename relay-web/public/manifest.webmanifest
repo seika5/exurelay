@@ -1,7 +1,7 @@
 {
   "name": "Exurelay",
   "short_name": "Exurelay",
-  "description": "End-to-end encrypted messages and calls for a closed group.",
+  "description": "End-to-end encrypted messaging and voice/video.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
