@@ -5,6 +5,7 @@ import { useCall } from "@/context/CallContext";
 import { useIdentity } from "@/context/IdentityContext";
 import { getParticipantSources, type ParticipantSource } from "@/lib/callUtils";
 import { AbsentMembers } from "@/components/AbsentMembers";
+import { CallControls } from "@/components/CallControls";
 
 const VOLUME_MIN = 0;
 const VOLUME_MAX = 100;
@@ -22,7 +23,7 @@ function ParticipantTile({
   deafened,
   keyHash,
   volume,
-  onContextMenu,
+  onVolume,
 }: {
   sourceKey: string;
   participantId: string;
@@ -36,9 +37,16 @@ function ParticipantTile({
   deafened?: boolean;
   keyHash?: string;
   volume?: number;
-  onContextMenu?: (e: React.MouseEvent) => void;
+  /** Opens this person's volume: right-click, or a long press on a touch screen. */
+  onVolume?: (x: number, y: number) => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const pressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pressed = useRef(false);
+  const endPress = () => {
+    if (pressTimer.current) clearTimeout(pressTimer.current);
+    pressTimer.current = null;
+  };
   const audioRef = useRef<HTMLAudioElement>(null);
   const [aspectRatio, setAspectRatio] = useState(16 / 9);
   const gain = typeof volume === "number" ? Math.min(1, volume / 100) : 1;
@@ -72,9 +80,35 @@ function ParticipantTile({
   return (
     <button
       type="button"
-      onClick={onClick}
-      onContextMenu={onContextMenu}
-      className={`relative rounded overflow-hidden bg-black flex items-center justify-center transition-all w-full h-full min-h-0 ${
+      onClick={() => {
+        if (pressed.current) {
+          pressed.current = false;
+          return;
+        }
+        onClick();
+      }}
+      onContextMenu={
+        onVolume
+          ? (e) => {
+              e.preventDefault();
+              if (!pressed.current) onVolume(e.clientX, e.clientY);
+            }
+          : undefined
+      }
+      onPointerDown={(e) => {
+        pressed.current = false;
+        if (!onVolume || e.pointerType === "mouse") return;
+        const { clientX, clientY } = e;
+        pressTimer.current = setTimeout(() => {
+          pressed.current = true;
+          onVolume(clientX, clientY);
+        }, 500);
+      }}
+      onPointerUp={endPress}
+      onPointerLeave={endPress}
+      onPointerCancel={endPress}
+      style={{ WebkitTouchCallout: "none" }}
+      className={`select-none relative rounded overflow-hidden bg-black flex items-center justify-center transition-all w-full h-full min-h-0 ${
         focused ? "ring-2 ring-white ring-offset-2 ring-offset-[var(--bg)]" : ""
       } ${speaking ? "ring-2 ring-white" : ""}`}
     >
@@ -106,7 +140,7 @@ function ParticipantTile({
  * Inline call view. Discord-style: one tile per video source (camera + screen); name in bottom left. Click to focus.
  * On mobile, the controls bar at the bottom replaces the sidebar controls (which are hidden).
  */
-export function InlineCallView({ onHangUp }: { onHangUp?: () => void }) {
+export function InlineCallView({ onHangUp, top }: { onHangUp: () => void; /** Banners shown above the tiles. */ top?: React.ReactNode }) {
   const {
     localStream,
     remoteStreams,
@@ -122,10 +156,6 @@ export function InlineCallView({ onHangUp }: { onHangUp?: () => void }) {
     speaking,
     focusedPeerId,
     setFocusedPeerId,
-    setMuted,
-    setDeafened,
-    setCameraOn,
-    setScreenSharing,
     setCallExpanded,
   } = useCall();
   const { getDisplayName, getMyDisplayName, getContactVolume, setContactVolume } = useIdentity();
@@ -134,12 +164,17 @@ export function InlineCallView({ onHangUp }: { onHangUp?: () => void }) {
 
   useEffect(() => {
     if (!volumeMenu) return;
-    const close = (e: MouseEvent) => {
+    const close = (e: PointerEvent) => {
       if (volumeMenuRef.current?.contains(e.target as Node)) return;
       setVolumeMenu(null);
     };
-    document.addEventListener("mousedown", close);
-    return () => document.removeEventListener("mousedown", close);
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setVolumeMenu(null);
+    document.addEventListener("pointerdown", close);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", close);
+      document.removeEventListener("keydown", onKey);
+    };
   }, [volumeMenu]);
 
   const sources = useMemo(
@@ -222,27 +257,29 @@ export function InlineCallView({ onHangUp }: { onHangUp?: () => void }) {
         deafened={deafened}
         keyHash={keyHash}
         volume={volume}
-        onContextMenu={
-          keyHash
-            ? (e) => {
-                e.preventDefault();
-                setVolumeMenu({ keyHash, x: e.clientX, y: e.clientY });
-              }
-            : undefined
-        }
+        onVolume={keyHash ? (x, y) => setVolumeMenu({ keyHash, x, y }) : undefined}
       />
     );
   };
 
   return (
-    <div className="flex-1 flex flex-col min-h-0 p-2 overflow-auto relative">
+    <div
+      className="flex-1 flex flex-col min-h-0 px-2 overflow-auto relative"
+      style={{ paddingTop: "max(0.5rem, env(safe-area-inset-top, 0px))" }}
+    >
+      {top}
       {volumeMenu && (
         <div
           ref={volumeMenuRef}
-          className="fixed z-[100] rounded-lg bg-[var(--surface)] border border-[var(--border)] shadow-lg p-3 min-w-[180px]"
-          style={{ left: volumeMenu.x, top: volumeMenu.y }}
+          role="dialog"
+          aria-label="Volume"
+          className="fixed z-[100] rounded-lg bg-[var(--surface)] border border-[var(--border)] shadow-lg p-3 w-[200px]"
+          style={{
+            left: Math.max(8, Math.min(volumeMenu.x, window.innerWidth - 208)),
+            top: Math.max(8, Math.min(volumeMenu.y, window.innerHeight - 110)),
+          }}
         >
-          <div className="text-xs text-[var(--muted)] mb-2">Volume</div>
+          <div className="text-xs text-[var(--muted)] mb-2 truncate">Volume: {getDisplayName(volumeMenu.keyHash) || volumeMenu.keyHash.slice(0, 8)}</div>
           <input
             type="range"
             min={VOLUME_MIN}
@@ -287,52 +324,12 @@ export function InlineCallView({ onHangUp }: { onHangUp?: () => void }) {
       )}
       <AbsentMembers />
 
-      {/* Call controls — always visible so mobile users are not stuck without controls */}
+      {/* Call controls: always visible, so a phone isn't left without them */}
       <div
-        className="flex-shrink-0 flex items-center justify-between gap-1.5 pt-2 mt-2 border-t border-[var(--border)]"
+        className="flex-shrink-0 pt-2 mt-2 border-t border-[var(--border)]"
         style={{ paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 0.5rem)" }}
       >
-        {/* Minimize — collapse back to the compact tile / chat view */}
-        <button
-          type="button"
-          onClick={() => setCallExpanded(false)}
-          className="flex-1 py-2 rounded text-sm font-medium bg-[var(--border)] text-[var(--text)] hover:opacity-80"
-          title="Minimize call"
-        >
-          ↙ Chat
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setMuted(!muted)}
-          className={`flex-1 py-2 rounded text-sm font-medium ${muted ? "bg-amber-600/80 text-white" : "bg-[var(--border)] text-[var(--text)]"}`}
-        >
-          {muted ? "Unmute" : "Mute"}
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setDeafened(!deafened)}
-          className={`flex-1 py-2 rounded text-sm font-medium ${deafened ? "bg-amber-600/80 text-white" : "bg-[var(--border)] text-[var(--text)]"}`}
-        >
-          {deafened ? "Undeaf" : "Deafen"}
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setCameraOn(!cameraOn)}
-          className={`flex-1 py-2 rounded text-sm font-medium ${cameraOn ? "bg-amber-600/80 text-white" : "bg-[var(--border)] text-[var(--text)]"}`}
-        >
-          {cameraOn ? "Cam off" : "Camera"}
-        </button>
-
-        <button
-          type="button"
-          onClick={() => onHangUp?.()}
-          className="flex-1 py-2 rounded text-sm font-medium bg-red-600/80 text-white hover:opacity-90"
-        >
-          Hang up
-        </button>
+        <CallControls onHangUp={onHangUp} onChat={() => setCallExpanded(false)} />
       </div>
     </div>
   );

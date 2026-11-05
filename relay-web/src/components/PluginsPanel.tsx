@@ -4,8 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import { usePlugins } from "@/context/PluginContext";
 import { preparePlugin, type StoredPlugin } from "@/lib/plugins";
 import { InfoTip, SectionTitle } from "@/components/InfoTip";
-
-const button = "px-3 py-1.5 rounded border border-[var(--border)] text-sm disabled:opacity-50";
+import { confirmDialog, Switch } from "@/components/Modal";
+import { btn, btnDanger, btnPrimary, field } from "@/components/ui";
 
 /**
  * Settings → Plugins: install from a URL or file (shown with its SHA-256 before you accept), turn on/off, open a
@@ -48,40 +48,42 @@ export function PluginsPanel() {
         </InfoTip>
       </p>
 
-      <ul className="flex flex-col gap-2">
-        {plugins.map((p) => (
-          <li key={p.id} className="flex flex-col gap-1 p-2 rounded border border-[var(--border)]">
-            <div className="flex items-center gap-2">
-              <span className="font-medium truncate flex-1">{p.name}</span>
-              <label className="flex items-center gap-1 text-xs">
-                <input type="checkbox" checked={p.enabled} onChange={(e) => setEnabled(p.id, e.target.checked)} /> On
-              </label>
-            </div>
-            <code className="text-[10px] text-[var(--muted)] break-all">sha256 {p.sha256}</code>
-            {errors[p.id] && <p className="text-xs text-red-500">Error: {errors[p.id]}</p>}
-            <div className="flex gap-2 flex-wrap">
-              {p.enabled && (
-                <button type="button" className={button} onClick={() => setOpen(open === p.id ? null : p.id)}>
-                  {open === p.id ? "Close" : "Open"}
+      {plugins.length === 0 ? (
+        <p className="text-xs text-[var(--muted)]">No plugins yet.</p>
+      ) : (
+        <ul className="flex flex-col gap-2">
+          {plugins.map((p) => (
+            <li key={p.id} className="flex flex-col gap-1 p-2 rounded border border-[var(--border)]">
+              <div className="flex items-center gap-2">
+                <span className="font-medium break-words min-w-0 flex-1">{p.name}</span>
+                <Switch on={p.enabled} onChange={(on) => setEnabled(p.id, on)} label={p.name} />
+              </div>
+              <code className="text-[10px] text-[var(--muted)] break-all">sha256 {p.sha256}</code>
+              {errors[p.id] && <p className="text-xs text-red-500">Error: {errors[p.id]}</p>}
+              <div className="flex gap-2 flex-wrap">
+                {p.enabled && (
+                  <button type="button" className={btn} onClick={() => setOpen(open === p.id ? null : p.id)}>
+                    {open === p.id ? "Close" : "Open"}
+                  </button>
+                )}
+                {p.url && (
+                  <button type="button" className={btn} onClick={() => fromUrl(p.url!, p)}>
+                    Check for update
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className={btnDanger}
+                  onClick={async () => (await confirmDialog(`Remove ${p.name}?`, { ok: "Remove", danger: true })) && remove(p.id)}
+                >
+                  Remove
                 </button>
-              )}
-              {p.url && (
-                <button type="button" className={button} onClick={() => fromUrl(p.url!, p)}>
-                  Check for update
-                </button>
-              )}
-              <button
-                type="button"
-                className={button}
-                onClick={() => window.confirm(`Remove ${p.name}?`) && remove(p.id)}
-              >
-                Remove
-              </button>
-            </div>
-            {open === p.id && <div ref={screen} className="h-64 rounded border border-[var(--border)] overflow-hidden" />}
-          </li>
-        ))}
-      </ul>
+              </div>
+              {open === p.id && <div ref={screen} className="h-64 rounded border border-[var(--border)] overflow-hidden" />}
+            </li>
+          ))}
+        </ul>
+      )}
 
       {pending ? (
         <div className="flex flex-col gap-2 p-2 rounded border border-amber-400/50">
@@ -95,7 +97,7 @@ export function PluginsPanel() {
           <div className="flex gap-2">
             <button
               type="button"
-              className={`${button} bg-[var(--accent)] text-on-accent`}
+              className={btnPrimary}
               onClick={async () => {
                 const old = plugins.find((x) => x.url && x.url === pending.url);
                 if (old && old.id !== pending.id) await remove(old.id);
@@ -107,7 +109,7 @@ export function PluginsPanel() {
             >
               Install
             </button>
-            <button type="button" className={button} onClick={() => setPending(null)}>
+            <button type="button" className={btn} onClick={() => setPending(null)}>
               Cancel
             </button>
           </div>
@@ -115,19 +117,19 @@ export function PluginsPanel() {
       ) : (
         <section className="flex flex-col gap-2">
           <SectionTitle>Install a plugin</SectionTitle>
-          <div className="flex gap-2">
+          <div className="flex items-stretch gap-2">
             <input
               type="url"
               value={url}
               onChange={(e) => setUrl(e.target.value)}
               placeholder="https://…/plugin.js"
-              className="flex-1 min-w-0 px-2 py-1 rounded bg-[var(--bg)] border border-[var(--border)]"
+              className={`${field} flex-1 min-w-0`}
             />
-            <button type="button" disabled={!url.trim()} className={button} onClick={() => fromUrl(url.trim())}>
+            <button type="button" disabled={!url.trim()} className={btn} onClick={() => fromUrl(url.trim())}>
               Get
             </button>
           </div>
-          <label className={`${button} self-start cursor-pointer`}>
+          <label className={`${btn} self-start cursor-pointer`}>
             From a file…
             <input
               type="file"

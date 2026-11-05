@@ -45,6 +45,91 @@ const PATHS = {
   attach: <path d="M20 11.5l-8.5 8.5a5 5 0 0 1-7-7L13 4.5a3.5 3.5 0 0 1 5 5L9.5 18a2 2 0 0 1-3-3L14 7.5" />,
   close: <path d="M6 6l12 12M18 6L6 18" />,
   refresh: <path d="M20 11a8 8 0 0 0-14.5-4.5M4 4v3.5h3.5M4 13a8 8 0 0 0 14.5 4.5M20 20v-3.5h-3.5" />,
+  // Settings: scan a code (camera frame corners), show a QR
+  settingsScan: <path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3M7 12h10" />,
+  settingsQr: (
+    <>
+      <rect x="4" y="4" width="6" height="6" rx="1" />
+      <rect x="14" y="4" width="6" height="6" rx="1" />
+      <rect x="4" y="14" width="6" height="6" rx="1" />
+      <path d="M14 14h2v2M20 14v.01M14 20h.01M17 17v3h3" />
+    </>
+  ),
+  // Chat
+  chatNewGroup: (
+    <>
+      <circle cx="9" cy="8" r="3.5" />
+      <path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6M18 8v6M15 11h6" />
+    </>
+  ),
+  chatSettings: (
+    <>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+    </>
+  ),
+  chatBack: <path d="M15 5l-7 7 7 7" />,
+  chatPencil: <path d="M4 20h4L19 9l-4-4L4 16zM13.5 6.5l4 4" />,
+  chatDownload: <path d="M12 4v11M7 10l5 5 5-5M5 20h14" />,
+  chatFile: <path d="M14 3H6v18h12V7zM14 3v4h4" />,
+  chatContact: (
+    <>
+      <rect x="3" y="5" width="18" height="14" rx="2" />
+      <circle cx="9" cy="11" r="2" />
+      <path d="M6 16c.5-1.4 1.6-2.2 3-2.2s2.5.8 3 2.2M15 10h3M15 14h3" />
+    </>
+  ),
+  // Call controls
+  callMic: (
+    <>
+      <rect x="9" y="3" width="6" height="11" rx="3" />
+      <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
+    </>
+  ),
+  callMicOff: (
+    <>
+      <rect x="9" y="3" width="6" height="11" rx="3" />
+      <path d="M5 11a7 7 0 0 0 14 0M12 18v3M4 4l16 16" />
+    </>
+  ),
+  callHeadphones: (
+    <>
+      <path d="M4 17v-4a8 8 0 0 1 16 0v4" />
+      <rect x="3" y="14" width="4" height="6" rx="1.5" />
+      <rect x="17" y="14" width="4" height="6" rx="1.5" />
+    </>
+  ),
+  callHeadphonesOff: (
+    <>
+      <path d="M4 17v-4a8 8 0 0 1 16 0v4M3 3l18 18" />
+      <rect x="3" y="14" width="4" height="6" rx="1.5" />
+      <rect x="17" y="14" width="4" height="6" rx="1.5" />
+    </>
+  ),
+  callCamera: (
+    <>
+      <rect x="3" y="6" width="12" height="12" rx="2" />
+      <path d="M15 10l6-3v10l-6-3" />
+    </>
+  ),
+  callCameraOff: (
+    <>
+      <rect x="3" y="6" width="12" height="12" rx="2" />
+      <path d="M15 10l6-3v10l-6-3M3 3l18 18" />
+    </>
+  ),
+  callScreen: (
+    <>
+      <rect x="3" y="4" width="18" height="12" rx="2" />
+      <path d="M8 20h8M12 16v4M12 13V7M9 10l3-3 3 3" />
+    </>
+  ),
+  callHangUp: <path d="M3 15.5v-2C3 11 7 9 12 9s9 2 9 4.5v2l-4.5 1-1-3c-2.3-.7-4.7-.7-7 0l-1 3z" />,
+  callChat: <path d="M4 5h16v11H9l-5 4z" />,
+  // Onboarding
+  onbScan: <path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3M4 12h16" />,
+  onbBack: <path d="M15 5l-7 7 7 7" />,
+  onbFolder: <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />,
 } as const;
 
 export type IconName = keyof typeof PATHS;

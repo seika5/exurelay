@@ -2,6 +2,7 @@
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { exportPrivateKey, exportPublicKey, generateKeyPair, generateSigningKeyPair, importIdentityKeys, importPublicKey } from "@/lib/crypto";
+import { confirmDialog } from "@/components/Modal";
 import { createIdentityFile, openIdentityFile, rewriteSettings, type FileSession } from "@/lib/identityFile";
 import { getKeyHashFromKeyPair } from "@/lib/e2ee";
 import { ApiError, getDirectory, getProfileCopies, postDeviceCert, postDeviceRevoke, postLeave, postProfileCopies, publishDirectory } from "@/lib/api";
@@ -112,6 +113,7 @@ type IdentityContextValue = {
   cacheKey: CryptoKey | null | undefined;
   error: string | null;
   dismissError: () => void;
+  /** name is "" when this device will be linked to a member I already am (its name comes from my other devices). */
   createIdentity: (name: string, storage: StorageChoice) => Promise<void>;
   /** Verified member directory, or null before the first admin publishes one. */
   directory: Directory | null;
@@ -291,30 +293,33 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
 
   // Server choice: a #join= link wins over a saved choice; otherwise saved, otherwise the build's preset.
   useEffect(() => {
-    const fromLink = takeJoinFromLocation();
-    const joined = fromLink ? readJoinCode(fromLink) : null;
-    const saved = loadServerConfig();
-    // Adding a server to an app already in use needs a yes: a link from a stranger mustn't repoint it silently.
-    const known = joined?.ok ? listServers().find((c) => c.url === joined.config.url) : undefined;
-    const sameAsKnown = known && known.admins.join() === (joined?.ok ? joined.config.admins.join() : "");
-    if (joined?.ok && sameAsKnown) {
-      setServer(switchServerConfig(joined.config.url));
-    } else if (
-      joined?.ok &&
-      (!saved ||
-        window.confirm(
-          known
-            ? `This link trusts different admins for ${joined.config.url} than you have now. Replace them?`
-            : `Join ${joined.config.url}? You'll stay a member of your other servers.`
-        ))
-    ) {
-      saveServerConfig(joined.config);
-      setServer(joined.config);
-    } else {
-      setServer(saved);
-    }
-    setServers(listServers());
-    setServerReady(true);
+    void (async () => {
+      const fromLink = takeJoinFromLocation();
+      const joined = fromLink ? readJoinCode(fromLink) : null;
+      const saved = loadServerConfig();
+      // Adding a server to an app already in use needs a yes: a link from a stranger mustn't repoint it silently.
+      const known = joined?.ok ? listServers().find((c) => c.url === joined.config.url) : undefined;
+      const sameAsKnown = known && known.admins.join() === (joined?.ok ? joined.config.admins.join() : "");
+      if (joined?.ok && sameAsKnown) {
+        setServer(switchServerConfig(joined.config.url));
+      } else if (
+        joined?.ok &&
+        (!saved ||
+          (await confirmDialog(
+            known
+              ? `This link trusts different admins for ${joined.config.url}. Replace them?`
+              : `Join ${joined.config.url}? You stay in your other servers.`,
+            known ? { ok: "Replace", danger: true } : { ok: "Join" }
+          )))
+      ) {
+        saveServerConfig(joined.config);
+        setServer(joined.config);
+      } else {
+        setServer(saved);
+      }
+      setServers(listServers());
+      setServerReady(true);
+    })();
   }, []);
 
   const resetServerState = useCallback(() => {
@@ -378,8 +383,8 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
    * reload, after the admin had enrolled it.
    */
   const newIdentity = async (serverUrl: string, name: string, storage: StorageChoice): Promise<BaseIdentity> => {
+    // Empty when linking this device to a member I already am: the name then arrives from my other devices (device_sync).
     const trimmed = name.trim().slice(0, MAX_NAME_LENGTH);
-    if (!trimmed) throw new Error("Enter a name");
     const folder = storage.kind === "folder";
     // Folder mode: extractable only long enough to write the encrypted file, then re-imported non-extractable.
     const ecdh = await generateKeyPair(folder);
@@ -510,6 +515,7 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
   /** First admin of a brand-new server: a new identity for it, whose signing key is pinned as the admin. */
   const setUpNewServer = useCallback(async (url: string, name: string, storage: StorageChoice) => {
     const normalized = normalizeServerUrl(url);
+    if (!name.trim()) throw new Error("Enter a name");
     const next = await newIdentity(normalized, name, storage);
     const config: ServerConfig = { url: normalized, admins: [next.signingPublicKeyBase64] };
     identities.current.set(normalized, next);

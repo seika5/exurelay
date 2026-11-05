@@ -23,17 +23,21 @@ export function Modal({
   closeLabel?: string | null;
 }) {
   const card = useRef<HTMLDivElement>(null);
+  // The latest onClose, so callers can pass an inline function without re-running the effect (which would also
+  // pull focus out of whatever field is being typed in).
+  const close = useRef(onClose);
+  close.current = onClose;
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && close.current();
     document.addEventListener("keydown", onKey);
     card.current?.focus();
     return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, []);
 
   return (
     <div
       className="fixed inset-0 z-30 bg-black/60 flex justify-center sm:items-start sm:p-4 sm:pt-[8vh]"
-      onMouseDown={(e) => e.target === e.currentTarget && onClose()}
+      onMouseDown={(e) => e.target === e.currentTarget && close.current()}
     >
       <div
         ref={card}

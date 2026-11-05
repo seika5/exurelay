@@ -4,6 +4,9 @@ import { useCallback, useEffect, useState } from "react";
 import QRCode from "qrcode";
 import { useIdentity } from "@/context/IdentityContext";
 import { ENROLLMENT_CODE_TTL_MS, fingerprint } from "@/lib/signed";
+import { IconButton } from "@/components/icons";
+import { InfoTip } from "@/components/InfoTip";
+import { btn } from "@/components/ui";
 
 /**
  * This device's signed enrollment code as a QR + copyable text. Codes expire after 3 minutes,
@@ -54,8 +57,9 @@ export function EnrollmentCode() {
       ) : (
         <div className="w-72 h-72 max-w-full rounded bg-[var(--surface)]" />
       )}
-      <p className="text-xs text-[var(--muted)]">
-        Fingerprint <code>{fp}</code>
+      <p className="text-xs text-[var(--muted)] flex items-center gap-1.5">
+        Safety code <code>{fp}</code>
+        <InfoTip>The device that scans this code shows the same safety code. Check that they match.</InfoTip>
       </p>
       <p className="text-xs text-[var(--muted)]">
         Expires in {Math.floor(secondsLeft / 60)}:{String(secondsLeft % 60).padStart(2, "0")}
@@ -69,13 +73,11 @@ export function EnrollmentCode() {
             await navigator.clipboard.writeText(code).catch(() => {});
             setCopied(true);
           }}
-          className="px-3 py-1.5 rounded border border-[var(--border)] text-sm"
+          className={btn}
         >
           {copied ? "Copied" : "Copy code"}
         </button>
-        <button type="button" onClick={regenerate} className="px-3 py-1.5 rounded border border-[var(--border)] text-sm">
-          New code
-        </button>
+        <IconButton icon="refresh" label="New code" onClick={regenerate} />
       </div>
     </div>
   );
