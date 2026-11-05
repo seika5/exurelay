@@ -132,7 +132,16 @@ export async function readEnrollmentCode(
   now = Date.now()
 ): Promise<{ ok: true; request: EnrollmentRequest; keyHash: string } | { ok: false; error: string }> {
   const trimmed = code.trim();
-  if (!trimmed.startsWith(ENROLL_PREFIX)) return { ok: false, error: "Not an Exurelay enrollment code." };
+  // The prefix in any case: some chat apps change its capitalization when it's pasted. The payload after it is exact.
+  if (trimmed.slice(0, ENROLL_PREFIX.length).toUpperCase() !== ENROLL_PREFIX) {
+    const isJoin = trimmed.slice(0, 11).toUpperCase() === "RELAY-JOIN:" || trimmed.includes("#join=");
+    return {
+      ok: false,
+      error: isJoin
+        ? "That's the server's join code. Use the code on the new device's waiting screen (it starts with RELAY-ENROLL:)."
+        : "Not an Exurelay device code. Use the code on the new device's waiting screen (it starts with RELAY-ENROLL:).",
+    };
+  }
   let env: SignedEnvelope;
   try {
     env = JSON.parse(atob(trimmed.slice(ENROLL_PREFIX.length)));

@@ -22,7 +22,8 @@ export function EnrollmentCode() {
     const next = await createEnrollmentCode();
     setCode(next);
     setExpiresAt(Date.now() + ENROLLMENT_CODE_TTL_MS);
-    setQr(await QRCode.toDataURL(next, { errorCorrectionLevel: "L", margin: 1, width: 280 }));
+    // A 4-square white border (the QR standard) so scanners can find the code against the dark app background.
+    setQr(await QRCode.toDataURL(next, { errorCorrectionLevel: "L", margin: 4, width: 576 }));
     setCopied(false);
   }, [createEnrollmentCode]);
 
@@ -49,9 +50,9 @@ export function EnrollmentCode() {
     <div className="flex flex-col items-center gap-2">
       {qr ? (
         // eslint-disable-next-line @next/next/no-img-element
-        <img src={qr} alt="Enrollment QR code" className="w-56 h-56 rounded bg-white" />
+        <img src={qr} alt="Enrollment QR code" className="w-72 h-72 max-w-full rounded bg-white" />
       ) : (
-        <div className="w-56 h-56 rounded bg-[var(--surface)]" />
+        <div className="w-72 h-72 max-w-full rounded bg-[var(--surface)]" />
       )}
       <p className="text-xs text-[var(--muted)]">
         Fingerprint <code>{fp}</code>

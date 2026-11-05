@@ -21,7 +21,9 @@ export function QrScanner({ onResult, onClose }: { onResult: (text: string) => v
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
 
     navigator.mediaDevices
-      ?.getUserMedia({ video: { facingMode: "environment" }, audio: false })
+      // Ask for HD: a device code is a dense QR (about 81×81 squares) that needs 3–4 camera pixels per square, which at
+      // the browser's default 640×480 means holding the phone too close to focus.
+      ?.getUserMedia({ video: { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false })
       .then(async (s) => {
         stream = s;
         const video = videoRef.current;

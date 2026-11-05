@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { checkNewServer } from "../server";
+import { checkNewServer, createJoinCode, readJoinCode } from "../server";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -21,5 +21,13 @@ describe("checkNewServer", () => {
     expect(await checkNewServer("https://relay.example.com")).toBe("starting");
     respond(async () => new Response("Bad Gateway", { status: 502 }));
     expect(await checkNewServer("https://relay.example.com")).toBe("starting");
+  });
+});
+
+describe("readJoinCode", () => {
+  it("accepts the prefix in any capitalization", () => {
+    const code = createJoinCode({ url: "https://relay.example.com", admins: ["QUJD"] });
+    const r = readJoinCode("relay-join:" + code.slice("RELAY-JOIN:".length));
+    expect(r.ok && r.config.url).toBe("https://relay.example.com");
   });
 });

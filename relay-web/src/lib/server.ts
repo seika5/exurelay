@@ -154,7 +154,8 @@ export function joinLink(code: string, origin = window.location.origin + window.
 export function readJoinCode(text: string): { ok: true; config: ServerConfig } | { ok: false; error: string } {
   const t = text.trim();
   let payload: string | null = null;
-  if (t.startsWith(JOIN_PREFIX)) payload = t.slice(JOIN_PREFIX.length);
+  // The prefix in any case: some chat apps change its capitalization when it's pasted. The payload after it is exact.
+  if (t.slice(0, JOIN_PREFIX.length).toUpperCase() === JOIN_PREFIX) payload = t.slice(JOIN_PREFIX.length);
   else {
     const m = t.match(/#join=([A-Za-z0-9_-]+)/);
     if (m) payload = m[1];
