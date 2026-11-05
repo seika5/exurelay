@@ -39,6 +39,7 @@ import {
   readEnrollmentCode,
   type MemberDevice,
   verifyDirectory,
+  readIntroduction,
   type Directory,
   type DirectoryMember,
   type Profile,
@@ -160,6 +161,8 @@ type IdentityContextValue = {
   /** A device this one just linked, until its message history has been sent to it (page.tsx). */
   justLinked: string | null;
   clearJustLinked: () => void;
+  /** Admin, after enrolling: introduce the new member by the name in their signed code until theirs arrives. */
+  rememberIntro: (keyHash: string, code: string) => void;
   /** Unlink one of my devices; unlinking this one also wipes it here. */
   unlinkDevice: (deviceKeyHash: string) => Promise<void>;
   /** Apply name and contact settings synced from another of my devices, if newer. */
@@ -210,6 +213,12 @@ const DEVICE_NAMES_KEY = "relay.deviceNames";
 /** What this device last sent each recipient device (updatedAt, name, device names), so it re-sends only changes. */
 const PROFILE_SENT_KEY = "relay.profileSent";
 const MAX_DEVICE_NAMES = 24;
+/**
+ * Enrollment codes of members this device enrolled, kept until their own name arrives and passed along to everyone in
+ * my sealed copies meanwhile (profileSeal.ts `intros`), so a new member shows by name even before their app is open.
+ */
+const INTROS_KEY = "relay.intros";
+const MAX_INTROS = 6;
 
 function readJson<T>(key: string, fallback: T): T {
   try {
@@ -232,15 +241,21 @@ async function openProfiles(
   copies: ReceivedCopy[],
   myEcdh: CryptoKey,
   myDeviceKeyHash: string,
-  devices: Map<string, MemberDevice[]>
+  devices: Map<string, MemberDevice[]>,
+  members: DirectoryMember[],
+  /** Introductions this device keeps itself (members it enrolled). */
+  localIntros: string[] = []
 ): Promise<{ profiles: Map<string, Profile>; ownDevices: Map<string, { at: number; names: Record<string, string> }> }> {
   const profiles = new Map<string, Profile>();
   const ownDevices = new Map<string, { at: number; names: Record<string, string> }>();
+  const intros = [...localIntros];
   for (const c of copies) {
     const sender = devices.get(c.author)?.find((d) => d.keyHash === c.sender);
     if (!sender) continue;
     const p = await openProfile(myEcdh, await importPublicKey(sender.ecdh), myDeviceKeyHash, c);
-    if (!p || !p.name.trim()) continue;
+    if (!p) continue;
+    if (p.intros) intros.push(...p.intros.slice(0, MAX_INTROS));
+    if (!p.name.trim()) continue;
     const prev = profiles.get(c.author);
     if (!prev || p.updatedAt > prev.updatedAt) {
       profiles.set(c.author, { type: "relay-profile", keyHash: c.author, name: p.name.slice(0, MAX_NAME_LENGTH), updatedAt: p.updatedAt });
@@ -254,6 +269,14 @@ async function openProfiles(
       );
       const prevOwn = ownDevices.get(c.author);
       if (!prevOwn || p.updatedAt > prevOwn.at) ownDevices.set(c.author, { at: p.updatedAt, names });
+    }
+  }
+  // Members whose own name hasn't arrived: the name from their signed enrollment code, if anyone passed it along.
+  // updatedAt 0 marks it as an introduction, so their own copy replaces it as soon as it comes.
+  for (const code of new Set(intros)) {
+    const intro = await readIntroduction(code, members);
+    if (intro && !profiles.has(intro.keyHash)) {
+      profiles.set(intro.keyHash, { type: "relay-profile", keyHash: intro.keyHash, name: intro.name, updatedAt: 0 });
     }
   }
   return { profiles, ownDevices };
@@ -284,6 +307,9 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
   deviceNamesRef.current = deviceNames;
   const publishingProfile = useRef(false);
   const [justLinked, setJustLinked] = useState<string | null>(null);
+  const [intros, setIntros] = useState<Record<string, string>>({});
+  const introsRef = useRef(intros);
+  introsRef.current = intros;
   const clearJustLinked = useCallback(() => setJustLinked(null), []);
 
   const [server, setServer] = useState<ServerConfig | null>(null);
@@ -578,7 +604,14 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
           : [...verifiedDevices].find(([, list]) => list.some((d) => d.keyHash === me.keyHash))?.[0]);
       if (me && meMember) {
         try {
-          const opened = await openProfiles(await getProfileCopies(), me.keyPair.privateKey, me.keyHash, verifiedDevices);
+          const opened = await openProfiles(
+            await getProfileCopies(),
+            me.keyPair.privateKey,
+            me.keyHash,
+            verifiedDevices,
+            result.directory.members,
+            Object.values(introsRef.current)
+          );
           setProfiles(opened.profiles);
           const own = opened.ownDevices.get(meMember);
           if (own && own.at > deviceNamesRef.current.at) {
@@ -691,6 +724,7 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
   // This device's device-name list for the active server.
   useEffect(() => {
     setDeviceNames(base ? readJson<DeviceNames>(`${DEVICE_NAMES_KEY}:${base.keyHash}`, { at: 0, names: {} }) : { at: 0, names: {} });
+    setIntros(base ? readJson<Record<string, string>>(`${INTROS_KEY}:${base.keyHash}`, {}) : {});
   }, [server, base?.keyHash]); // eslint-disable-line react-hooks/exhaustive-deps -- only when the identity changes
 
   // Seal my name to every other current device (mine included), and my device names to my own devices only. Re-sends
@@ -714,7 +748,12 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
         if (d.keyHash !== base.keyHash) targets.push({ keyHash: d.keyHash, ecdh: d.ecdh, own: m.keyHash === myMember });
       }
     }
-    const digest = (own: boolean) => JSON.stringify([updatedAt, name, own ? ownNames : null]);
+    // Members I enrolled whose own name hasn't arrived yet: pass their signed codes along.
+    const shared = Object.entries(intros)
+      .filter(([k]) => k !== myMember && !departed.has(k) && directory.members.some((m) => m.keyHash === k) && !profiles.get(k)?.updatedAt)
+      .map(([, code]) => code)
+      .slice(0, MAX_INTROS);
+    const digest = (own: boolean) => JSON.stringify([updatedAt, name, own ? ownNames : null, shared]);
     const sentKey = `${PROFILE_SENT_KEY}:${base.keyHash}`;
     const sent = readJson<Record<string, string>>(sentKey, {});
     const todo = targets.filter((t) => sent[t.keyHash] !== digest(t.own));
@@ -727,7 +766,12 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
             base.keyPair.privateKey,
             await importPublicKey(t.ecdh),
             { author: myMember, sender: base.keyHash, recipient: t.keyHash },
-            t.own ? { name, updatedAt, devices: ownNames } : { name, updatedAt }
+            {
+              name,
+              updatedAt,
+              ...(t.own ? { devices: ownNames } : {}),
+              ...(shared.length ? { intros: shared } : {}),
+            }
           )
         )
       );
@@ -742,7 +786,29 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
       .finally(() => {
         publishingProfile.current = false;
       });
-  }, [base, enrolled, myMember, directory, devices, departed, deviceNames]);
+  }, [base, enrolled, myMember, directory, devices, departed, deviceNames, intros, profiles]);
+
+  // Forget introductions once the member's own name has arrived, or they're no longer a member.
+  useEffect(() => {
+    if (!base || !directory) return;
+    const keep = Object.fromEntries(
+      Object.entries(intros).filter(([k]) => directory.members.some((m) => m.keyHash === k) && !profiles.get(k)?.updatedAt)
+    );
+    if (Object.keys(keep).length === Object.keys(intros).length) return;
+    setIntros(keep);
+    writeJson(`${INTROS_KEY}:${base.keyHash}`, keep);
+  }, [base, directory, profiles, intros]);
+
+  /** After enrolling a member: keep their signed enrollment code to introduce them until their own name arrives. */
+  const rememberIntro = useCallback(
+    (keyHash: string, code: string) => {
+      if (!base) return;
+      const next = { ...introsRef.current, [keyHash]: code.trim() };
+      setIntros(next);
+      writeJson(`${INTROS_KEY}:${base.keyHash}`, next);
+    },
+    [base]
+  );
 
   const publishSignedDirectory = useCallback(async (next: Directory, setupCode?: string) => {
     if (!base || !isAdmin) throw new Error("Only an admin can change the member list");
@@ -972,6 +1038,7 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
         memberDevices: namedDevices,
         justLinked,
         clearJustLinked,
+        rememberIntro,
         moveAdmin,
         startOver,
         error,

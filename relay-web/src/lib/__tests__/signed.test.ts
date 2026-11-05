@@ -11,6 +11,7 @@ import {
   directoryWithoutMembers,
   keyHashOf,
   readEnrollmentCode,
+  readIntroduction,
   signRecord,
   verifyDepartures,
   verifyDevices,
@@ -34,6 +35,24 @@ async function newMember(): Promise<{ ecdh: CryptoKeyPair; signing: CryptoKeyPai
 }
 
 describe("enrollment codes", () => {
+  it("reads an introduction: the name in a member's own signed code, with no expiry", async () => {
+    const ecdh = await generateKeyPair();
+    const sig = await generateSigningKeyPair();
+    const code = await createEnrollmentCode(ecdh.publicKey, sig, "Bohdan", 1000);
+    const bo = { keyHash: "b".repeat(64), ecdh: await exportPublicKey(ecdh.publicKey), sig: await exportPublicKey(sig.publicKey), enrolledAt: 1 };
+    const other = await newMember();
+    expect(await readIntroduction(code, [other.entry, bo])).toEqual({ keyHash: bo.keyHash, name: "Bohdan" });
+    // Not a member: nothing. Someone else's keys under his name: nothing.
+    expect(await readIntroduction(code, [other.entry])).toBeNull();
+    const mallorySig = await generateSigningKeyPair();
+    const forged = await createEnrollmentCode(ecdh.publicKey, mallorySig, "Not Bohdan", 1000);
+    expect(await readIntroduction(forged, [bo])).toBeNull();
+    // Tampered name: the signature no longer matches.
+    const env = JSON.parse(atob(code.slice("RELAY-ENROLL:".length)));
+    env.body = env.body.replace("Bohdan", "Mallory");
+    expect(await readIntroduction("RELAY-ENROLL:" + btoa(JSON.stringify(env)), [bo])).toBeNull();
+  });
+
   it("accepts the prefix in any capitalization", async () => {
     const ecdh = await generateKeyPair();
     const sig = await generateSigningKeyPair();

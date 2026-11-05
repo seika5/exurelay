@@ -160,7 +160,7 @@ type Pending = { request: EnrollmentRequest; keyHash: string };
 
 /** Admin-only: enroll a new member from the enrollment code their app shows (scanned or pasted). */
 export function EnrollMember() {
-  const { identity, directory, isAdmin, publishSignedDirectory, getDisplayName } = useIdentity();
+  const { identity, directory, isAdmin, publishSignedDirectory, getDisplayName, rememberIntro } = useIdentity();
   const { busy, error, setError, run } = useRunner();
   const [code, setCode] = useState("");
   const [pending, setPending] = useState<Pending | null>(null);
@@ -193,6 +193,8 @@ export function EnrollMember() {
         ...(replaces ? { replaces } : {}),
       };
       await publishSignedDirectory(directoryWithMember(directory, me, member));
+      // Their signed code carries the name they picked: pass it along until their own app shares it.
+      rememberIntro(member.keyHash, code);
       setPending(null);
       setCode("");
     });

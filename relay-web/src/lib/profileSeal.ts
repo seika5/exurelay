@@ -17,6 +17,11 @@ export type ProfilePayload = {
   updatedAt: number;
   /** Only in copies to the author's own devices: names for their devices, by device key hash. */
   devices?: Record<string, string>;
+  /**
+   * Enrollment codes of members whose own name hasn't arrived yet, passed along by whoever enrolled them. Each is
+   * signed by that member's key, so the name in it is theirs; receivers check that (signed.ts readIntroduction).
+   */
+  intros?: string[];
 };
 
 /** A copy as posted: addressed to `recipient` (a device key hash). */
@@ -41,10 +46,10 @@ function info(nonce: Uint8Array): Uint8Array {
 const aad = (author: string, sender: string, recipient: string, updatedAt: number) =>
   new TextEncoder().encode(`exurelay-profile-v1|${author}|${sender}|${recipient}|${updatedAt}`);
 
-/** JSON, then zero bytes up to 512 bytes (name only) or the next multiple of 2048 (with device names). */
+/** JSON, then zero bytes up to 512 bytes (name only) or the next multiple of 2048 (with device names or intros). */
 export function padPayload(p: ProfilePayload): Uint8Array {
   const json = new TextEncoder().encode(JSON.stringify(p));
-  const size = p.devices ? Math.ceil((json.length + 1) / WITH_DEVICES_STEP) * WITH_DEVICES_STEP : Math.max(NAME_ONLY_SIZE, json.length + 1);
+  const size = p.devices || p.intros ? Math.ceil((json.length + 1) / WITH_DEVICES_STEP) * WITH_DEVICES_STEP : Math.max(NAME_ONLY_SIZE, json.length + 1);
   const out = new Uint8Array(size);
   out.set(json);
   return out;
@@ -56,6 +61,7 @@ function unpad(bytes: Uint8Array): ProfilePayload | null {
     const p = JSON.parse(new TextDecoder().decode(end < 0 ? bytes : bytes.slice(0, end)));
     if (!p || typeof p.name !== "string" || !Number.isSafeInteger(p.updatedAt)) return null;
     if (p.devices !== undefined && (typeof p.devices !== "object" || Array.isArray(p.devices))) return null;
+    if (p.intros !== undefined && (!Array.isArray(p.intros) || !p.intros.every((x: unknown) => typeof x === "string"))) return null;
     return p as ProfilePayload;
   } catch {
     return null;
