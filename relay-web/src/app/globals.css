@@ -31,3 +31,12 @@ body {
     font-size: 16px !important;
   }
 }
+
+/* The chat screen (useVisibleViewport.ts): the page itself can't scroll, so the keyboard can't push it around. */
+html.page-locked,
+html.page-locked body {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
