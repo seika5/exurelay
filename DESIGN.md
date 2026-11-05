@@ -31,7 +31,7 @@ Every request reaches the server from an IP address. A typical member's IP is st
 
 | Server adversary | Example | What Exurelay protects |
 | --- | --- | --- |
-| **Data at rest** | Database dump, seized disk, a curious admin browsing tables | Content, senders, recipients, who was notified (§5, §9). It does see members' public keys and the names they chose (below). |
+| **Data at rest** | Database dump, seized disk, a curious admin browsing tables | Content, senders, recipients, who was notified (§5, §9). It does see the member list: public keys, devices, who is an admin (below). |
 | **Actively malicious operator** | Logs IPs and timing for every request | Content only. Senders, recipients, notification targets and online times can be inferred from IPs and timing unless members hide their IP (VPN/Tor-style relay). |
 
 Any measure that only hides something from the second kind of adversary *without* IP hiding gives a false sense of security, so it's marked as such or not built. The server code must not log IPs or request details, and the operator must keep it that way.
@@ -44,10 +44,9 @@ Everything else in its database is encrypted, signed public data, or deleted on 
 | --- | --- | --- |
 | Members' and devices' public keys and key hashes, enrollment dates, who is an admin, who left | The member list and its signatures: every app checks it, so the server has to serve it | Needed |
 | Push subscription endpoints, tied to a device and member | The server sends the push; the payload itself is encrypted (§9) | Needed for notifications |
-| **Display names** (`Profile`, signed by the member) | Members see each other's names, and the server distributes them | **Known gap.** Fix: encrypt each profile to the other members (pairwise, like messages), at N² size per name change |
-| **Device names** ("MacBook", in `Device` certificates) | A member's devices list each other by name | **Known gap.** Fix: encrypt the name to the member's own devices, or keep it on the device that linked it |
+| Which member wrote a sealed name copy for which device, and when it last changed (`ProfileCopy`) | Each device fetches only the copies for it. Every member writes one for every device, so the pairs say nothing beyond the member list | Needed |
 
-Admin labels for members were removed for this reason: they paired each member's key with a name the admin chose, in plain text on the server. `install.sh` drops their table on upgrade.
+Names are sealed: display names to every member's devices, device names to the member's own devices only ("Names" in §4). Before this, both were in plain text, and readable by anyone who knew the server's address (`GET /api/directory` needs no login). Admin labels, which paired each member's key with a name the admin chose, were removed. `install.sh` drops the old `Profile` and `AdminLabel` tables on upgrade; devices linked before then still have their name in their (signed, public) certificate until they're unlinked and linked again.
 
 ---
 
@@ -118,7 +117,7 @@ Keys are generated in the app. Exurelay doesn't use iCloud or any other cloud se
 Keys aren't copied between devices (they're non-extractable once loaded, §4 "where keys live"), so **each device has its own keys**, listed under one member. Decided in phase 4; built in phase 5 with protocol v2.
 
 1. **Link:** on the new device, choose "Link to existing account". It makes its own keys and shows a QR with its public keys, valid for 3 minutes.
-2. **Approve:** on an existing device, scan it and compare the short code on both screens. The existing device signs a device certificate for the new keys and publishes it next to the member's profile. No admin is needed: the member's devices vouch for each other, and clients only accept certificates signed by one of that member's devices in the admin-signed directory.
+2. **Approve:** on an existing device, scan it and compare the short code on both screens. The existing device signs a device certificate for the new keys (no device name: that goes sealed, "Names" below) and publishes it. No admin is needed: the member's devices vouch for each other, and clients only accept certificates signed by one of that member's devices in the admin-signed directory.
 3. **Sending:** a message is encrypted once per device of each recipient (and to your own other devices for sync), so it costs more upload with more devices. Receiving is unchanged.
 4. **Staying in sync:** contact, name and setting changes go to your other devices as encrypted self-messages. Each device keeps its own cache; self-copies of sent messages appear everywhere. A new device doesn't get old messages.
 5. **Push:** each device registers its own push endpoint, and a mention notifies all of them.
@@ -136,6 +135,14 @@ Keys aren't copied between devices (they're non-extractable once loaded, §4 "wh
 - **Admin device:** admin rights belong to a device: the member list's `admins` may hold a member's enrolled key or one of their linked devices' keys (the server and clients accept either, if that device belongs to a member still on the list). An admin moves admin to another of their devices in Settings → Devices → **Make admin device**, which signs a member list swapping this device's key for that one's. An admin device can't be unlinked while it holds admin (the server and the app both refuse: its key could still sign member lists), so move it first. Removing a member drops admin held by any of their devices. Members admin shows a member as admin if any of their devices is.
 - **Limits:** the enrolled device can't be unlinked: it *is* the member (its key is in the signed member list, and every other device's certificate chains to it). Replacing it is re-enrollment by the admin, which shows contacts a key-change notice and drops the old key's devices. A new device doesn't get old messages.
 
+### As built: names (sealed profiles)
+
+- **What's sealed:** a member's display name, for every current device of every member (their own other devices included), and the names of their devices, for their own devices only. Certificates and the member list carry no names.
+- **How:** the sending device derives a key with HKDF over the static ECDH secret with the recipient device (as messages do), with info `exurelay-profile-v1:` + a random 16-byte nonce, so it can't collide with a message key (whose info is a bare 16-byte id). AES-GCM, with author, sender device, recipient device and `updatedAt` as associated data, so the server can't move a copy to another member or device or change its date. The plaintext is padded (512 bytes for a name, 2 KB steps with device names), so lengths don't reveal names. `relay-web/src/lib/profileSeal.ts`.
+- **Storage:** one `ProfileCopy` per (member, recipient device), newest `updatedAt` kept. Writing and reading need a login: a device writes copies as its own member, for other current devices, and reads only the copies addressed to it. Removing a member or unlinking a device deletes the copies by and for them.
+- **Sending:** each device sends only what changed for each recipient, after a rename, a new member or device, or a device-name change. `updatedAt` follows the settings already synced between a member's devices, so a device that hasn't caught up can't overwrite a newer name. The server announces changes on the socket, and apps refresh at once.
+- **Trade-off:** a new member or device sees someone's name once one of that person's devices has been online since. Until then it shows their key fingerprint. The server can still withhold a copy or replay an older one, but can't read or forge one.
+
 ### Decided: admin tab
 
 - The server config lists the admin public key(s); the host is the first admin. The Settings → **Admin** tab appears only when the server confirms, at login, that this identity is an admin. Admin actions use identified, signed requests.
@@ -150,7 +157,7 @@ Keys aren't copied between devices (they're non-extractable once loaded, §4 "wh
 
 Pairwise QR exchange needs a meeting for every pair. Instead, the in-person step happens once per member, with the admin at enrollment, and the admin vouches for everyone:
 
-1. **Directory:** the server publishes the member list (public keys + each member's self-chosen display name, signed by that member), and the whole list is signed by an admin key. Clients verify both signatures, so the server alone can't insert or swap a key.
+1. **Directory:** the server publishes the member list (public keys), signed by an admin key; each member's display name travels sealed ("Names" below). Clients verify both signatures, so the server alone can't insert or swap a key.
 2. **Contacts:** every directory member is a contact. **Anyone can message anyone** in the directory; messages from keys that aren't in it are dropped.
 3. **No rollback:** the signed directory carries an increasing version number, and clients refuse a version older than the newest they've seen. That stops a hacked server from replaying an old directory (e.g. one from before a removal). It's cheap, so it stays.
 4. **Key changes** (re-enrollment after a lost device) show a notice in conversations with that person.
@@ -164,7 +171,7 @@ Enrollment: the new user's app generates keys and shows a QR/short code containi
 
 - **Signed records** travel as `{ body, signature }`, where `body` is the exact JSON string that was signed (ECDSA P-256 / SHA-256, raw signature, base64). Verifiers never re-serialize, so client and server can't disagree about canonical form. Code: `relay-web/src/lib/signed.ts`, `relay-server/src/lib/signed.js` and `directory.js`.
 - **Admin keys never come from the server.** In phase 2 they were built into the app (`NEXT_PUBLIC_ADMIN_SIGNING_KEYS`). Phase 3 replaced that with join codes that pin them per server (below), so one app build can serve any number of independently hosted servers.
-- **Display names are separate profiles.** Each member signs `{ keyHash, name, updatedAt }` with their own key, and the server and clients check it against that member's directory entry. Renaming yourself doesn't need the admin. A hacked server can withhold or replay an older name, but can't forge one. (This differs from the original plan of putting names inside the admin-signed list.)
+- **Display names are separate profiles.** Renaming yourself doesn't need the admin. Originally each member signed `{ keyHash, name, updatedAt }` and the server served it to anyone; now the name is sealed to each device ("Names" below).
 - **Publishing needs no login.** `POST /api/directory` is authorized by the admin signature itself, and the server also refuses a version that isn't newer. The server mirrors the newest directory into its `Member` table, which gates logins, and through them blobs, calls and TURN credentials.
 - **Rollback protection:** each device stores the newest directory version it has accepted (`localStorage`) and refuses anything older.
 - **Enrollment:** the newcomer's app shows a QR plus a copyable code with a key fingerprint, renewed every 3 minutes. The admin pastes the code in Settings → Members, checks the fingerprint against the newcomer's screen, and can mark the newcomer as replacing an existing member's lost key. Phase 3 added camera scanning (Settings → Admin).
@@ -177,7 +184,7 @@ Enrollment: the new user's app generates keys and shows a QR/short code containi
 | Decision | Status |
 | --- | --- |
 | Blobs are fixed 64 KB, stored ≤ ~96 h: expiry = UTC midnight of the send day + 72 h + random 0–24 h. Exact send time is never stored. | Current |
-| Server backups (`relay-backup`, nightly, 14 kept) hold the member list, devices, profiles, push subscriptions and `.env` secrets, never blobs, spent tokens or issuer keys, so no backup keeps a message past its expiry. Disk-level snapshots (Lightsail's automatic snapshots, EBS snapshots) would, so the docs say not to turn them on. | Current |
+| Server backups (`relay-backup`, nightly, 14 kept) hold the member list, devices, sealed name copies, push subscriptions and `.env` secrets, never blobs, spent tokens or issuer keys, so no backup keeps a message past its expiry. Disk-level snapshots (Lightsail's automatic snapshots, EBS snapshots) would, so the docs say not to turn them on. | Current |
 | A deleted blob's bytes stay in PostgreSQL's table file (and possibly its WAL) until the space is reused. The worker runs `VACUUM "Blob"` hourly so the space is reused sooner; nothing promises the bytes are gone from disk. That's acceptable only because blobs are end-to-end encrypted and carry no sender. | Current |
 | No local message history; clients re-download and decrypt everything (including a self-addressed copy of their own messages). History ends when blobs expire. | **Current → Decided: replace** with an encrypted local cache (below) |
 | Server addresses each blob by **recipient key hash**. | **Removed** (phase 5a, below) |
@@ -533,4 +540,4 @@ Ordered by dependency. Each phase should land as its own reviewed change.
 | 11 | Docs and tests | **Done**: README and relay-web/README rewritten for the PWA; tests for login/tokens, protocol v2 (plus vectors), devices, sealed signaling, push, plugins, mentions, the cache; CI workflow (`.github/workflows/test.yml`) | each phase |
 | 12 | Setup and call recovery | **Done**: `deploy/install.sh` (one command on any Ubuntu host, also an upgrade), `deploy/cloud-init.sh` (user data), `deploy/aws-lightsail.yaml` (CloudFormation); free `https://<ip>.sslip.io` addresses by default, own domain optional; one-time setup code instead of copying the admin key; the server loads `.env` itself; calls recover from network changes (§7) | 11 |
 | 13 | Easier setup and backups | **Done**: a setup code chosen when creating the server (CloudFormation `SetupCode`, `RELAY_SETUP_CODE`, `--setup-code`), so nobody needs to log in to the server; the app waits for a server that's still installing; nightly backups without messages (§5) and `install.sh --restore` to move a server; daily security updates; a Launch Stack link published to S3 by `.github/workflows/publish-template.yml` | 12 |
-| 14 | Less in plain text | **Done**: admin labels removed (they named members in plain text on the server; `install.sh` drops the table), the worker no longer logs deletion counts, and §1 lists what the server still stores in plain text. Display and device names are the known gaps | 13 |
+| 14 | Less in plain text | **Done**: display names sealed to every member's devices and device names to the member's own devices (§4 "Names"), both previously public; admin labels removed; the worker no longer logs deletion counts; apps refresh the member list as soon as the server announces a change; §1 lists what the server still stores in plain text | 13 |

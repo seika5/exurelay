@@ -1,12 +1,15 @@
 import express, { Router } from "express";
-import { setupCodeMatches, trustedAdmins, validateDirectory, validateLeave, validateProfile } from "../lib/directory.js";
+import { setupCodeMatches, trustedAdmins, validateDirectory, validateLeave } from "../lib/directory.js";
+import { validateProfileCopies } from "../lib/profiles.js";
+import { requireSession } from "./auth.js";
 import { parseBody } from "../lib/signed.js";
 import { memberSigners, validateDeviceCert, validateDeviceRevoke } from "../lib/devices.js";
 
 const jsonBody = express.json({ limit: "512kb" });
 
 /**
- * Member directory: the admin-signed list of members, plus each member's self-signed display name.
+ * Member directory: the admin-signed list of members and their devices, plus each member's sealed profile copies
+ * (display name, and device names for their own devices), encrypted to each recipient device (lib/profiles.js).
  * The server checks signatures so it only stores valid records, but clients verify everything again
  * against the admin keys they pinned when joining: the server alone can't add or swap a member.
  *
@@ -21,21 +24,19 @@ const jsonBody = express.json({ limit: "512kb" });
 export function directoryRouter(
   prisma,
   io,
-  { envAdmins, onRemoved, onLeft, publicUrl = process.env.PUBLIC_URL || "", setupCode = process.env.SETUP_CODE || "" } = {}
+  { auth, envAdmins, onRemoved, onLeft, publicUrl = process.env.PUBLIC_URL || "", setupCode = process.env.SETUP_CODE || "" } = {}
 ) {
   const router = Router();
 
   router.get("/", async (_req, res) => {
     try {
       const latest = await prisma.directory.findFirst({ orderBy: { version: "desc" } });
-      const profiles = await prisma.profile.findMany({ select: { body: true, signature: true } });
       const departures = await prisma.departure.findMany({ select: { body: true, signature: true } });
       const devices = await prisma.device.findMany({ select: { body: true, signature: true } });
       const deviceRevocations = await prisma.deviceRevocation.findMany({ select: { body: true, signature: true } });
       res.set("Cache-Control", "no-store");
       return res.json({
         directory: latest ? { body: latest.body, signature: latest.signature } : null,
-        profiles,
         departures,
         devices,
         deviceRevocations,
@@ -75,7 +76,10 @@ export function directoryRouter(
       await prisma.$transaction([
         prisma.directory.create({ data: { version: d.version, body: req.body.body, signature: req.body.signature } }),
         prisma.member.deleteMany({ where: { keyHash: { notIn: keep } } }),
-        prisma.profile.deleteMany({ where: { keyHash: { notIn: keep } } }),
+        // Profile copies by or for anyone dropped (and their devices) go too.
+        prisma.profileCopy.deleteMany({
+          where: { OR: [{ author: { notIn: keep } }, { recipient: { in: [...dropped, ...droppedDevices] } }] },
+        }),
         prisma.device.deleteMany({ where: { member: { notIn: keep } } }),
         prisma.deviceRevocation.deleteMany({ where: { member: { notIn: keep } } }),
         // Departures the admin has now dropped are done; the rest stay until they're dropped too.
@@ -115,7 +119,7 @@ export function directoryRouter(
       await prisma.$transaction([
         prisma.departure.upsert({ where: { keyHash }, create: { keyHash, ...data }, update: data }),
         prisma.member.delete({ where: { keyHash } }),
-        prisma.profile.deleteMany({ where: { keyHash } }),
+        prisma.profileCopy.deleteMany({ where: { OR: [{ author: keyHash }, { recipient: { in: [keyHash, ...devices.map((d) => d.keyHash)] } }] } }),
         prisma.device.deleteMany({ where: { member: keyHash } }),
         prisma.deviceRevocation.deleteMany({ where: { member: keyHash } }),
       ]);
@@ -181,6 +185,7 @@ export function directoryRouter(
       }
       await prisma.$transaction([
         prisma.device.delete({ where: { keyHash } }),
+        prisma.profileCopy.deleteMany({ where: { recipient: keyHash } }),
         prisma.deviceRevocation.create({ data: { keyHash, member: memberKeyHash, body: req.body.body, signature: req.body.signature } }),
       ]);
       if (onLeft) await onLeft([keyHash]);
@@ -192,28 +197,62 @@ export function directoryRouter(
     }
   });
 
-  router.post("/profile", jsonBody, async (req, res) => {
-    try {
-      let keyHash;
+  // Sealed profiles: only a logged-in device of a current member reads or writes them. A device gets only the copies
+  // addressed to it; it writes copies as its own member, for other current devices.
+  if (auth) {
+    router.get("/profiles", requireSession(auth), async (req, res) => {
       try {
-        keyHash = JSON.parse(req.body?.body ?? "").keyHash;
-      } catch {
-        return res.status(400).json({ error: "malformed profile" });
+        const copies = await prisma.profileCopy.findMany({
+          where: { recipient: req.session.keyHash },
+          select: { author: true, sender: true, nonce: true, ciphertext: true, updatedAt: true },
+        });
+        res.set("Cache-Control", "no-store");
+        return res.json({ copies: copies.map((c) => ({ ...c, updatedAt: Number(c.updatedAt) })) });
+      } catch (e) {
+        console.error(e);
+        return res.status(500).json({ error: "Failed to load profiles" });
       }
-      if (typeof keyHash !== "string") return res.status(400).json({ error: "malformed profile" });
-      const { member, signers } = await memberSigners(prisma, keyHash);
-      const previous = await prisma.profile.findUnique({ where: { keyHash }, select: { updatedAt: true } });
-      const result = await validateProfile(req.body, member, previous ? Number(previous.updatedAt) : 0, signers);
-      if (!result.ok) return res.status(400).json({ error: result.error });
-      const data = { body: req.body.body, signature: req.body.signature, updatedAt: BigInt(result.profile.updatedAt) };
-      await prisma.profile.upsert({ where: { keyHash }, create: { keyHash, ...data }, update: data });
-      if (io) io.emit("directory");
-      return res.status(201).json({ ok: true });
-    } catch (e) {
-      console.error(e);
-      return res.status(500).json({ error: "Failed to save profile" });
-    }
-  });
+    });
+
+    router.post("/profiles", requireSession(auth), jsonBody, async (req, res) => {
+      try {
+        const [members, devices] = await Promise.all([
+          prisma.member.findMany({ select: { keyHash: true } }),
+          prisma.device.findMany({ select: { keyHash: true, member: true } }),
+        ]);
+        const memberSet = new Set(members.map((m) => m.keyHash));
+        if (!memberSet.has(req.session.member)) return res.status(403).json({ error: "not a member" });
+        const current = new Set([...memberSet, ...devices.filter((d) => memberSet.has(d.member)).map((d) => d.keyHash)]);
+        const result = validateProfileCopies(req.body, req.session, (k) => current.has(k));
+        if (!result.ok) return res.status(400).json({ error: result.error });
+        // Newer copies replace older ones; an older one (a device that hadn't caught up) is ignored.
+        const existing = new Map(
+          (
+            await prisma.profileCopy.findMany({
+              where: { author: req.session.member, recipient: { in: result.rows.map((r) => r.recipient) } },
+              select: { recipient: true, updatedAt: true },
+            })
+          ).map((c) => [c.recipient, Number(c.updatedAt)])
+        );
+        const rows = result.rows.filter((r) => !(existing.get(r.recipient) > r.updatedAt));
+        await prisma.$transaction(
+          rows.map((r) => {
+            const data = { sender: r.sender, nonce: r.nonce, ciphertext: r.ciphertext, updatedAt: BigInt(r.updatedAt) };
+            return prisma.profileCopy.upsert({
+              where: { author_recipient: { author: r.author, recipient: r.recipient } },
+              create: { author: r.author, recipient: r.recipient, ...data },
+              update: data,
+            });
+          })
+        );
+        if (io && rows.length) io.emit("directory");
+        return res.status(201).json({ stored: rows.length });
+      } catch (e) {
+        console.error(e);
+        return res.status(500).json({ error: "Failed to save profiles" });
+      }
+    });
+  }
 
   return router;
 }

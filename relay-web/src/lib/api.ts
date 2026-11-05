@@ -1,5 +1,6 @@
 import type { SignedEnvelope } from "./signed";
 import type { StoredBlob } from "./sealed";
+import type { ReceivedCopy, SealedCopy } from "./profileSeal";
 import { getServerUrl } from "./server";
 import { sessionFetch } from "./session";
 import { tokenFetch } from "./tokens";
@@ -65,13 +66,12 @@ export async function getIceServers(): Promise<RTCIceServer[]> {
 
 export type DirectoryResponse = {
   directory: SignedEnvelope | null;
-  profiles: SignedEnvelope[];
   departures?: SignedEnvelope[];
   devices?: SignedEnvelope[];
   deviceRevocations?: SignedEnvelope[];
 };
 
-/** Newest admin-signed member directory and member-signed profiles. Unverified: callers must check signatures. */
+/** Newest admin-signed member directory and devices. Unverified: callers must check signatures. */
 export async function getDirectory(): Promise<DirectoryResponse> {
   const res = await fetch(`${getServerUrl()}/api/directory`, { cache: "no-store" });
   if (!res.ok) throw await errorFrom(res);
@@ -90,7 +90,26 @@ async function postJson(path: string, body: unknown, headers: Record<string, str
 /** setupCode: only for the first member list, on a server set up with a one-time setup code (deploy/install.sh). */
 export const publishDirectory = (envelope: SignedEnvelope, setupCode?: string) =>
   postJson("/api/directory", envelope, setupCode ? { "X-Relay-Setup": setupCode.trim() } : {});
-export const publishProfile = (envelope: SignedEnvelope) => postJson("/api/directory/profile", envelope);
+
+/** Sealed profile copies addressed to this device (logged in). */
+export async function getProfileCopies(): Promise<ReceivedCopy[]> {
+  const res = await sessionFetch("/api/directory/profiles", { cache: "no-store" });
+  if (!res.ok) throw await errorFrom(res);
+  const data = await res.json();
+  return Array.isArray(data?.copies) ? data.copies : [];
+}
+
+/** Post this device's sealed copies of my profile, at most 500 per request. */
+export async function postProfileCopies(copies: SealedCopy[]): Promise<void> {
+  for (let i = 0; i < copies.length; i += 500) {
+    const res = await sessionFetch("/api/directory/profiles", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ copies: copies.slice(i, i + 500) }),
+    });
+    if (!res.ok) throw await errorFrom(res);
+  }
+}
 /** Signed by the member themself: the server deletes them at once and drops their sessions and pending messages. */
 export const postLeave = (envelope: SignedEnvelope) => postJson("/api/directory/leave", envelope);
 /** Link a device: a certificate signed by one of the member's devices. */

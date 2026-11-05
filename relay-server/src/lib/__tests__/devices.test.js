@@ -28,7 +28,7 @@ describe("linked devices", () => {
     const [primary, laptop, stranger, phone] = await Promise.all([signing(), signing(), signing(), signing()]);
     const ecdh = await ecdhPub();
     const cert = (by, extra = {}) =>
-      sign(by.pair.privateKey, { type: "relay-device", member: "m1", ecdh, sig: phone.pub, name: "Phone", addedAt: 1, signer: by.pub, ...extra });
+      sign(by.pair.privateKey, { type: "relay-device", member: "m1", ecdh, sig: phone.pub, addedAt: 1, signer: by.pub, ...extra });
     const free = async () => false;
 
     const ok = await validateDeviceCert(await cert(primary), [primary.pub, laptop.pub], free);
@@ -40,7 +40,8 @@ describe("linked devices", () => {
     const forged = await sign(stranger.pair.privateKey, JSON.parse((await cert(primary)).body));
     assert.match((await validateDeviceCert(forged, [primary.pub], free)).error, /not signed/);
     assert.match((await validateDeviceCert(await cert(primary), [primary.pub], async () => true)).error, /already in use/);
-    assert.match((await validateDeviceCert(await cert(primary, { name: "" }), [primary.pub], free)).error, /name/);
+    // A name in a public certificate would be plain text: refused.
+    assert.match((await validateDeviceCert(await cert(primary, { name: "Phone" }), [primary.pub], free)).error, /plain text/);
   });
 
   it("unlinks only the member's own devices, signed by one of them", async () => {

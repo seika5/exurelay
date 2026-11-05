@@ -264,7 +264,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
   const setRoomId = useCallback((id: string) => setRoomIdState(id), []);
 
   // The socket logs in as us, so it only exists once we're an enrolled member of a chosen server.
-  const { enrolled, server, identity } = useIdentity();
+  const { enrolled, server, identity, refreshDirectory } = useIdentity();
   const myKeyHash = identity?.keyHash;
   // Signals are sealed per peer (callSignal.ts); these refs give the wrapper the latest identity and call members.
   const identityRef = useRef(identity);
@@ -298,6 +298,25 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
       setSocket(null);
     };
   }, [enrolled, server, myKeyHash]);
+
+  // The server says the member list, a device or a sealed name changed: refresh now rather than at the next poll, so
+  // a new member or device sees everyone's names (and everyone sees theirs) within seconds.
+  useEffect(() => {
+    if (!socket) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const onDirectory = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = null;
+        refreshDirectory().catch(() => {});
+      }, 300);
+    };
+    socket.on("directory", onDirectory);
+    return () => {
+      if (timer) clearTimeout(timer);
+      socket.off("directory", onDirectory);
+    };
+  }, [socket, refreshDirectory]);
 
   const drainIceQueue = useCallback(async (pc: RTCPeerConnection, peerId: string) => {
     const queue = iceQueueRef.current.get(peerId);

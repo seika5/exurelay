@@ -1,5 +1,4 @@
 import { keyHashOf, parseBody, verifySigned } from "./signed.js";
-import { MAX_NAME_LENGTH } from "./directory.js";
 
 /**
  * Linked devices (DESIGN.md §4 "Decided: linked devices"). A member is their enrolled key (in the admin-signed
@@ -24,14 +23,15 @@ async function signedByOneOf(envelope, signer, signers) {
 }
 
 /**
- * Check { type: "relay-device", member, ecdh, sig, name, addedAt, signer }. `taken(keyHash, sig)` says whether
- * those keys already belong to a member or device, or were unlinked.
+ * Check { type: "relay-device", member, ecdh, sig, addedAt, signer }. `taken(keyHash, sig)` says whether those keys
+ * already belong to a member or device, or were unlinked. Certificates are public, so they carry no device name: the
+ * name travels sealed to the member's own devices (lib/profiles.js).
  */
 export async function validateDeviceCert(envelope, signers, taken) {
   const d = parseBody(envelope);
   if (!d || d.type !== "relay-device" || typeof d.member !== "string") return { ok: false, error: "not a device certificate" };
   if (!isB64(d.ecdh) || !isB64(d.sig) || !isTime(d.addedAt)) return { ok: false, error: "malformed device" };
-  if (typeof d.name !== "string" || !d.name.trim() || d.name.length > MAX_NAME_LENGTH) return { ok: false, error: "bad device name" };
+  if (d.name !== undefined && d.name !== "") return { ok: false, error: "device names aren't sent in plain text" };
   if (!(await signedByOneOf(envelope, d.signer, signers))) return { ok: false, error: "not signed by one of the member's devices" };
   const keyHash = keyHashOf(d.ecdh);
   if (await taken(keyHash, d.sig)) return { ok: false, error: "those keys are already in use or were unlinked" };

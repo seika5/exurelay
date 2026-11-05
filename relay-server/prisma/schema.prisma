@@ -28,12 +28,18 @@ model Directory {
   createdAt DateTime @default(now())
 }
 
-// Each member's self-signed display name. Newest updatedAt wins.
-model Profile {
-  keyHash   String @id
-  body      String
-  signature String
-  updatedAt BigInt
+// A member's sealed profile for one recipient device (lib/profiles.js): their display name, plus device names when
+// the recipient is one of their own devices, encrypted by one of their devices (`sender`). Unreadable here.
+model ProfileCopy {
+  author     String
+  recipient  String
+  sender     String
+  nonce      String
+  ciphertext String
+  updatedAt  BigInt
+
+  @@id([author, recipient])
+  @@index([recipient])
 }
 
 // Encrypted blobs: no sender, no recipient, no sentAt. seq is the sync cursor (GET /api/blobs?since=).

@@ -5,7 +5,7 @@
 import { describe, it, before } from "node:test";
 import assert from "node:assert";
 import { webcrypto } from "crypto";
-import { setupCodeMatches, validateDirectory, validateLeave, validateProfile } from "../directory.js";
+import { setupCodeMatches, validateDirectory, validateLeave } from "../directory.js";
 import { keyHashOf } from "../signed.js";
 
 const subtle = webcrypto.subtle;
@@ -70,18 +70,6 @@ describe("validateDirectory", () => {
     const d = directory();
     d.members[0].keyHash = "00";
     assert.strictEqual((await validateDirectory(await sign(admin.pair.privateKey, d), [admin.pub], 0)).ok, false);
-  });
-});
-
-describe("validateProfile", () => {
-  it("accepts a newer profile signed by the member and rejects others", async () => {
-    const member = await signingKeyPair();
-    const other = await signingKeyPair();
-    const row = { keyHash: "abc", signingPublicKey: member.pub };
-    const profile = { type: "relay-profile", keyHash: "abc", name: "Ana", updatedAt: 10 };
-    assert.ok((await validateProfile(await sign(member.pair.privateKey, profile), row, 5)).ok);
-    assert.strictEqual((await validateProfile(await sign(member.pair.privateKey, profile), row, 10)).ok, false);
-    assert.strictEqual((await validateProfile(await sign(other.pair.privateKey, profile), row, 0)).ok, false);
   });
 });
 

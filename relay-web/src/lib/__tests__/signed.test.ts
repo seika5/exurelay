@@ -1,5 +1,5 @@
 /**
- * Enrollment codes, admin-signed directories, member profiles and departures.
+ * Enrollment codes, admin-signed directories, departures and linked devices.
  */
 
 import { describe, it, expect } from "vitest";
@@ -18,7 +18,6 @@ import {
   deviceCert,
   deviceRevoke,
   verifyDirectory,
-  verifyProfiles,
   ENROLLMENT_CODE_TTL_MS,
   type DirectoryMember,
 } from "../signed";
@@ -117,20 +116,6 @@ describe("directory", () => {
   });
 });
 
-describe("profiles", () => {
-  it("keeps names signed by the member's own key, newest first", async () => {
-    const ana = await newMember();
-    const mallory = await newMember();
-    const sign = (who: typeof ana, name: string, updatedAt: number) =>
-      signRecord(who.signing.privateKey, { type: "relay-profile", keyHash: ana.entry.keyHash, name, updatedAt });
-    const names = await verifyProfiles(
-      [await sign(ana, "Ana", 1), await sign(ana, "Ana B", 2), await sign(mallory, "Not Ana", 3)],
-      [ana.entry]
-    );
-    expect(names.get(ana.entry.keyHash)?.name).toBe("Ana B");
-  });
-});
-
 describe("departures", () => {
   it("counts only leaves signed by the member themself, and the admin can drop them all at once", async () => {
     const admin = await newMember();
@@ -157,20 +142,21 @@ describe("linked devices", () => {
     const [ana, laptop, phone, mallory] = await Promise.all([newMember(), newMember(), newMember(), newMember()]);
     const req = (m: typeof ana) => ({ type: "relay-enroll" as const, ecdh: m.entry.ecdh, sig: m.entry.sig, name: "x", ts: 1 });
     // Ana's enrolled device certifies the laptop; the laptop certifies the phone.
-    const laptopCert = await signRecord(ana.signing.privateKey, deviceCert(ana.entry.keyHash, req(laptop), "Laptop", ana.entry.sig, 2));
-    const phoneCert = await signRecord(laptop.signing.privateKey, deviceCert(ana.entry.keyHash, req(phone), "Phone", laptop.entry.sig, 3));
+    const laptopCert = await signRecord(ana.signing.privateKey, deviceCert(ana.entry.keyHash, req(laptop), ana.entry.sig, 2));
+    const phoneCert = await signRecord(laptop.signing.privateKey, deviceCert(ana.entry.keyHash, req(phone), laptop.entry.sig, 3));
     // Mallory (not Ana's device) tries to add her key to Ana's account, claiming Ana signed it.
-    const forged = await signRecord(mallory.signing.privateKey, deviceCert(ana.entry.keyHash, req(mallory), "Evil", ana.entry.sig, 4));
+    const forged = await signRecord(mallory.signing.privateKey, deviceCert(ana.entry.keyHash, req(mallory), ana.entry.sig, 4));
 
     const devices = await verifyDevices([phoneCert, forged, laptopCert], [], [ana.entry]);
-    expect(devices.get(ana.entry.keyHash)!.map((d) => d.name || "enrolled")).toEqual(["enrolled", "Laptop", "Phone"]);
+    const keys = (list: { keyHash: string; primary: boolean }[]) => list.map((d) => (d.primary ? "enrolled" : d.keyHash));
+    expect(keys(devices.get(ana.entry.keyHash)!)).toEqual(["enrolled", laptop.entry.keyHash, phone.entry.keyHash]);
 
     // The phone unlinks the laptop; a revocation signed by a stranger is ignored.
     const unlink = await signRecord(phone.signing.privateKey, deviceRevoke(ana.entry.keyHash, laptop.entry.keyHash, phone.entry.sig, 5));
     const bogus = await signRecord(mallory.signing.privateKey, deviceRevoke(ana.entry.keyHash, phone.entry.keyHash, mallory.entry.sig, 5));
     const revoked = new Set<string>();
     const after = await verifyDevices([laptopCert, phoneCert], [unlink, bogus], [ana.entry], revoked);
-    expect(after.get(ana.entry.keyHash)!.map((d) => d.name || "enrolled")).toEqual(["enrolled", "Phone"]);
+    expect(keys(after.get(ana.entry.keyHash)!)).toEqual(["enrolled", phone.entry.keyHash]);
     // The laptop can tell it was unlinked; the bogus unlink of the phone doesn't count.
     expect([...revoked]).toEqual([laptop.entry.keyHash]);
   });

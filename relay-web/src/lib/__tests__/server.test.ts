@@ -7,7 +7,7 @@ describe("checkNewServer", () => {
   const respond = (fn: () => Promise<Response>) => vi.stubGlobal("fetch", vi.fn(fn));
 
   it("is ready when the server answers without a member list", async () => {
-    respond(async () => new Response(JSON.stringify({ directory: null, profiles: [] })));
+    respond(async () => new Response(JSON.stringify({ directory: null })));
     expect(await checkNewServer("https://relay.example.com")).toBe("ready");
   });
 

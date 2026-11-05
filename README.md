@@ -109,6 +109,10 @@ sudo bash /opt/relay/relay-server/deploy/install.sh
 
 It pulls the latest code, keeps the address and every secret, and restarts the services.
 
+Upgrading to the version with sealed names (DESIGN.md §4 "Names") deletes the old plain-text names from the
+server; each app sends its name again, encrypted, the next time it opens. A device linked before that upgrade still
+has its name in its public certificate: unlink it and link it again (Settings → Devices) to remove it.
+
 Every phase so far has been a hard cutover: the message format, identity storage and member list changed in ways
 old data can't follow. If the installer stops because the database schema changed, wipe it
 (`cd /opt/relay/relay-server && sudo -u relay npx prisma db push --force-reset`), rerun the installer, and
@@ -238,7 +242,9 @@ the device. The last admin can't leave.
 
 Each device has its own keys. To add one: on the new device, join the server and create an identity as above; on a
 device you already have, go to **Settings → Devices**, scan or paste the new device's code, check the fingerprint and
-name it. The new device opens by itself. Lost one? Unlink it from another. A new device doesn't get old messages.
+name it. The new device opens by itself. Lost one? Unlink it from another. A new device doesn't get old messages,
+and shows someone's name once one of their devices has been online since (their key fingerprint until then).
+Device names are only ever seen by your own devices.
 Admins: admin works from one device at a time; move it with **Make admin device** (and before unlinking that device).
 
 ### 2.6 Notifications

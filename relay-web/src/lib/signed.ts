@@ -57,7 +57,8 @@ export type Profile = { type: "relay-profile"; keyHash: string; name: string; up
  * A member's linked device (DESIGN.md §4): its own keys, certified by one of the member's devices (their enrolled
  * key or an already-certified device). `signer` is the certifying device's signing key.
  */
-export type DeviceCert = { type: "relay-device"; member: string; ecdh: string; sig: string; name: string; addedAt: number; signer: string };
+/** Public, so no device name: names travel sealed to the member's own devices (profileSeal.ts). */
+export type DeviceCert = { type: "relay-device"; member: string; ecdh: string; sig: string; addedAt: number; signer: string };
 export type DeviceRevoke = { type: "relay-device-revoke"; member: string; keyHash: string; revokedAt: number; signer: string };
 /** A verified device of a member, including their enrolled one (primary). */
 export type MemberDevice = { keyHash: string; ecdh: string; sig: string; name: string; addedAt: number; primary: boolean };
@@ -192,29 +193,6 @@ export async function verifyDirectory(
   return { ok: true, directory: d };
 }
 
-/** Verified display names by keyHash. Profiles not signed by the member's directory key are ignored. */
-export async function verifyProfiles(
-  profiles: SignedEnvelope[],
-  members: DirectoryMember[],
-  devices: Map<string, MemberDevice[]> = new Map()
-): Promise<Map<string, Profile>> {
-  const byHash = new Map(members.map((m) => [m.keyHash, m]));
-  const out = new Map<string, Profile>();
-  for (const env of profiles) {
-    const p = parse<Profile>(env);
-    const m = p && byHash.get(p.keyHash);
-    if (!p || !m || p.type !== "relay-profile" || typeof p.name !== "string") continue;
-    // Any of the member's devices may sign their name.
-    const signers = devices.get(m.keyHash)?.map((d) => d.sig) ?? [m.sig];
-    let signed = false;
-    for (const k of signers) if (!signed && (await verifyRecord(env, k))) signed = true;
-    if (!signed) continue;
-    const prev = out.get(p.keyHash);
-    if (!prev || p.updatedAt > prev.updatedAt) out.set(p.keyHash, { ...p, name: p.name.slice(0, MAX_NAME_LENGTH) });
-  }
-  return out;
-}
-
 /**
  * Each member's devices, by member keyHash: their enrolled key first, then every certificate signed (directly or
  * through another certified device) by one of their devices, minus those unlinked by one of their devices. The
@@ -245,8 +223,8 @@ export async function verifyDevices(
       const keyHash = await keyHashOf(p.d.ecdh);
       if (taken.has(keyHash) || !(await verifyRecord(p.env, p.d.signer))) continue;
       taken.add(keyHash);
-      const name = typeof p.d.name === "string" ? p.d.name.slice(0, MAX_NAME_LENGTH) : "";
-      list.push({ keyHash, ecdh: p.d.ecdh, sig: p.d.sig, name, addedAt: p.d.addedAt, primary: false });
+      // Older certificates carried a name in plain text; it's ignored (the name comes sealed, profileSeal.ts).
+      list.push({ keyHash, ecdh: p.d.ecdh, sig: p.d.sig, name: "", addedAt: p.d.addedAt, primary: false });
       progress = true;
     }
   }
@@ -264,8 +242,8 @@ export async function verifyDevices(
 }
 
 /** A device certificate for a new device of `member`, from its enrollment code, to be signed by `signer`. */
-export function deviceCert(member: string, request: EnrollmentRequest, name: string, signer: string, now = Date.now()): DeviceCert {
-  return { type: "relay-device", member, ecdh: request.ecdh, sig: request.sig, name: name.trim().slice(0, MAX_NAME_LENGTH), addedAt: now, signer };
+export function deviceCert(member: string, request: EnrollmentRequest, signer: string, now = Date.now()): DeviceCert {
+  return { type: "relay-device", member, ecdh: request.ecdh, sig: request.sig, addedAt: now, signer };
 }
 
 export function deviceRevoke(member: string, keyHash: string, signer: string, now = Date.now()): DeviceRevoke {

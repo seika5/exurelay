@@ -59,7 +59,7 @@ app.use("/api/auth", authRouter(prisma, auth));
 app.use("/api/tokens", tokensRouter(issuer, auth));
 app.use("/api/blobs", blobRouter(prisma, computeExpiresAt, io, spend));
 app.use("/api/turn", turnRouter(spend));
-app.use("/api/directory", directoryRouter(prisma, io, { onRemoved: onMembersRemoved, onLeft: onMemberLeft }));
+app.use("/api/directory", directoryRouter(prisma, io, { auth, onRemoved: onMembersRemoved, onLeft: onMemberLeft }));
 app.use("/api/admin", adminRouter(prisma, auth, issuer));
 app.use("/api/push", pushRouter(prisma, auth, spend));
 
