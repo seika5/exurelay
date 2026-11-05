@@ -7,8 +7,13 @@
   --surface: #18181c;
   --border: #2a2a2e;
   --text: #e4e4e7;
-  --muted: #71717a;
+  /* About 5:1 on --surface, so 12px hints stay readable. */
+  --muted: #8b8b94;
   --accent: #a78bfa;
+  /* Text on accent fills: dark, because white on this light purple is too faint (about 2.7:1). */
+  --on-accent: #0f0f12;
+  /* The off track of switches: visible against --surface. */
+  --switch-off: #52525b;
 }
 
 body {

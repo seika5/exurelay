@@ -10,26 +10,55 @@ import { ServerSwitcher, serverLabel } from "@/components/ServerSwitcher";
 import { StorageSetup } from "@/components/StorageSetup";
 import { WrongPassphraseError } from "@/lib/identityFile";
 import { folderStorageSupported, pickFolder } from "@/lib/keystore";
+import { confirmDialog } from "@/components/Modal";
+import { InfoTip } from "@/components/InfoTip";
+import { Icon } from "@/components/icons";
+import { btn, btnPrimary, btnSmall, field } from "@/components/ui";
 
 const screen = "min-h-screen flex flex-col items-center justify-center p-6 gap-4 bg-[var(--bg)] text-[var(--text)]";
 const safeTop = { paddingTop: "max(1.5rem, env(safe-area-inset-top, 0px))" };
+/** The column of secondary buttons under a screen's main form. */
+const actions = "flex flex-col gap-2 w-full max-w-xs";
 
-/** Joined a server with no identity for it yet: generate keys for it. Nothing leaves the device until the admin enrolls you. */
+/**
+ * Joined a server with no identity for it yet: generate keys for it. Nothing leaves the device until the admin enrolls
+ * you, or until one of your other devices links this one ("Add to my account": no name, since a linked device takes
+ * the member's name from its other devices).
+ */
 export function CreateIdentity() {
   const { createIdentity, openIdentityFolder, error, server, servers, leaveServer } = useIdentity();
   const [name, setName] = useState("");
+  const [linking, setLinking] = useState(false);
   const [choosing, setChoosing] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
+  const label = server ? serverLabel(server.url) : "this server";
 
   return (
     <main className={screen} style={safeTop}>
-      <h1 className="text-xl font-semibold">Your identity on {server ? serverLabel(server.url) : "this server"}</h1>
-      <p className="text-sm text-[var(--muted)] text-center max-w-sm">
-        Each server gets its own identity, so servers can&apos;t tell that you&apos;re the same person. Your keys are made on
-        this device and never sent anywhere. Then meet the admin in person to get enrolled.
-      </p>
+      {linking ? (
+        <>
+          <h1 className="text-xl font-semibold text-center">Add this device to your account</h1>
+          <p className="text-sm text-[var(--muted)] text-center max-w-sm">
+            This device makes its own keys. Next, your other device adds it.
+          </p>
+        </>
+      ) : (
+        <>
+          <h1 className="text-xl font-semibold text-center">Your name on {label}</h1>
+          <p className="text-sm text-[var(--muted)] text-center max-w-sm">
+            Your keys are made on this device and never leave it. Next, the admin enrolls you.{" "}
+            <InfoTip>Each server gets its own keys, so servers can&apos;t tell you&apos;re the same person.</InfoTip>
+          </p>
+        </>
+      )}
       {error && <p className="text-sm text-red-500 text-center max-w-sm whitespace-pre-wrap">{error}</p>}
-      {choosing && <StorageSetup onCancel={() => setChoosing(false)} onConfirm={(storage) => createIdentity(name, storage)} />}
+      {choosing && (
+        <StorageSetup
+          linking={linking}
+          onCancel={() => setChoosing(false)}
+          onConfirm={(storage) => createIdentity(linking ? "" : name, storage)}
+        />
+      )}
       <form
         className="flex flex-col gap-2 w-full max-w-xs"
         onSubmit={(e) => {
@@ -38,43 +67,54 @@ export function CreateIdentity() {
           setChoosing(true);
         }}
       >
-        <input
-          type="text"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="Your display name"
-          maxLength={64}
-          className="px-3 py-2 rounded bg-[var(--surface)] border border-[var(--border)] text-sm"
-        />
+        {!linking && (
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Your display name"
+            maxLength={64}
+            className={field}
+          />
+        )}
         {localError && <p className="text-sm text-red-500">{localError}</p>}
-        <button
-          type="submit"
-          disabled={!name.trim()}
-          className="py-2 rounded bg-[var(--accent)] text-white text-sm disabled:opacity-50"
-        >
-          Create identity
+        <button type="submit" disabled={!linking && !name.trim()} className={btnPrimary}>
+          Continue
         </button>
       </form>
-      {folderStorageSupported() && (
-        <button
-          type="button"
-          onClick={async () => {
-            setLocalError(null);
-            try {
-              await openIdentityFolder(await pickFolder());
-            } catch (e) {
-              if (!(e instanceof DOMException && e.name === "AbortError")) setLocalError(e instanceof Error ? e.message : "Couldn't open that folder.");
-            }
-          }}
-          className="text-xs text-[var(--muted)] underline"
-        >
-          I already have an identity file for this server
+      <div className={actions}>
+        {linking ? (
+          <button type="button" onClick={() => setLinking(false)} className={btn}>
+            <Icon name="onbBack" />
+            Back
+          </button>
+        ) : (
+          <button type="button" onClick={() => setLinking(true)} className={btn}>
+            Add to my account instead
+          </button>
+        )}
+        {folderStorageSupported() && (
+          <button
+            type="button"
+            onClick={async () => {
+              setLocalError(null);
+              try {
+                await openIdentityFolder(await pickFolder());
+              } catch (e) {
+                if (!(e instanceof DOMException && e.name === "AbortError")) setLocalError(e instanceof Error ? e.message : "Couldn't open that folder.");
+              }
+            }}
+            className={btn}
+          >
+            <Icon name="onbFolder" />
+            Open an identity file
+          </button>
+        )}
+        <button type="button" onClick={() => leaveServer().catch(() => {})} className={btn}>
+          {servers.length > 1 ? "Leave this server" : "Use a different server"}
         </button>
-      )}
-      <ServerSwitcher />
-      <button type="button" onClick={() => leaveServer().catch(() => {})} className="text-xs text-[var(--muted)] underline">
-        {servers.length > 1 ? "Leave this server" : "Use a different server"}
-      </button>
+        <ServerSwitcher className="self-center" />
+      </div>
     </main>
   );
 }
@@ -127,8 +167,8 @@ export function JoinServer({ onClose }: { onClose?: () => void } = {}) {
       {!newServer ? (
         <>
           <p className="text-sm text-[var(--muted)] text-center max-w-sm">
-            Ask your admin for the server&apos;s join code. It tells this app where the server is and which admin keys to
-            trust, so get it from them directly (in person, or a channel you already trust).
+            Get the join code from your admin, in person or over a chat you trust.{" "}
+            <InfoTip>It tells this app where the server is and which admin keys to trust.</InfoTip>
           </p>
           {scanning ? (
             <QrScanner
@@ -140,7 +180,8 @@ export function JoinServer({ onClose }: { onClose?: () => void } = {}) {
             />
           ) : (
             <div className="flex flex-col gap-2 w-full max-w-xs">
-              <button type="button" onClick={() => setScanning(true)} className="py-2 rounded bg-[var(--accent)] text-white text-sm">
+              <button type="button" onClick={() => setScanning(true)} className={btnPrimary}>
+                <Icon name="onbScan" />
                 Scan join code
               </button>
               <textarea
@@ -148,27 +189,29 @@ export function JoinServer({ onClose }: { onClose?: () => void } = {}) {
                 onChange={(e) => setCode(e.target.value)}
                 placeholder="…or paste the join code or link"
                 rows={3}
-                className="px-3 py-2 rounded bg-[var(--surface)] border border-[var(--border)] text-xs font-mono"
+                className={`${field} text-xs font-mono`}
               />
               <button
                 type="button"
                 disabled={!code.trim()}
                 onClick={() => tryJoin(code)}
-                className="py-2 rounded border border-[var(--border)] text-sm disabled:opacity-50"
+                className={btn}
               >
                 Join
               </button>
             </div>
           )}
           {error && <p className="text-sm text-red-500 text-center max-w-sm">{error}</p>}
-          <button type="button" onClick={() => setNewServer(true)} className="text-xs text-[var(--muted)] underline">
-            I&apos;m setting up a new server
-          </button>
-          {onClose && (
-            <button type="button" onClick={onClose} className="text-xs text-[var(--muted)] underline">
-              Cancel
+          <div className={actions}>
+            <button type="button" onClick={() => setNewServer(true)} className={btn}>
+              I&apos;m setting up a new server
             </button>
-          )}
+            {onClose && (
+              <button type="button" onClick={onClose} className={btn}>
+                Cancel
+              </button>
+            )}
+          </div>
         </>
       ) : (
         <form
@@ -185,19 +228,9 @@ export function JoinServer({ onClose }: { onClose?: () => void } = {}) {
             void checkServer();
           }}
         >
-          {choosing && (
-            <StorageSetup
-              onCancel={() => setChoosing(false)}
-              onConfirm={async (storage) => {
-                await setUpNewServer(url, name, storage);
-                onClose?.();
-              }}
-            />
-          )}
           <p className="text-sm text-[var(--muted)]">
-            Enter your server&apos;s address and your name there. This creates your identity for that server; you&apos;ll
-            be its first admin. Have your setup code ready: the one you chose when creating the server, or the one it showed
-            when it was installed.
+            You&apos;ll be the first admin. Have your setup code ready.{" "}
+            <InfoTip>The one you chose when creating the server, or the one it showed when it was installed.</InfoTip>
           </p>
           <input
             type="url"
@@ -207,7 +240,7 @@ export function JoinServer({ onClose }: { onClose?: () => void } = {}) {
               setWaiting(null);
             }}
             placeholder="https://relay.example.com"
-            className="px-3 py-2 rounded bg-[var(--surface)] border border-[var(--border)] text-sm"
+            className={field}
           />
           <input
             type="text"
@@ -215,26 +248,35 @@ export function JoinServer({ onClose }: { onClose?: () => void } = {}) {
             onChange={(e) => setName(e.target.value)}
             placeholder="Your display name"
             maxLength={64}
-            className="px-3 py-2 rounded bg-[var(--surface)] border border-[var(--border)] text-sm"
+            className={field}
           />
           {error && <p className="text-sm text-red-500">{error}</p>}
           {waiting === "starting" && (
             <p className="text-sm text-[var(--muted)]" role="status">
-              This server isn&apos;t answering yet. If you just created it, it takes about 5 minutes to install and get
-              its HTTPS certificate. This page checks again every 10 seconds and carries on by itself once it&apos;s up.
+              Not answering yet. A new server takes about 5 minutes. Checking every 10 seconds.
             </p>
           )}
           <button
             type="submit"
             disabled={!url.trim() || !name.trim() || waiting !== null}
-            className="py-2 rounded bg-[var(--accent)] text-white text-sm disabled:opacity-50"
+            className={btnPrimary}
           >
             {waiting === "checking" ? "Checking the server…" : waiting === "starting" ? "Waiting for the server…" : "Continue"}
           </button>
-          <button type="button" onClick={() => { setWaiting(null); setNewServer(false); }} className="text-xs text-[var(--muted)] underline">
+          <button type="button" onClick={() => { setWaiting(null); setNewServer(false); }} className={btn}>
+            <Icon name="onbBack" />
             Back
           </button>
         </form>
+      )}
+      {choosing && (
+        <StorageSetup
+          onCancel={() => setChoosing(false)}
+          onConfirm={async (storage) => {
+            await setUpNewServer(url, name, storage);
+            onClose?.();
+          }}
+        />
       )}
     </main>
   );
@@ -290,28 +332,33 @@ export function UnlockIdentity() {
           value={passphrase}
           onChange={(e) => setPassphrase(e.target.value)}
           placeholder="Passphrase"
-          className="px-3 py-2 rounded bg-[var(--surface)] border border-[var(--border)] text-sm"
+          className={field}
         />
         {error && <p className="text-sm text-red-500">{error}</p>}
-        <button type="submit" disabled={busy || !passphrase} className="py-2 rounded bg-[var(--accent)] text-white text-sm disabled:opacity-50">
+        <button type="submit" disabled={busy || !passphrase} className={btnPrimary}>
           {busy ? "Unlocking…" : "Unlock"}
         </button>
       </form>
-      <button type="button" onClick={chooseFolder} className={`text-xs underline ${missing ? "text-[var(--accent)]" : "text-[var(--muted)]"}`}>
-        The file moved? Choose its folder
-      </button>
-      <ServerSwitcher />
-      <button
-        type="button"
-        onClick={() => {
-          if (window.confirm("Forget this server on this device? Your identity file stays where it is, and you stay a member: to leave the server, unlock first and use Settings → Leave server.")) {
-            leaveServer().catch(() => {});
-          }
-        }}
-        className="text-xs text-[var(--muted)] underline"
-      >
-        Forget this server on this device
-      </button>
+      <div className={actions}>
+        <button type="button" onClick={chooseFolder} className={missing ? btnPrimary : btn}>
+          <Icon name="onbFolder" />
+          File moved? Choose its folder
+        </button>
+        <button
+          type="button"
+          onClick={async () => {
+            const yes = await confirmDialog(
+              "Forget this server on this device? The identity file stays and you stay a member. To leave, unlock and use Settings.",
+              { ok: "Forget", danger: true }
+            );
+            if (yes) leaveServer().catch(() => {});
+          }}
+          className={btn}
+        >
+          Forget this server here
+        </button>
+        <ServerSwitcher className="self-center" />
+      </div>
     </main>
   );
 }
@@ -327,7 +374,7 @@ function SigningKey({ value }: { value: string }) {
           await navigator.clipboard.writeText(value).catch(() => {});
           setCopied(true);
         }}
-        className="px-2 py-1 rounded border border-[var(--border)] text-xs"
+        className={btnSmall}
       >
         {copied ? "Copied" : "Copy"}
       </button>
@@ -349,11 +396,7 @@ export function NotEnrolled() {
           One of your devices removed this one from your account, so its keys no longer work here. To use this device
           again, start over: it makes new keys, and you link it again from another device (or ask the admin).
         </p>
-        <button
-          type="button"
-          onClick={() => startOver().catch(() => {})}
-          className="px-4 py-2 rounded bg-[var(--accent)] text-white text-sm"
-        >
+        <button type="button" onClick={() => startOver().catch(() => {})} className={btnPrimary}>
           Start over
         </button>
         <ServerSwitcher />
@@ -363,19 +406,21 @@ export function NotEnrolled() {
 
   // Not a member here yet, but maybe of another joined server: let them go back to it.
   const leave = (
-    <div className="flex flex-col items-center gap-2">
-      <ServerSwitcher />
+    <div className={actions}>
       <button
         type="button"
-        onClick={() => {
-          if (window.confirm("Leave this server? Your identity for it is deleted, so an enrollment code you already sent won't work.")) {
-            leaveServer().catch(() => {});
-          }
+        onClick={async () => {
+          const yes = await confirmDialog("Leave this server? Your keys for it are deleted, so a code you already sent stops working.", {
+            ok: "Leave",
+            danger: true,
+          });
+          if (yes) leaveServer().catch(() => {});
         }}
-        className="text-xs text-[var(--muted)] underline"
+        className={btn}
       >
         {servers.length > 1 ? "Leave this server" : "Use a different server"}
       </button>
+      <ServerSwitcher className="self-center" />
     </div>
   );
 
@@ -385,11 +430,12 @@ export function NotEnrolled() {
       <main className={screen} style={safeTop}>
         <h1 className="text-xl font-semibold">Set up Exurelay</h1>
         <p className="text-sm text-[var(--muted)] text-center max-w-sm">
-          Enter your setup code (the one you chose when creating the server, or the one it showed when it was
-          installed), then create the member list to enroll yourself. After that, share the join code and enroll everyone else from Settings → Admin.
+          Enter your setup code to create the member list. Then add everyone from Settings, Admin.
         </p>
-        <details className="w-full max-w-md text-sm text-[var(--muted)]">
-          <summary className="cursor-pointer text-center">Set the server up by hand instead?</summary>
+        <details className="w-full max-w-md text-sm text-[var(--muted)] text-center">
+          <summary className={`${btnSmall} list-none [&::-webkit-details-marker]:hidden cursor-pointer text-[var(--text)]`}>
+            Set up by hand instead
+          </summary>
           <p className="mt-2 text-center">
             Put this signing key in <code>ADMIN_SIGNING_KEYS</code> in the server&apos;s <code>.env</code>, restart it,
             and leave the setup code empty. It only authorizes the first member list.
@@ -414,11 +460,9 @@ export function NotEnrolled() {
     <main className={screen} style={safeTop}>
       <h1 className="text-xl font-semibold">Waiting for enrollment</h1>
       <p className="text-sm text-[var(--muted)] text-center max-w-sm">
-        <strong>New member:</strong> show this code to the admin in person.
-        <br />
-        <strong>Already a member on another device?</strong> Enter it there, in Settings → Devices, to link this one.
-        <br />
-        This screen moves on by itself once you&apos;re in.
+        {/* No name: made with "Add to my account" on the create screen, to be linked from another device. */}
+        {identity.myName ? "Show this to your admin to get enrolled." : "On your other device, open Settings, then Devices, and scan this code."}{" "}
+        <InfoTip>This screen moves on by itself once you&apos;re in.</InfoTip>
       </p>
       <EnrollmentCode />
       {(directoryError || error) && (

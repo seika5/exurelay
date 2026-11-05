@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { isIOS, isMobileDevice, isStandalone } from "@/lib/platform";
 import { appPath } from "@/lib/basePath";
+import { InfoTip } from "@/components/InfoTip";
 
 /** Registers the service worker (offline use, push) and, once installed, asks the browser to keep our storage. */
 export function ServiceWorkerSetup() {
@@ -36,8 +37,8 @@ export function InstallFirst() {
       <img src={appPath("/icon-192.png")} alt="" width={72} height={72} className="rounded-2xl" />
       <h1 className="text-xl font-semibold">Install Exurelay first</h1>
       <p className="text-sm text-[var(--muted)] text-center max-w-sm">
-        On a phone, Exurelay keeps your keys inside the installed app. Install it, then open it from your Home Screen and
-        join from there. (A browser tab has separate storage, so an identity made here wouldn&apos;t be in the app.)
+        On a phone, Exurelay runs from the Home Screen.{" "}
+        <InfoTip>A browser tab and the installed app keep separate storage, so keys made here wouldn&apos;t be in the app.</InfoTip>
       </p>
       <ol className="text-sm list-decimal pl-5 max-w-sm flex flex-col gap-1">
         {ios ? (
@@ -55,7 +56,7 @@ export function InstallFirst() {
         )}
       </ol>
       <p className="text-xs text-[var(--muted)] text-center max-w-sm">
-        If you have a join link, open it again in the installed app (or paste its code there).
+        Have a join link? Open it again in the installed app, or paste its code there.
       </p>
     </main>
   );

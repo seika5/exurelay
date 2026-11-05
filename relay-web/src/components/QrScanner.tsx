@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import jsQR from "jsqr";
+import { btn } from "@/components/ui";
 
 /**
  * Camera QR scanner (rear camera when there is one). Calls onResult once with the first code it reads.
@@ -59,7 +60,7 @@ export function QrScanner({ onResult, onClose }: { onResult: (text: string) => v
       ) : (
         <video ref={videoRef} playsInline muted className="w-64 h-64 object-cover rounded bg-black" />
       )}
-      <button type="button" onClick={onClose} className="px-3 py-1.5 rounded border border-[var(--border)] text-sm">
+      <button type="button" onClick={onClose} className={btn}>
         Cancel
       </button>
     </div>

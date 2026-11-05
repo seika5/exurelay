@@ -43,7 +43,8 @@ export function CompactCallTile() {
       type="button"
       onClick={() => setCallExpanded(true)}
       className="w-full aspect-video max-h-24 rounded overflow-hidden bg-[var(--border)] border border-[var(--border)] flex items-center justify-center hover:ring-2 hover:ring-[var(--accent)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
-      title="Click to expand call"
+      title="Open call"
+      aria-label="Open call"
     >
       {hasVideo && stream ? (
         <video

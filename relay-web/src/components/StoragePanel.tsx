@@ -3,9 +3,9 @@
 import { useState } from "react";
 import type { Conversation, StorageStats } from "@/lib/useMessages";
 import { MAX_RETENTION_DAYS } from "@/lib/messageCache";
-import { SectionTitle } from "@/components/InfoTip";
-
-const button = "px-3 py-1.5 rounded border border-[var(--border)] text-sm disabled:opacity-50";
+import { InfoTip, SectionTitle } from "@/components/InfoTip";
+import { confirmDialog } from "@/components/Modal";
+import { btn, btnDanger, field } from "@/components/ui";
 
 export type StorageControls = {
   stats: StorageStats;
@@ -37,8 +37,8 @@ export function StoragePanel({
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
-  const act = async (confirmText: string, fn: () => Promise<void>, done: string) => {
-    if (!window.confirm(confirmText)) return;
+  const act = async (confirmText: string, ok: string, fn: () => Promise<void>, done: string, danger = true) => {
+    if (!(await confirmDialog(confirmText, { ok, danger }))) return;
     setBusy(true);
     setMessage(null);
     try {
@@ -67,6 +67,7 @@ export function StoragePanel({
         <div className="flex items-center gap-2">
           <input
             type="number"
+            inputMode="numeric"
             min={1}
             max={MAX_RETENTION_DAYS}
             value={days}
@@ -75,7 +76,7 @@ export function StoragePanel({
               storage.setRetentionDays(Number(days) || storage.retentionDays);
               setDays(String(Math.min(MAX_RETENTION_DAYS, Math.max(1, Math.round(Number(days) || storage.retentionDays)))));
             }}
-            className="w-20 px-2 py-1 rounded bg-[var(--bg)] border border-[var(--border)]"
+            className={`${field} w-20`}
           />
           <span>days after the server deletes them</span>
         </div>
@@ -83,20 +84,13 @@ export function StoragePanel({
 
       <section className="flex flex-col gap-2">
         <SectionTitle>Clear</SectionTitle>
-        <button
-          type="button"
-          disabled={busy || stats.files === 0}
-          className={`${button} self-start`}
-          onClick={() => act("Remove all files from this device? The messages stay.", storage.clearFiles, "Files removed.")}
-        >
-          Remove files only
-        </button>
         {conversations.length > 0 && (
-          <div className="flex items-center gap-2">
+          <div className="flex items-stretch gap-2">
             <select
               value={convIndex}
               onChange={(e) => setConvIndex(Number(e.target.value))}
-              className="px-2 py-1 rounded bg-[var(--bg)] border border-[var(--border)] max-w-[12rem]"
+              aria-label="Conversation"
+              className={`${field} flex-1 min-w-0 sm:flex-none sm:max-w-[14rem]`}
             >
               {conversations.map((c, i) => (
                 <option key={i} value={i}>
@@ -107,44 +101,55 @@ export function StoragePanel({
             <button
               type="button"
               disabled={busy}
-              className={button}
+              className={`${btnDanger} shrink-0`}
               onClick={() => {
                 const c = conversations[Math.min(convIndex, conversations.length - 1)];
-                act(`Clear "${c.label}" from this device?`, () => storage.clearConversation(c.conv), "Conversation cleared.");
+                act(`Clear "${c.label}" from this device?`, "Clear", () => storage.clearConversation(c.conv), "Conversation cleared.");
               }}
             >
               Clear conversation
             </button>
           </div>
         )}
-        <button
-          type="button"
-          disabled={busy}
-          className={`${button} self-start`}
-          onClick={() =>
-            act(
-              "Clear every message from this device? Others keep their copies.",
-              storage.clearAll,
-              "Everything cleared."
-            )
-          }
-        >
-          Clear everything
-        </button>
-        <button
-          type="button"
-          disabled={busy}
-          className={`${button} self-start`}
-          onClick={() =>
-            act(
-              "Clear this device and download what the server still has (the last 3 to 4 days)?",
-              storage.resync,
-              "Re-synced from the server."
-            )
-          }
-        >
-          Re-sync from server
-        </button>
+        <div className="flex flex-wrap gap-2">
+          {stats.files > 0 && (
+            <button
+              type="button"
+              disabled={busy}
+              className={btnDanger}
+              onClick={() => act("Remove all files from this device? The messages stay.", "Remove", storage.clearFiles, "Files removed.")}
+            >
+              Remove files ({fmt(stats.fileBytes)})
+            </button>
+          )}
+          <button
+            type="button"
+            disabled={busy}
+            className={btnDanger}
+            onClick={() => act("Clear every message from this device? Others keep their copies.", "Clear", storage.clearAll, "All messages cleared.")}
+          >
+            Clear all messages
+          </button>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            disabled={busy}
+            className={btn}
+            onClick={() =>
+              act(
+                "Clear this device and download what the server still has?",
+                "Download again",
+                storage.resync,
+                "Downloaded again from the server.",
+                false
+              )
+            }
+          >
+            Download again
+          </button>
+          <InfoTip>Clears this device, then downloads what the server still has (the last 3 to 4 days).</InfoTip>
+        </div>
         {message && <p className="text-xs text-[var(--muted)]">{message}</p>}
       </section>
     </div>

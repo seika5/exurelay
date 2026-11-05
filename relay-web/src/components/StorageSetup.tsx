@@ -1,22 +1,27 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import type { StorageChoice } from "@/context/IdentityContext";
 import { MIN_PASSPHRASE_LENGTH } from "@/lib/identityFile";
 import { folderStorageSupported, pickFolder } from "@/lib/keystore";
-
-const field = "px-3 py-2 rounded bg-[var(--bg)] border border-[var(--border)] text-sm";
+import { Modal } from "@/components/Modal";
+import { InfoTip } from "@/components/InfoTip";
+import { Icon } from "@/components/icons";
+import { btn, btnPrimary, field } from "@/components/ui";
 
 /**
  * Shown when creating an identity: where it will live, and what that means. Desktop Chrome/Edge keep it as a
  * passphrase-encrypted file in a folder the user picks; other browsers and phones keep it in the app's storage.
+ * `linking`: these keys are for a device that will be linked to an existing member, so losing them means linking again.
  */
 export function StorageSetup({
   onConfirm,
   onCancel,
+  linking = false,
 }: {
   onConfirm: (storage: StorageChoice) => Promise<void>;
   onCancel: () => void;
+  linking?: boolean;
 }) {
   const folderMode = folderStorageSupported();
   const [dir, setDir] = useState<FileSystemDirectoryHandle | null>(null);
@@ -26,9 +31,19 @@ export function StorageSetup({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Modal refocuses itself whenever onClose changes, so keep it stable.
+  const cancelRef = useRef(onCancel);
+  cancelRef.current = onCancel;
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
+  const close = useCallback(() => {
+    if (!busyRef.current) cancelRef.current();
+  }, []);
+
   const tooShort = passphrase.length < MIN_PASSPHRASE_LENGTH;
   const mismatch = confirm.length > 0 && confirm !== passphrase;
   const ready = understood && (!folderMode || (dir && !tooShort && confirm === passphrase));
+  const again = linking ? "you have to link this device again." : "the admin has to enroll you again.";
 
   const submit = async () => {
     setBusy(true);
@@ -42,33 +57,34 @@ export function StorageSetup({
   };
 
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-40 p-4">
-      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-lg p-4 w-full max-w-md max-h-[90vh] overflow-auto flex flex-col gap-3 text-sm">
-        <h2 className="font-semibold text-base">{folderMode ? "Save your identity to a folder" : "Your identity stays in this app"}</h2>
-
+    <Modal title={folderMode ? "Save your keys to a folder" : "Your keys stay in this app"} onClose={close} closeLabel={null}>
+      <div className="flex flex-col gap-3 text-sm">
         {folderMode ? (
-          <ul className="list-disc pl-5 flex flex-col gap-1.5 text-[var(--muted)]">
-            <li>Your keys go in a file in a folder you choose, encrypted with a passphrase. Exurelay asks for the passphrase each time it opens.</li>
-            <li>Anyone with the file <em>and</em> the passphrase can read your messages here and act as you. Use a passphrase you don&apos;t use anywhere else.</li>
-            <li className="text-amber-300">
-              Forget the passphrase or lose the file and there&apos;s no recovery: the admin has to enroll you again. Keep a copy somewhere safe, like a USB stick.
-            </li>
-            <li>Folders that sync to the cloud (iCloud Desktop &amp; Documents, Dropbox, OneDrive, Google Drive) will upload the encrypted file. Pick a local folder unless you&apos;re OK with that.</li>
-            <li>Don&apos;t put it in a shared folder or a git repository.</li>
-          </ul>
+          <>
+            <p className="text-[var(--muted)]">
+              Your keys go in a file in a folder you pick, locked with a passphrase you use nowhere else.{" "}
+              <InfoTip>
+                Exurelay asks for the passphrase each time it opens. Anyone with the file and the passphrase can act as
+                you. Cloud folders (iCloud, Dropbox, OneDrive, Google Drive) upload the encrypted file, so pick a local one
+                unless that&apos;s fine. Keep a copy somewhere safe, like a USB stick, but not in a shared folder or a git
+                repository.
+              </InfoTip>
+            </p>
+            <p className="text-amber-300">Lose the file or forget the passphrase and {again}</p>
+          </>
         ) : (
-          <ul className="list-disc pl-5 flex flex-col gap-1.5 text-[var(--muted)]">
-            <li>Your keys are made on this device and kept only in this app. They can&apos;t be exported or backed up.</li>
-            <li className="text-amber-300">
-              Clearing this site&apos;s data, deleting the app, or switching browsers loses them, and the admin has to enroll you again.
-            </li>
-            <li>On a phone, install Exurelay to the Home Screen first and create your identity there: the browser tab and the installed app keep separate storage.</li>
-          </ul>
+          <>
+            <p className="text-[var(--muted)]">
+              Your keys stay in this app and can&apos;t be backed up.{" "}
+              <InfoTip>Switching browsers loses them too. Each server gets its own keys.</InfoTip>
+            </p>
+            <p className="text-amber-300">Delete the app or clear its data and {again}</p>
+          </>
         )}
 
         {folderMode && (
           <div className="flex flex-col gap-2">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 min-w-0">
               <button
                 type="button"
                 disabled={busy}
@@ -80,11 +96,12 @@ export function StorageSetup({
                     if (!(e instanceof DOMException && e.name === "AbortError")) setError(e instanceof Error ? e.message : "Couldn't open that folder.");
                   }
                 }}
-                className="px-3 py-1.5 rounded border border-[var(--border)]"
+                className={btn}
               >
-                {dir ? "Change folder…" : "Choose folder…"}
+                <Icon name="onbFolder" />
+                {dir ? "Change folder" : "Choose folder"}
               </button>
-              {dir && <span className="text-[var(--muted)] truncate">📁 {dir.name}</span>}
+              {dir && <span className="text-[var(--muted)] truncate">{dir.name}</span>}
             </div>
             <input
               type="password"
@@ -108,25 +125,20 @@ export function StorageSetup({
 
         <label className="flex items-start gap-2">
           <input type="checkbox" checked={understood} onChange={(e) => setUnderstood(e.target.checked)} className="mt-1" />
-          <span>I understand there&apos;s no way to recover my identity if I lose it{folderMode ? " or forget the passphrase" : ""}.</span>
+          <span>I understand my keys can&apos;t be recovered if I lose them{folderMode ? " or forget the passphrase" : ""}.</span>
         </label>
 
         {error && <p className="text-red-500">{error}</p>}
 
         <div className="flex gap-2 justify-end">
-          <button type="button" onClick={onCancel} disabled={busy} className="px-3 py-1.5 rounded border border-[var(--border)]">
+          <button type="button" onClick={onCancel} disabled={busy} className={btn}>
             Cancel
           </button>
-          <button
-            type="button"
-            disabled={!ready || busy}
-            onClick={submit}
-            className="px-3 py-1.5 rounded bg-[var(--accent)] text-white disabled:opacity-50"
-          >
+          <button type="button" disabled={!ready || busy} onClick={submit} className={btnPrimary}>
             {busy ? "Creating…" : "Create identity"}
           </button>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }

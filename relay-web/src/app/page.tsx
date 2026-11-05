@@ -25,6 +25,10 @@ import { sendPushes } from "@/lib/push";
 import { usePlugins } from "@/context/PluginContext";
 import { PluginMessage } from "@/components/PluginMessage";
 import { MentionPicker, MessageText, type MentionCandidate } from "@/components/Mentions";
+import { CallControls } from "@/components/CallControls";
+import { Icon, IconButton } from "@/components/icons";
+import { Modal, confirmDialog } from "@/components/Modal";
+import { btn, btnPrimary, field } from "@/components/ui";
 
 const GROUP_BREAK_MS = 10 * 60 * 1000;
 
@@ -32,36 +36,6 @@ const GROUP_BREAK_MS = 10 * 60 * 1000;
  * Messages from the same sender with < 10 min gap from the previous message
  * are visually grouped (no header repeated).
  */
-const iconProps = {
-  width: 14,
-  height: 14,
-  viewBox: "0 0 24 24",
-  fill: "none",
-  stroke: "currentColor",
-  strokeWidth: 2,
-  strokeLinecap: "round" as const,
-  strokeLinejoin: "round" as const,
-  "aria-hidden": true,
-};
-
-function RetryIcon() {
-  return (
-    <svg {...iconProps}>
-      <path d="M21 12a9 9 0 1 1-2.64-6.36" />
-      <path d="M21 3v6h-6" />
-    </svg>
-  );
-}
-
-function CancelIcon() {
-  return (
-    <svg {...iconProps}>
-      <path d="M6 6l12 12" />
-      <path d="M18 6L6 18" />
-    </svg>
-  );
-}
-
 function isGroupedWithPrev(
   msg: DecryptedMessage,
   prev: DecryptedMessage | undefined
@@ -83,6 +57,12 @@ function formatMsgTime(ts: number): string {
     " " +
     d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
   );
+}
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function conversationLabel(
@@ -154,12 +134,11 @@ function Chat() {
   const {
     identity, loading, needsSetup, lockedFile, enrolled, directory, directoryLoaded, error: identityError, server, cacheKey,
     applyDeviceSync, settingsChangedAt, justLinked, clearJustLinked,
-    getDisplayName, getMyDisplayName, setDisplayName, getMember, isRemoved,
+    getDisplayName, getMyDisplayName, setDisplayName, getMember, isRemoved, isAdmin,
   } = useIdentity();
   const {
-    inCall, callExpanded, muted, deafened, cameraOn, screenSharing,
-    currentCallConversation, setMuted, setDeafened, setCameraOn,
-    setScreenSharing, hangUp, setCurrentCallConversation, setCallExpanded,
+    inCall, callExpanded,
+    currentCallConversation, hangUp, setCurrentCallConversation, setCallExpanded,
     startOrJoinCall, roomJoinError, dismissRoomJoinError, roomId: currentRoomId, setNotifyMember,
   } = useCall();
   // Messages need a login, which needs membership: nothing is fetched until we're enrolled on a server.
@@ -208,6 +187,8 @@ function Chat() {
   const composerRef = useRef<HTMLInputElement>(null);
   const [newGroupOpen, setNewGroupOpen] = useState(false);
   const [newGroupSelected, setNewGroupSelected] = useState<Set<string>>(new Set());
+  const [newGroupName, setNewGroupName] = useState("");
+  const [dismissedError, setDismissedError] = useState<string | null>(null);
   const [displayNameModal, setDisplayNameModal] = useState<{ keyHash: string } | null>(null);
   const [displayNameValue, setDisplayNameValue] = useState("");
   const [displayNameSaveError, setDisplayNameSaveError] = useState<string | null>(null);
@@ -382,17 +363,17 @@ function Chat() {
       const group =
         conv?.type === "group" ? groupNamesFromMessages.get(conversationId(conv, identity.keyHash)) ?? "a group call" : undefined;
       const r = await sendPushes("ring", identity, devices, { member: identity.keyHash, group });
-      if (r.limited && !r.sent) throw new Error("Rung recently; try again shortly");
-      if (!r.sent) throw new Error("They haven't turned on notifications");
+      if (r.limited && !r.sent) throw new Error("Rung recently. Try again soon.");
+      if (!r.sent) throw new Error("Notifications are off");
     });
     return () => setNotifyMember(null);
   }, [identity, currentCallConversation, groupNamesFromMessages, setNotifyMember]);
 
   // A plugin asks to send one of its message types: to the open conversation, only if you say yes.
   useEffect(() => {
-    setSendHandler((req) => {
+    setSendHandler(async (req) => {
       if (!identity || !selected) return;
-      if (!window.confirm(`${req.plugin.name} wants to send in this conversation:\n\n"${req.fallback}"\n\nSend it?`)) return;
+      if (!(await confirmDialog(`${req.plugin.name} wants to send:\n\n${req.fallback}`, { ok: "Send" }))) return;
       const base = { type: "plugin", pluginType: req.messageType, data: req.data, fallback: req.fallback };
       if (selected.type === "dm") {
         sendMessage(base as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">, [selected.otherKeyHash], {
@@ -480,16 +461,76 @@ function Chat() {
     }
   };
 
-  const handleCreateGroup = () => {
-    if (newGroupSelected.size === 0) return;
-    const conv: Conversation = {
-      type: "group",
-      memberKeyHashes: [identity!.keyHash, ...Array.from(newGroupSelected)],
-    };
-    setSelected(conv);
-    setSidebarVisible(false);
+  // Stable, so the open dialog doesn't refocus itself on every render.
+  const closeNewGroup = useCallback(() => {
     setNewGroupOpen(false);
     setNewGroupSelected(new Set());
+    setNewGroupName("");
+  }, []);
+
+  const handleCreateGroup = () => {
+    if (newGroupSelected.size === 0 || !identity) return;
+    const memberKeyHashes = [identity.keyHash, ...Array.from(newGroupSelected)];
+    setSelected({ type: "group", memberKeyHashes });
+    setSidebarVisible(false);
+    const name = newGroupName.trim();
+    // A group's name is its latest rename message; sending one now also shows the group to its members.
+    if (name) {
+      sendMessage(
+        { type: "group_rename", newName: name, groupMemberKeyHashes: memberKeyHashes } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
+        memberKeyHashes.filter((k) => k !== identity.keyHash)
+      ).catch(() => {});
+    }
+    closeNewGroup();
+  };
+
+  /** Nickname for a member (DM), or the group's name. */
+  const openRename = (conv: Conversation) => {
+    if (!identity) return;
+    if (conv.type === "dm") {
+      setDisplayNameModal({ keyHash: conv.otherKeyHash });
+      setDisplayNameSaveError(null);
+      setDisplayNameValue(getDisplayName(conv.otherKeyHash) ?? "");
+    } else {
+      setGroupRenameModal(conv);
+      setGroupRenameValue(groupNamesFromMessages.get(conversationId(conv, identity.keyHash)) || "Group Chat");
+    }
+  };
+
+  const closeNickname = useCallback(() => {
+    setDisplayNameModal(null);
+    setDisplayNameSaveError(null);
+  }, []);
+
+  const saveNickname = async () => {
+    if (!displayNameModal) return;
+    const name = displayNameValue.trim() || getDisplayName(displayNameModal.keyHash) || displayNameModal.keyHash.slice(0, 8);
+    setDisplayNameSaveError(null);
+    setDisplayNameSaving(true);
+    try {
+      await setDisplayName(displayNameModal.keyHash, name);
+      setDisplayNameModal(null);
+      setDisplayNameValue("");
+    } catch (e) {
+      setDisplayNameSaveError(e instanceof Error ? e.message : "Couldn't save the name");
+    } finally {
+      setDisplayNameSaving(false);
+    }
+  };
+
+  const closeGroupRename = useCallback(() => {
+    setGroupRenameModal(null);
+    setGroupRenameValue("");
+  }, []);
+
+  const saveGroupRename = async () => {
+    if (!identity || groupRenameModal?.type !== "group") return;
+    const newName = groupRenameValue.trim() || "Group Chat";
+    await sendMessage(
+      { type: "group_rename", newName, groupMemberKeyHashes: groupRenameModal.memberKeyHashes } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
+      groupRenameModal.memberKeyHashes.filter((k) => k !== identity.keyHash)
+    );
+    closeGroupRename();
   };
 
   const handleStartCall = async () => {
@@ -574,7 +615,7 @@ function Chat() {
         <button
           type="button"
           onClick={() => window.location.reload()}
-          className="px-4 py-2 rounded bg-[var(--accent)] text-white text-sm"
+          className={btnPrimary}
         >
           Retry
         </button>
@@ -585,6 +626,28 @@ function Chat() {
   if (!directoryLoaded) return <main className="min-h-screen bg-[var(--bg)]" />;
 
   if (!enrolled) return <NotEnrolled />;
+
+  const me = identity.keyHash;
+  /** Who sent a message, as shown above it: "You" for my own. */
+  const senderName = (k: string) => (k === me ? "You" : getDisplayName(k) || k.slice(0, 8));
+  const newGroupCandidates = identity.contacts.filter((c) => c.keyHash !== me);
+  const shownError = error && error !== dismissedError ? error : null;
+  const banners =
+    roomJoinError || shownError ? (
+      <>
+        {roomJoinError && (
+          <Banner tone="amber" onDismiss={dismissRoomJoinError}>
+            {roomJoinError}
+          </Banner>
+        )}
+        {shownError && (
+          <Banner tone="red" onDismiss={() => setDismissedError(shownError)}>
+            {shownError}
+          </Banner>
+        )}
+      </>
+    ) : null;
+  const canSend = !!input.trim() || pendingFiles.length > 0;
 
   return (
     <main className="flex h-screen overflow-hidden bg-[var(--bg)] text-[var(--text)]">
@@ -601,23 +664,14 @@ function Chat() {
           style={safeTop}
         >
           <span className="font-semibold text-sm">Chats</span>
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={() => setNewGroupOpen(true)}
-              className="text-xs text-[var(--accent)] hover:opacity-80"
-            >
-              + Group
-            </button>
-            <button
-              type="button"
-              onClick={() => setSettingsOpen(true)}
-              className="text-xs text-[var(--accent)] hover:opacity-80"
-            >
-              Settings
-            </button>
+          <div className="flex items-center gap-1.5">
+            <IconButton icon="chatNewGroup" label="New group" onClick={() => setNewGroupOpen(true)} />
+            <IconButton icon="chatSettings" label="Settings" onClick={() => setSettingsOpen(true)} />
           </div>
         </div>
+
+        {/* On a phone the chat panel is hidden here, so its banners show in the list instead */}
+        {banners && <div className="md:hidden">{banners}</div>}
 
         {/* Which server: each has its own identity, members and chats */}
         <div className="px-3 py-2 border-b border-[var(--border)] flex">
@@ -626,6 +680,13 @@ function Chat() {
 
         {/* Conversation + contact list */}
         <ul className="flex-1 overflow-auto py-1">
+          {conversations.length === 0 && contactsWithoutDmSorted.length === 0 && (
+            <li className="px-3 py-4 text-sm text-[var(--muted)] flex flex-col gap-1">
+              <span>No one else here yet.</span>
+              {isAdmin && <span className="text-xs">Add people in Settings → Admin.</span>}
+            </li>
+          )}
+
           {conversations.map((conv) => {
             const key = conv.type === "dm"
               ? `dm:${conv.otherKeyHash}`
@@ -638,18 +699,7 @@ function Chat() {
                   selected.memberKeyHashes.length === conv.memberKeyHashes.length &&
                   [...selected.memberKeyHashes].sort().join() === [...conv.memberKeyHashes].sort().join());
 
-            const openContextFor = () => {
-              if (conv.type === "dm") {
-                setDisplayNameModal({ keyHash: conv.otherKeyHash });
-                setDisplayNameSaveError(null);
-                setDisplayNameValue(getDisplayName(conv.otherKeyHash) ?? "");
-              } else {
-                setGroupRenameModal(conv);
-                setGroupRenameValue(
-                  groupNamesFromMessages.get(conversationId(conv, identity.keyHash)) || "Group Chat"
-                );
-              }
-            };
+            const openContextFor = () => openRename(conv);
 
             return (
               <li key={key}>
@@ -676,7 +726,7 @@ function Chat() {
                   className={`w-full text-left px-3 py-2.5 text-sm truncate transition-colors ${isSelected ? "bg-[var(--accent)]/30" : "hover:bg-[var(--border)] active:bg-[var(--border)]"} ${isInactive(conv) ? "opacity-50" : ""}`}
                 >
                   <span className="flex items-center gap-2">
-                    <span className="truncate">{conversationLabel(conv, identity.keyHash, getDisplayName, groupNamesFromMessages)}</span>
+                    <span className="truncate">{conversationLabel(conv, me, getDisplayName, groupNamesFromMessages)}</span>
                     {unreadMentions(conv) > 0 && (
                       <span
                         className="ml-auto shrink-0 px-1.5 rounded-full bg-amber-500 text-black text-xs font-semibold"
@@ -694,11 +744,7 @@ function Chat() {
           {contactsWithoutDmSorted.map((c) => {
             const isSelected = selected?.type === "dm" && selected.otherKeyHash === c.keyHash;
 
-            const openContextFor = () => {
-              setDisplayNameModal({ keyHash: c.keyHash });
-              setDisplayNameSaveError(null);
-              setDisplayNameValue(getDisplayName(c.keyHash) ?? "");
-            };
+            const openContextFor = () => openRename({ type: "dm", otherKeyHash: c.keyHash });
 
             return (
               <li key={`contact:${c.keyHash}`}>
@@ -733,27 +779,8 @@ function Chat() {
 
         {/* Call controls — only when in a call */}
         {inCall && (
-          <div className="p-2 border-t border-[var(--border)] flex flex-col gap-1.5 flex-shrink-0">
-            <button type="button" onClick={() => setMuted(!muted)}
-              className={`w-full py-2 rounded text-sm font-medium ${muted ? "bg-amber-600/80 text-white" : "bg-[var(--border)] text-[var(--text)]"}`}>
-              {muted ? "Unmute" : "Mute"}
-            </button>
-            <button type="button" onClick={() => setDeafened(!deafened)}
-              className={`w-full py-2 rounded text-sm font-medium ${deafened ? "bg-amber-600/80 text-white" : "bg-[var(--border)] text-[var(--text)]"}`}>
-              {deafened ? "Undeafen" : "Deafen"}
-            </button>
-            <button type="button" onClick={() => setCameraOn(!cameraOn)}
-              className={`w-full py-2 rounded text-sm font-medium ${cameraOn ? "bg-amber-600/80 text-white" : "bg-[var(--border)] text-[var(--text)]"}`}>
-              {cameraOn ? "Camera off" : "Camera on"}
-            </button>
-            <button type="button" onClick={() => setScreenSharing(!screenSharing)}
-              className={`w-full py-2 rounded text-sm font-medium ${screenSharing ? "bg-amber-600/80 text-white" : "bg-[var(--border)] text-[var(--text)]"}`}>
-              {screenSharing ? "Stop share" : "Share screen"}
-            </button>
-            <button type="button" onClick={handleHangUp}
-              className="w-full py-2 rounded text-sm font-medium bg-red-600/80 text-white">
-              Hang up
-            </button>
+          <div className="p-2 border-t border-[var(--border)] flex-shrink-0">
+            <CallControls onHangUp={handleHangUp} />
           </div>
         )}
 
@@ -765,25 +792,13 @@ function Chat() {
       {/* Mobile: full-screen when sidebar is hidden. Desktop: always visible flex-1. */}
       <div className={`flex-col min-w-0 flex-1 relative ${!sidebarVisible ? "flex" : "hidden md:flex"}`}>
 
-        {roomJoinError && (
-          <div className="flex items-center justify-between gap-2 px-4 py-2 bg-amber-900/40 border-b border-amber-600/50 text-sm text-amber-200">
-            <span>{roomJoinError}</span>
-            <button type="button" onClick={dismissRoomJoinError}
-              className="px-2 py-1 rounded hover:bg-amber-600/30">
-              Dismiss
-            </button>
-          </div>
-        )}
-
         {/* Minimised call tile — positioned below the header, respecting safe area */}
         {inCall && !callExpanded && (
           <>
             <RemoteCallAudio />
             <div
-              className="absolute right-2 z-10 w-40 rounded overflow-hidden border border-[var(--border)] bg-[var(--surface)] cursor-pointer shadow-lg"
+              className="absolute right-2 z-10 w-40 rounded overflow-hidden border border-[var(--border)] bg-[var(--surface)] shadow-lg"
               style={{ top: "calc(env(safe-area-inset-top, 0px) + 3.5rem)" }}
-              onClick={() => setCallExpanded(true)}
-              title="Click to expand call"
             >
               <CompactCallTile />
             </div>
@@ -791,35 +806,38 @@ function Chat() {
         )}
 
         {inCall && callExpanded ? (
-          <InlineCallView onHangUp={handleHangUp} />
+          <InlineCallView onHangUp={handleHangUp} top={banners} />
         ) : selected ? (
           <>
-            {/* Chat header — back button (mobile only) + conversation name + call button */}
+            {/* Chat header — back button (mobile only) + conversation name (tap to rename) + call button */}
             <div
               className="px-3 pb-2 border-b border-[var(--border)] flex items-center gap-2"
               style={safeTop}
             >
-              <button
-                type="button"
-                onClick={() => setSidebarVisible(true)}
-                className="md:hidden text-[var(--accent)] text-xl leading-none p-1 -ml-1 flex-shrink-0"
-                aria-label="Back to chat list"
-              >
-                ←
-              </button>
-              <span className="flex-1 text-sm font-medium truncate">
-                {conversationLabel(selected, identity.keyHash, getDisplayName, groupNamesFromMessages)}
+              <span className="md:hidden -ml-1 flex">
+                <IconButton icon="chatBack" label="Back to chat list" onClick={() => setSidebarVisible(true)} />
               </span>
-              {!inCall && !selectedInactive && (
+              <div className="flex-1 min-w-0 flex">
                 <button
                   type="button"
-                  onClick={handleStartCall}
-                  className="py-1.5 px-3 rounded text-sm bg-[var(--accent)] text-white font-medium hover:opacity-90 flex-shrink-0"
+                  onClick={() => openRename(selected)}
+                  title={selected.type === "dm" ? "Set nickname" : "Rename group"}
+                  className={`${btn} min-w-0 max-w-full justify-start font-medium`}
                 >
+                  <span className="truncate">{conversationLabel(selected, me, getDisplayName, groupNamesFromMessages)}</span>
+                  <span className="text-[var(--muted)]">
+                    <Icon name="chatPencil" size={14} />
+                  </span>
+                </button>
+              </div>
+              {!inCall && !selectedInactive && (
+                <button type="button" onClick={handleStartCall} className={`${btnPrimary} flex-shrink-0`}>
                   {ongoingRoom ? "Join call" : "Call"}
                 </button>
               )}
             </div>
+
+            {banners}
 
             {selected.type === "dm" && <MemberNotice keyHash={selected.otherKeyHash} getMember={getMember} isRemoved={isRemoved} getDisplayName={getDisplayName} />}
 
@@ -829,6 +847,9 @@ function Chat() {
               onScroll={handleMessagesScroll}
               className="flex-1 overflow-auto px-3 py-2"
             >
+              {filteredMessages.length === 0 && (
+                <li className="py-8 text-sm text-center text-[var(--muted)]">No messages yet.</li>
+              )}
               {filteredMessages.map((m, i) => {
                 const prev = i > 0 ? filteredMessages[i - 1] : undefined;
 
@@ -837,7 +858,7 @@ function Chat() {
                   return (
                     <li key={i} className="text-xs text-center text-[var(--muted)] py-2 italic">
                       {m.event === "started"
-                        ? `${m.senderKeyHash === identity.keyHash ? "You (" + getMyDisplayName() + ")" : getDisplayName(m.senderKeyHash) || m.senderKeyHash.slice(0, 8)} started a call · ${formatMsgTime(m.sentAt)}`
+                        ? `${senderName(m.senderKeyHash)} started a call · ${formatMsgTime(m.sentAt)}`
                         : `Call ended · ${formatMsgTime(m.sentAt)}`}
                     </li>
                   );
@@ -846,17 +867,14 @@ function Chat() {
                 if (m.type === "group_rename") {
                   return (
                     <li key={i} className="text-xs text-center text-[var(--muted)] py-2 italic">
-                      {m.senderKeyHash === identity.keyHash
-                        ? "You (" + getMyDisplayName() + ")"
-                        : getDisplayName(m.senderKeyHash) || m.senderKeyHash.slice(0, 8)}{" "}
-                      renamed the group to {m.newName}
+                      {senderName(m.senderKeyHash)} renamed the group to {m.newName}
                     </li>
                   );
                 }
 
                 // Regular message
                 const grouped = isGroupedWithPrev(m, prev);
-                const forMe = mentionsMe(m, identity.keyHash);
+                const forMe = mentionsMe(m, me);
                 return (
                   <li
                     key={i}
@@ -864,11 +882,7 @@ function Chat() {
                   >
                     {!grouped && (
                       <div className="flex items-baseline gap-2 mb-0.5">
-                        <span className="text-xs font-semibold text-[var(--text)]">
-                          {m.senderKeyHash === identity.keyHash
-                            ? "Me (" + getMyDisplayName() + ")"
-                            : getDisplayName(m.senderKeyHash) || m.senderKeyHash.slice(0, 8)}
-                        </span>
+                        <span className="text-xs font-semibold text-[var(--text)]">{senderName(m.senderKeyHash)}</span>
                         <span className="text-xs text-[var(--muted)]">{formatMsgTime(m.sentAt)}</span>
                       </div>
                     )}
@@ -876,60 +890,52 @@ function Chat() {
                       {m.type === "text" && (
                         <MessageText
                           body={m.body}
-                          myKeyHash={identity.keyHash}
+                          myKeyHash={me}
                           nameFor={nameFor}
                           inGroup={!!m.groupMemberKeyHashes}
-                          fromMe={m.senderKeyHash === identity.keyHash}
+                          fromMe={m.senderKeyHash === me}
                         />
                       )}
                       {m.type === "file" && (
-                        <span className="inline-flex items-center gap-2">
-                          <span className="text-[var(--muted)]">[File: {m.filename || "file"}]</span>
-                          {m.removed ? (
-                            <span className="text-xs text-[var(--muted)]">removed from this device</span>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => downloadFile(m.body, m.filename || "download")}
-                              className="px-2 py-0.5 rounded text-xs bg-[var(--accent)] text-white hover:opacity-90"
-                            >
-                              Download
-                            </button>
-                          )}
+                        <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1 max-w-full">
+                          <span className="inline-flex items-center gap-2 min-w-0 max-w-full rounded border border-[var(--border)] bg-[var(--surface)] pl-2 pr-1 py-1">
+                            <Icon name="chatFile" />
+                            <span className="min-w-0 truncate">{safeFilename(m.filename || "file")}</span>
+                            {typeof m.fileSize === "number" && (
+                              <span className="shrink-0 text-xs text-[var(--muted)]">· {formatSize(m.fileSize)}</span>
+                            )}
+                            {!m.removed && (
+                              <IconButton
+                                icon="chatDownload"
+                                label={`Download ${safeFilename(m.filename || "file")}`}
+                                onClick={() => downloadFile(m.body, m.filename || "download")}
+                              />
+                            )}
+                          </span>
+                          {m.removed && <span className="text-xs text-[var(--muted)]">Removed from this device</span>}
                         </span>
                       )}
-                      {m.type === "contact" && <span className="text-[var(--muted)]">[Contact]</span>}
+                      {m.type === "contact" && (
+                        <span className="inline-flex items-center gap-2 max-w-full rounded border border-[var(--border)] bg-[var(--surface)] px-2 py-1">
+                          <Icon name="chatContact" />
+                          <span className="truncate">{m.name || "Contact"}</span>
+                        </span>
+                      )}
                       {m.type === "plugin" && (
                         <PluginMessage
                           type={m.pluginType}
                           data={m.data}
                           fallback={m.fallback}
-                          mine={m.senderKeyHash === identity.keyHash}
+                          mine={m.senderKeyHash === me}
                           sender={nameFor(m.senderKeyHash)}
                         />
                       )}
                     </div>
                     {m.outbox?.status === "failed" && (
-                      <div className="flex items-center gap-1 text-xs text-red-500">
+                      <div className="flex items-center gap-1.5 mt-1 text-xs text-red-500">
                         Not sent
-                        <button
-                          type="button"
-                          aria-label="Retry sending"
-                          title="Retry"
-                          className="p-1 rounded hover:bg-[var(--border)]"
-                          onClick={() => retrySend(m.outbox!.id)}
-                        >
-                          <RetryIcon />
-                        </button>
-                        <button
-                          type="button"
-                          aria-label="Cancel sending"
-                          title="Cancel"
-                          className="p-1 rounded hover:bg-[var(--border)] text-[var(--muted)]"
-                          onClick={() => cancelSend(m.outbox!.id)}
-                        >
-                          <CancelIcon />
-                        </button>
+                        <IconButton icon="refresh" label="Retry sending" onClick={() => retrySend(m.outbox!.id)} />
+                        <IconButton icon="close" label="Cancel sending" onClick={() => cancelSend(m.outbox!.id)} />
                       </div>
                     )}
                   </li>
@@ -952,16 +958,13 @@ function Chat() {
               {pendingFiles.length > 0 && (
                 <div className="flex flex-wrap gap-1.5 text-xs text-[var(--muted)]">
                   {pendingFiles.map((f, idx) => (
-                    <span key={idx} className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[var(--border)]">
-                      {f.name}
-                      <button
-                        type="button"
+                    <span key={idx} className="inline-flex items-center gap-1.5 max-w-full pl-2 pr-1 py-0.5 rounded bg-[var(--border)]">
+                      <span className="min-w-0 truncate">{f.name}</span>
+                      <IconButton
+                        icon="close"
+                        label={`Remove ${f.name}`}
                         onClick={() => setPendingFiles((prev) => prev.filter((_, j) => j !== idx))}
-                        className="hover:text-[var(--text)]"
-                        aria-label="Remove"
-                      >
-                        ×
-                      </button>
+                      />
                     </span>
                   ))}
                 </div>
@@ -986,10 +989,19 @@ function Chat() {
                 />
                 <label
                   htmlFor="relay-file-input"
-                  className="px-3 py-2 rounded border border-[var(--border)] text-[var(--text)] hover:bg-[var(--border)] flex-shrink-0 cursor-pointer select-none"
+                  role="button"
+                  tabIndex={0}
+                  aria-label="Attach file"
                   title="Attach file"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      fileInputRef.current?.click();
+                    }
+                  }}
+                  className={`${btn} flex-shrink-0 cursor-pointer select-none`}
                 >
-                  📎
+                  <Icon name="attach" size={18} />
                 </label>
                 <input
                   ref={composerRef}
@@ -1022,13 +1034,9 @@ function Chat() {
                   }}
                   onBlur={() => setMentionQuery(null)}
                   placeholder="Message... (@ to mention)"
-                  className="flex-1 min-w-0 px-3 py-2 rounded bg-[var(--surface)] border border-[var(--border)] text-[var(--text)] placeholder-[var(--muted)]"
+                  className="flex-1 min-w-0 px-3 py-2 touch:min-h-10 rounded bg-[var(--surface)] border border-[var(--border)] text-[var(--text)] placeholder-[var(--muted)]"
                 />
-                <button
-                  type="button"
-                  onClick={handleSend}
-                  className="px-4 py-2 rounded bg-[var(--accent)] text-white font-medium flex-shrink-0"
-                >
+                <button type="button" onClick={handleSend} disabled={!canSend} className={`${btnPrimary} flex-shrink-0 px-4`}>
                   Send
                 </button>
               </div>
@@ -1036,18 +1044,14 @@ function Chat() {
           </>
         ) : (
           /* Empty state — only visible on desktop when no chat is selected */
-          <div className="flex-1 flex items-center justify-center text-[var(--muted)] text-sm">
-            Select a chat or create a group
-          </div>
+          <>
+            {banners}
+            <div className="flex-1 flex items-center justify-center text-[var(--muted)] text-sm">
+              Select a chat or create a group
+            </div>
+          </>
         )}
       </div>
-
-      {/* Error toast */}
-      {error && (
-        <div className="fixed bottom-4 right-4 px-3 py-2 rounded bg-red-900/80 text-white text-sm z-50">
-          {error}
-        </div>
-      )}
 
       {/* ── Modals ─────────────────────────────────────────────────────────── */}
 
@@ -1055,23 +1059,38 @@ function Chat() {
         <SettingsModal
           onClose={() => setSettingsOpen(false)}
           storage={storage}
-          conversations={conversations.map((c) => ({ conv: c, label: conversationLabel(c, identity.keyHash, getDisplayName, groupNamesFromMessages) }))}
+          conversations={conversations.map((c) => ({ conv: c, label: conversationLabel(c, me, getDisplayName, groupNamesFromMessages) }))}
         />
       )}
 
       {newGroupOpen && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-20 p-4">
-          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-lg p-4 w-full max-w-sm">
-            <h2 className="font-semibold mb-2">New group</h2>
-            <p className="text-sm text-[var(--muted)] mb-2">Select contacts to add.</p>
-            <ul className="max-h-48 overflow-auto space-y-1 mb-4">
-              {identity.contacts
-                .filter((c) => c.keyHash !== identity.keyHash)
-                .map((c) => (
+        <Modal title="New group" onClose={closeNewGroup} closeLabel={null}>
+          {newGroupCandidates.length === 0 ? (
+            <p className="text-sm text-[var(--muted)]">No one else here yet.</p>
+          ) : (
+            <form
+              id="new-group"
+              className="flex flex-col gap-3"
+              onSubmit={(e) => {
+                e.preventDefault();
+                handleCreateGroup();
+              }}
+            >
+              <input
+                type="text"
+                value={newGroupName}
+                onChange={(e) => setNewGroupName(e.target.value)}
+                placeholder="Group name (optional)"
+                aria-label="Group name"
+                className={field}
+              />
+              <ul className="sm:max-h-64 overflow-auto">
+                {newGroupCandidates.map((c) => (
                   <li key={c.keyHash}>
-                    <label className="flex items-center gap-2 cursor-pointer py-1">
+                    <label className="flex items-center gap-3 cursor-pointer py-1.5 touch:py-2.5">
                       <input
                         type="checkbox"
+                        className="w-4 h-4"
                         checked={newGroupSelected.has(c.keyHash)}
                         onChange={(e) => {
                           setNewGroupSelected((prev) => {
@@ -1082,116 +1101,96 @@ function Chat() {
                           });
                         }}
                       />
-                      <span className="text-sm">{getDisplayName(c.keyHash) || c.keyHash.slice(0, 8)}</span>
+                      <span className="text-sm truncate">{getDisplayName(c.keyHash) || c.keyHash.slice(0, 8)}</span>
                     </label>
                   </li>
                 ))}
-            </ul>
-            <div className="flex gap-2">
-              <button type="button" onClick={() => setNewGroupOpen(false)}
-                className="flex-1 py-2 rounded border border-[var(--border)] text-sm">
-                Cancel
-              </button>
-              <button type="button" onClick={handleCreateGroup}
-                className="flex-1 py-2 rounded bg-[var(--accent)] text-white text-sm">
-                Create
-              </button>
-            </div>
+              </ul>
+            </form>
+          )}
+          <div className="flex justify-end gap-2">
+            <button type="button" onClick={closeNewGroup} className={btn}>
+              Cancel
+            </button>
+            <button type="submit" form="new-group" disabled={newGroupSelected.size === 0} className={btnPrimary}>
+              Create
+            </button>
           </div>
-        </div>
+        </Modal>
       )}
 
       {displayNameModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-20 p-4">
-          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-lg p-4 w-full max-w-sm">
-            <h2 className="font-semibold mb-1">Set nickname</h2>
-            <p className="text-xs text-[var(--muted)] mb-2">Only you see this. Leave empty to use their own name.</p>
+        <Modal title="Set nickname" onClose={closeNickname} closeLabel={null}>
+          <form
+            className="flex flex-col gap-3"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!displayNameSaving) saveNickname();
+            }}
+          >
+            <p className="text-xs text-[var(--muted)]">Only you see this. Leave empty to use their own name.</p>
             <input
               type="text"
               value={displayNameValue}
               onChange={(e) => { setDisplayNameValue(e.target.value); setDisplayNameSaveError(null); }}
               placeholder="Name"
-              className="w-full px-3 py-2 rounded bg-[var(--bg)] border border-[var(--border)] text-[var(--text)] mb-4 text-sm"
+              aria-label="Nickname"
+              className={field}
             />
-            {displayNameSaveError && (
-              <p className="text-sm text-red-500 mb-2">{displayNameSaveError}</p>
-            )}
-            <div className="flex gap-2">
-              <button type="button" disabled={displayNameSaving}
-                onClick={() => { setDisplayNameModal(null); setDisplayNameSaveError(null); }}
-                className="flex-1 py-2 rounded border border-[var(--border)] text-sm">
+            {displayNameSaveError && <p className="text-sm text-red-500">{displayNameSaveError}</p>}
+            <div className="flex justify-end gap-2">
+              <button type="button" disabled={displayNameSaving} onClick={closeNickname} className={btn}>
                 Cancel
               </button>
-              <button
-                type="button"
-                disabled={displayNameSaving}
-                onClick={async () => {
-                  const name =
-                    displayNameValue.trim() ||
-                    getDisplayName(displayNameModal.keyHash) ||
-                    displayNameModal.keyHash.slice(0, 8);
-                  setDisplayNameSaveError(null);
-                  setDisplayNameSaving(true);
-                  try {
-                    await setDisplayName(displayNameModal.keyHash, name);
-                    setDisplayNameModal(null);
-                    setDisplayNameValue("");
-                  } catch (e) {
-                    setDisplayNameSaveError(e instanceof Error ? e.message : "Failed to save name");
-                  } finally {
-                    setDisplayNameSaving(false);
-                  }
-                }}
-                className="flex-1 py-2 rounded bg-[var(--accent)] text-white text-sm disabled:opacity-50"
-              >
+              <button type="submit" disabled={displayNameSaving} className={btnPrimary}>
                 {displayNameSaving ? "Saving…" : "Save"}
               </button>
             </div>
-          </div>
-        </div>
+          </form>
+        </Modal>
       )}
 
       {groupRenameModal && groupRenameModal.type === "group" && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-20 p-4">
-          <div className="bg-[var(--surface)] border border-[var(--border)] rounded-lg p-4 w-full max-w-sm">
-            <h2 className="font-semibold mb-2">Rename group</h2>
+        <Modal title="Rename group" onClose={closeGroupRename} closeLabel={null}>
+          <form
+            className="flex flex-col gap-3"
+            onSubmit={(e) => {
+              e.preventDefault();
+              saveGroupRename();
+            }}
+          >
             <input
               type="text"
               value={groupRenameValue}
               onChange={(e) => setGroupRenameValue(e.target.value)}
               placeholder="Group name"
-              className="w-full px-3 py-2 rounded bg-[var(--bg)] border border-[var(--border)] text-[var(--text)] mb-4 text-sm"
+              aria-label="Group name"
+              className={field}
             />
-            <div className="flex gap-2">
-              <button type="button"
-                onClick={() => { setGroupRenameModal(null); setGroupRenameValue(""); }}
-                className="flex-1 py-2 rounded border border-[var(--border)] text-sm">
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={closeGroupRename} className={btn}>
                 Cancel
               </button>
-              <button
-                type="button"
-                onClick={async () => {
-                  const newName = groupRenameValue.trim() || "Group Chat";
-                  await sendMessage(
-                    {
-                      type: "group_rename",
-                      newName,
-                      groupMemberKeyHashes: groupRenameModal.memberKeyHashes,
-                    } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
-                    groupRenameModal.memberKeyHashes.filter((k) => k !== identity.keyHash)
-                  );
-                  setGroupRenameModal(null);
-                  setGroupRenameValue("");
-                }}
-                className="flex-1 py-2 rounded bg-[var(--accent)] text-white text-sm"
-              >
+              <button type="submit" className={btnPrimary}>
                 Save
               </button>
             </div>
-          </div>
-        </div>
+          </form>
+        </Modal>
       )}
     </main>
+  );
+}
+
+/** A notice at the top of the chat panel, with a dismiss button. */
+function Banner({ tone, onDismiss, children }: { tone: "amber" | "red"; onDismiss: () => void; children: React.ReactNode }) {
+  const look =
+    tone === "amber" ? "bg-amber-900/40 border-amber-600/50 text-amber-200" : "bg-red-900/40 border-red-600/50 text-red-200";
+  return (
+    <div className={`flex items-center justify-between gap-2 px-3 py-1.5 border-b text-sm ${look}`} role="alert">
+      <span className="min-w-0">{children}</span>
+      <IconButton icon="close" label="Dismiss" onClick={onDismiss} />
+    </div>
   );
 }
 

@@ -7,7 +7,11 @@ const config: Config = {
     "./src/app/**/*.{js,ts,jsx,tsx,mdx}",
   ],
   theme: {
-    extend: {},
+    extend: {
+      // touch:… applies on touch screens (bigger tap targets there, DESIGN.md §8).
+      screens: { touch: { raw: "(pointer: coarse)" } },
+      colors: { "on-accent": "var(--on-accent)" },
+    },
   },
   plugins: [],
 };
