@@ -48,7 +48,7 @@ export function StorageSetup({
 
         {folderMode ? (
           <ul className="list-disc pl-5 flex flex-col gap-1.5 text-[var(--muted)]">
-            <li>Your keys go in a file in a folder you choose, encrypted with a passphrase. Relay asks for the passphrase each time it opens.</li>
+            <li>Your keys go in a file in a folder you choose, encrypted with a passphrase. Exurelay asks for the passphrase each time it opens.</li>
             <li>Anyone with the file <em>and</em> the passphrase can read your messages here and act as you. Use a passphrase you don&apos;t use anywhere else.</li>
             <li className="text-amber-300">
               Forget the passphrase or lose the file and there&apos;s no recovery: the admin has to enroll you again. Keep a copy somewhere safe, like a USB stick.
@@ -62,7 +62,7 @@ export function StorageSetup({
             <li className="text-amber-300">
               Clearing this site&apos;s data, deleting the app, or switching browsers loses them, and the admin has to enroll you again.
             </li>
-            <li>On a phone, install Relay to the Home Screen first and create your identity there: the browser tab and the installed app keep separate storage.</li>
+            <li>On a phone, install Exurelay to the Home Screen first and create your identity there: the browser tab and the installed app keep separate storage.</li>
           </ul>
         )}
 

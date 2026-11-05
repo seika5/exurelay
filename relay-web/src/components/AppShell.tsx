@@ -34,9 +34,9 @@ export function InstallFirst() {
     <main className="min-h-screen flex flex-col items-center justify-center p-6 gap-4 bg-[var(--bg)] text-[var(--text)]">
       {/* eslint-disable-next-line @next/next/no-img-element -- a static icon; nothing to optimize in a static export */}
       <img src={appPath("/icon-192.png")} alt="" width={72} height={72} className="rounded-2xl" />
-      <h1 className="text-xl font-semibold">Install Relay first</h1>
+      <h1 className="text-xl font-semibold">Install Exurelay first</h1>
       <p className="text-sm text-[var(--muted)] text-center max-w-sm">
-        On a phone, Relay keeps your keys inside the installed app. Install it, then open it from your Home Screen and
+        On a phone, Exurelay keeps your keys inside the installed app. Install it, then open it from your Home Screen and
         join from there. (A browser tab has separate storage, so an identity made here wouldn&apos;t be in the app.)
       </p>
       <ol className="text-sm list-decimal pl-5 max-w-sm flex flex-col gap-1">
@@ -44,13 +44,13 @@ export function InstallFirst() {
           <>
             <li>Tap the Share button in Safari&apos;s toolbar.</li>
             <li>Choose <strong>Add to Home Screen</strong>, then <strong>Add</strong>.</li>
-            <li>Open Relay from your Home Screen.</li>
+            <li>Open Exurelay from your Home Screen.</li>
           </>
         ) : (
           <>
             <li>Open the browser menu (⋮).</li>
             <li>Choose <strong>Install app</strong> (or <strong>Add to Home screen</strong>).</li>
-            <li>Open Relay from your Home Screen.</li>
+            <li>Open Exurelay from your Home Screen.</li>
           </>
         )}
       </ol>

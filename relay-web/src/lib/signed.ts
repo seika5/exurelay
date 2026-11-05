@@ -132,7 +132,7 @@ export async function readEnrollmentCode(
   now = Date.now()
 ): Promise<{ ok: true; request: EnrollmentRequest; keyHash: string } | { ok: false; error: string }> {
   const trimmed = code.trim();
-  if (!trimmed.startsWith(ENROLL_PREFIX)) return { ok: false, error: "Not a Relay enrollment code." };
+  if (!trimmed.startsWith(ENROLL_PREFIX)) return { ok: false, error: "Not an Exurelay enrollment code." };
   let env: SignedEnvelope;
   try {
     env = JSON.parse(atob(trimmed.slice(ENROLL_PREFIX.length)));

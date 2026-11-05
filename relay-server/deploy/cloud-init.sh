@@ -1,6 +1,6 @@
 #!/bin/bash
 # Paste this as "user data" (DigitalOcean: Advanced options -> Add initialization scripts; AWS EC2: Advanced
-# details -> User data; Lightsail: Add launch script) when creating an Ubuntu 22.04/24.04 server. It installs Relay
+# details -> User data; Lightsail: Add launch script) when creating an Ubuntu 22.04/24.04 server. It installs Exurelay
 # on first boot, about 5 minutes.
 #
 # Pick a setup code below (8+ characters) and you won't need to log in at all: once it's up, enter
@@ -11,7 +11,7 @@
 # (or leave it empty and use the free https://<ip-with-dashes>.sslip.io address).
 export RELAY_SETUP_CODE=""
 export RELAY_DOMAIN=""
-export RELAY_REPO="https://github.com/seika5/relay.git"
+export RELAY_REPO="https://github.com/seika5/exurelay.git"
 export RELAY_BRANCH="main"
 
 set -e

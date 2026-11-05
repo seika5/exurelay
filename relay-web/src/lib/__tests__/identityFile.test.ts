@@ -46,7 +46,7 @@ describe("identity file", () => {
       bad[i] ^= 1;
       await expect(openIdentityFile(bad, PASS)).rejects.toBeInstanceOf(WrongPassphraseError);
     }
-    await expect(openIdentityFile(new TextEncoder().encode("not a file"), PASS)).rejects.toThrow(/isn't a Relay identity file/);
+    await expect(openIdentityFile(new TextEncoder().encode("not a file"), PASS)).rejects.toThrow(/isn't an Exurelay identity file/);
   });
 
   it("rewrites settings without the passphrase and leaves the keys section untouched", async () => {

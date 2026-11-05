@@ -1,6 +1,6 @@
 # relay-web
 
-The Relay app: a Next.js app built as a static web app (PWA). People use the published build (installed on phones,
+The Exurelay app: a Next.js app built as a static web app (PWA). People use the published build (installed on phones,
 in Chrome/Edge on computers), a fork's build, or their own local copy. Keys are made on the device and never sent
 anywhere: in desktop Chrome/Edge as a passphrase-encrypted file in a folder you pick, elsewhere as non-exportable keys
 in the app's storage.

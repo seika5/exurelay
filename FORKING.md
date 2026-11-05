@@ -1,4 +1,4 @@
-# Forking Relay
+# Forking Exurelay
 
 Plugins (Settings → Plugins) cover themes, custom message types and extra screens. To change anything else,
 including the core, fork the repository and publish your own build. Your fork talks to the same servers as everyone

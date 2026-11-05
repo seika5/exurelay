@@ -1,4 +1,4 @@
-# Relay
+# Exurelay
 
 **End-to-end encrypted messages and voice/video calls for a small, closed group.** The server only relays
 fixed-size encrypted blobs that carry no sender and no recipient. There's no public sign-up: an admin enrolls each
@@ -64,9 +64,9 @@ instance stops.
 **A server you already have.**
 
 ```bash
-git clone https://github.com/seika5/relay.git /tmp/relay
-sudo bash /tmp/relay/relay-server/deploy/install.sh                 # free sslip.io address
-sudo bash /tmp/relay/relay-server/deploy/install.sh --domain relay.example.com   # or your own domain
+git clone https://github.com/seika5/exurelay.git /tmp/exurelay
+sudo bash /tmp/exurelay/relay-server/deploy/install.sh                 # free sslip.io address
+sudo bash /tmp/exurelay/relay-server/deploy/install.sh --domain relay.example.com   # or your own domain
 ```
 
 Add `--setup-code 'your-code'` to choose the code, or let it generate one and print it at the end.
@@ -123,7 +123,7 @@ everyone joins with the join code, creates a new identity and is enrolled again.
 | TURN | `/etc/turnserver.conf`, from `deploy/turnserver.conf`; `relay-turn-certs.timer` copies Caddy's certificate for it twice a day. Clients get credentials that expire (12 hours), never a fixed password |
 | Firewall | ports added to `ufw` only if it's on; cloud firewalls (Lightsail's comes from the template) are separate |
 | Backups | `relay-backup.timer`, nightly into `/var/backups/relay` (14 kept). See 1.7 |
-| Updates | `unattended-upgrades`: security updates daily, and a reboot at 04:30 (server time) when one needs it. Relay itself updates only when you rerun the installer (1.4) |
+| Updates | `unattended-upgrades`: security updates daily, and a reboot at 04:30 (server time) when one needs it. Exurelay itself updates only when you rerun the installer (1.4) |
 
 ### 1.6 Setting it up by hand
 
@@ -201,11 +201,11 @@ including your relay host's own Caddy (the optional block in `relay-server/deplo
 
 ### 2.2 On a phone: install it
 
-On a phone, Relay only sets up inside the installed app (a browser tab has separate storage, so an identity made
+On a phone, Exurelay only sets up inside the installed app (a browser tab has separate storage, so an identity made
 there wouldn't be in the app):
 
-- **iPhone/iPad (iOS 16.4+):** open the app's address in Safari → Share → **Add to Home Screen** → open Relay from the Home Screen.
-- **Android:** open it in Chrome → ⋮ → **Install app** → open Relay from the Home Screen.
+- **iPhone/iPad (iOS 16.4+):** open the app's address in Safari → Share → **Add to Home Screen** → open Exurelay from the Home Screen.
+- **Android:** open it in Chrome → ⋮ → **Install app** → open Exurelay from the Home Screen.
 
 If you have a join link, open it again in the installed app (or paste its code there). Deleting the Home Screen icon
 deletes the app's data, including its keys; link another device (2.5) so that isn't the end of your account.

@@ -260,10 +260,10 @@ export function UnlockIdentity() {
 
   return (
     <main className={screen} style={safeTop}>
-      <h1 className="text-xl font-semibold">Unlock {server ? serverLabel(server.url) : "Relay"}</h1>
+      <h1 className="text-xl font-semibold">Unlock {server ? serverLabel(server.url) : "Exurelay"}</h1>
       <p className="text-sm text-[var(--muted)] text-center max-w-sm">
         Your identity is in <code>{lockedFile.fileName}</code> in the folder &ldquo;{lockedFile.folder}&rdquo;. Enter its passphrase. The
-        browser may ask to let Relay use that folder.
+        browser may ask to let Exurelay use that folder.
       </p>
       <form
         className="flex flex-col gap-2 w-full max-w-xs"
@@ -382,7 +382,7 @@ export function NotEnrolled() {
   if (isAdmin && !directory) {
     return (
       <main className={screen} style={safeTop}>
-        <h1 className="text-xl font-semibold">Set up Relay</h1>
+        <h1 className="text-xl font-semibold">Set up Exurelay</h1>
         <p className="text-sm text-[var(--muted)] text-center max-w-sm">
           Enter the setup code your server showed when it was installed, then create the member list to enroll
           yourself. After that, share the join code and enroll everyone else from Settings → Admin.

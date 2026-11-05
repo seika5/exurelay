@@ -1,6 +1,6 @@
-# Relay design and security decisions
+# Exurelay design and security decisions
 
-This is the single place for *why* Relay works the way it does: the threat model, the deliberate trade-offs, the decisions made but not built yet, and known gaps. Setup steps live in [README.md](README.md). When you change behavior described here, update this file in the same change.
+This is the single place for *why* Exurelay works the way it does: the threat model, the deliberate trade-offs, the decisions made but not built yet, and known gaps. Setup steps live in [README.md](README.md). When you change behavior described here, update this file in the same change.
 
 Each decision has a status:
 
@@ -13,11 +13,11 @@ Each decision has a status:
 
 ## 1. Goals and threat model
 
-Relay is messaging and calls for a closed, invite-only group. It started with a fixed set of 20 accounts and now has any number of enrolled members (§4).
+Exurelay is messaging and calls for a closed, invite-only group. It started with a fixed set of 20 accounts and now has any number of enrolled members (§4).
 
 | Party | What they should learn | What they should be able to do |
 | --- | --- | --- |
-| Relay server / host | Ideally nothing beyond "some member is online" and blob counts/sizes | Store and forward opaque data; keep non-members out |
+| Exurelay server / host | Ideally nothing beyond "some member is online" and blob counts/sizes | Store and forward opaque data; keep non-members out |
 | Network observer | Nothing beyond "this IP talks to the relay" | Nothing |
 | Outsider who knows a key hash | Nothing | Nothing |
 | Another member | Only what was sent to them | Message/call any member; see only their own conversations |
@@ -27,9 +27,9 @@ Out of scope: a compromised device, a malicious build or plugin the user chose t
 
 ### Two levels of server adversary
 
-Every request reaches the server from an IP address. A typical member's IP is stable and shared across all their requests, including the identified ones (login, admin). So an operator who **logs IPs and timing** can tie "anonymous" requests back to a member. Relay therefore promises different things against two kinds of server:
+Every request reaches the server from an IP address. A typical member's IP is stable and shared across all their requests, including the identified ones (login, admin). So an operator who **logs IPs and timing** can tie "anonymous" requests back to a member. Exurelay therefore promises different things against two kinds of server:
 
-| Server adversary | Example | What Relay protects |
+| Server adversary | Example | What Exurelay protects |
 | --- | --- | --- |
 | **Data at rest** | Database dump, seized disk, a curious admin browsing tables | Content, senders, recipients, who was notified. Nothing identifying is *stored* (§5, §9). |
 | **Actively malicious operator** | Logs IPs and timing for every request | Content only. Senders, recipients, notification targets and online times can be inferred from IPs and timing unless members hide their IP (VPN/Tor-style relay). |
@@ -88,7 +88,7 @@ Any measure that only hides something from the second kind of adversary *without
 
 ### Decided: where keys live
 
-Keys are generated in the app. Relay doesn't use iCloud or any other cloud service for them. Where they're kept depends on what the browser can do (`relay-web/src/lib/keystore.ts`):
+Keys are generated in the app. Exurelay doesn't use iCloud or any other cloud service for them. Where they're kept depends on what the browser can do (`relay-web/src/lib/keystore.ts`):
 
 - **Desktop Chrome/Edge: an encrypted file in a folder you pick.** At setup, a popup explains the risks, asks for a folder and a passphrase (at least 10 characters) and needs an "I understand there's no recovery" tick. The identity is written to `relay-<server host>.relayid` in that folder (`relay-web/src/lib/identityFile.ts`):
   - PBKDF2-SHA256 (600,000 iterations) over the passphrase, split by HKDF into two AES-256-GCM keys. One encrypts the keys section, written once at creation; the other encrypts the settings section (name, nicknames, volumes), rewritten on each change. Both are authenticated together with the header.
@@ -337,7 +337,7 @@ IP hiding is optional per member; members who want the strong guarantee should u
 ### Decided: call tiles for everyone in the conversation
 
 - During a group call, every conversation member gets a tile. Members not in the call show as a dimmed "not in call" rectangle with a **Notify** button that sends them a ring push (§9).
-- It says "not in call", not "offline". The app only knows who has joined the room. Real online/offline presence would need the server to track who is connected, which is the kind of metadata Relay avoids.
+- It says "not in call", not "offline". The app only knows who has joined the room. Real online/offline presence would need the server to track who is connected, which is the kind of metadata Exurelay avoids.
 - Starting or joining a call never notifies anyone by itself. Only **Notify** sends a ring. Rings are rate-limited per person (e.g. one per 30 s), and the receiver can mute rings per conversation.
 
 Recommended fix: authenticate signaling end to end. Seal each offer/answer/ICE message with the pairwise key (the same ECDH as messages) so the server routes only opaque envelopes, and attach media only to a verified peer. Rooms use random ids shared inside encrypted messages instead of deterministic ones.
@@ -400,10 +400,10 @@ Recommended fix: authenticate signaling end to end. Seal each offer/answer/ICE m
 - **Static export** (`output: "export"`): `npm run build` writes plain files to `relay-web/out/`, and `npm start` serves them locally with no dependencies (`scripts/serve.mjs`). `BASE_PATH` serves it under a path (a GitHub Pages project site).
 - **Strict CSP** (`scripts/postbuild.mjs`): a static host can't set headers, so every page gets a `<meta>` CSP. Scripts only from this origin plus the exact inline scripts Next emitted (SHA-256 hashes), so an injected script can't run. `connect-src` allows any HTTPS/WSS server, because the app talks to whichever servers you join. `object-src 'none'`, `base-uri 'none'`, `form-action 'none'`, and frames only from `blob:` (plugins, phase 8). Styles allow `'unsafe-inline'`, because React sets style attributes.
 - **Published builds** (`.github/workflows/deploy-web.yml`): on each push to `main`, it tests, builds and publishes to GitHub Pages. `out/build.json` carries the commit and a SHA-256 over every published file; the workflow prints it in the run summary, and the app shows it in Settings → General. Not yet reproducible bit for bit: Next builds can differ between machines, so the hash proves "this is what that run published", not "anyone rebuilding gets the same".
-- **Installable:** a manifest, icons (`scripts/icons.py` draws them), and a service worker (`public/sw.js`). The service worker caches only the app's own files (pages network-first, hashed build files cache-first), never anything from a Relay server. Once installed, the app asks for persistent storage.
-- **Install first on phones:** on a phone, the join and create-identity screens are replaced by install instructions (Share → Add to Home Screen on iOS; Install app on Android) until Relay runs as the installed app, so an identity can't end up in a browser tab's separate storage. `?browser` skips this, for development.
+- **Installable:** a manifest, icons (`scripts/icons.py` draws them), and a service worker (`public/sw.js`). The service worker caches only the app's own files (pages network-first, hashed build files cache-first), never anything from an Exurelay server. Once installed, the app asks for persistent storage.
+- **Install first on phones:** on a phone, the join and create-identity screens are replaced by install instructions (Share → Add to Home Screen on iOS; Install app on Android) until Exurelay runs as the installed app, so an identity can't end up in a browser tab's separate storage. `?browser` skips this, for development.
 - **Push** (A, below): the server holds `PushSubscription { endpoint, device, member }`, registered by a logged-in device (Settings → General → **Turn on notifications**). Senders pay with an anonymous token to `POST /api/push/notify { kind, items: [{ device, payload }] }`, where each payload is encrypted device to device by the sender (`relay-web/src/lib/push.ts`: HKDF over the static ECDH secret, AES-GCM, `{ kind, member, group, ts }`). Limits per recipient member (`relay-server/src/lib/pushLimits.js`): 5 mentions a minute, one `@everyone` a minute, one ring per 30 s. Nothing about who was notified is stored or logged. Subscriptions go when the member is removed or the device unlinked. Disabled unless the server has VAPID keys (`npm run vapid`).
-- **Showing a push:** the service worker reads this device's key from IndexedDB (app-storage mode), decrypts the payload, checks the sending device belongs to the member it names and that it's under a day old, and shows e.g. "Ana mentioned you in Trip" with *your* name for Ana. For that, the app keeps a `pushPeers` list in IndexedDB: contacts' device public keys and your names for them, in the clear (names and keys, no messages). In folder mode, or if anything doesn't check out, the notification is generic ("You were mentioned in Relay").
+- **Showing a push:** the service worker reads this device's key from IndexedDB (app-storage mode), decrypts the payload, checks the sending device belongs to the member it names and that it's under a day old, and shows e.g. "Ana mentioned you in Trip" with *your* name for Ana. For that, the app keeps a `pushPeers` list in IndexedDB: contacts' device public keys and your names for them, in the clear (names and keys, no messages). In folder mode, or if anything doesn't check out, the notification is generic ("You were mentioned in Exurelay").
 - **Only addressable devices:** senders fetch which devices have notifications on (`GET /api/push/devices`, members only; the server knows this from the subscriptions anyway) and name only those, and send nothing if the server has push off. So a mention of someone who can't be notified never reaches the server; it learns a mention target only when a push actually goes out.
 - **Notify** on a "not in call" tile rings that member's devices.
 
@@ -450,7 +450,7 @@ Safari requires **every** web push to show a visible notification, and it revoke
    - someone presses **Notify** on your tile in a call (§7).
 
    The sender's request tells the server which kind it is, so per-recipient limits apply (§8). Nothing else notifies: not DMs, not ordinary group messages, and not calls starting. Everything else appears the next time you open the app.
-3. **Payload:** a small Relay-encrypted blob (pairwise key), wrapped in Web Push encryption to the device. The server forwards opaque bytes. The service worker decrypts it with the identity in IndexedDB and shows, e.g., "Alex mentioned you in Trip" using *your* name for the sender.
+3. **Payload:** a small Exurelay-encrypted blob (pairwise key), wrapped in Web Push encryption to the device. The server forwards opaque bytes. The service worker decrypts it with the identity in IndexedDB and shows, e.g., "Alex mentioned you in Trip" using *your* name for the sender.
 4. **No push logs:** the server sends the push and keeps no record of who was notified or when.
 
 **Why A rather than a pseudonymous token (B):** B only hides the member behind a token. An operator who logs IPs links that token to the member anyway, because registration and login come from the same IP. Against a database leak, A without push logs exposes about as little (a member → push address mapping). B's extra complexity would add a false sense of security, so it's dropped.
@@ -474,14 +474,14 @@ Safari requires **every** web push to show a visible notification, and it revoke
 | D | Endpoint rotates too (re-subscribe), registered with anonymous tokens (§6) | Unlinked wake-ups within each rotation window | **Current decision** (daily + on app open). Weakened by IP address and timing. |
 | E | **Decouple the wake from the blob:** post the blob, then send a separate wake request after a random delay (e.g. 0–30 s), with a different anonymous token. With fetch-all, the wake needn't reference the blob at all. | Some endpoint was woken, with no stated link to any blob | Breaks the direct blob→device link; only timing remains, which is weak when traffic is low. Costs notification delay. Stacks on D. |
 | F | **Batching:** the server sends pushes only on a fixed tick (e.g. every 15 s) | Same as E, coarser | Blurs timing for everyone; adds up to one tick of delay. Stacks on D/E. |
-| G | **Separate push proxy:** a second, independently run server holds endpoints and sends pushes; the relay never sees endpoints | Relay: nothing about devices. Proxy: wake-ups, but no blobs | Only helps if the two operators don't collide. Senders can't call Apple's push service straight from the browser (CORS, likely; unverified), so a proxy is needed for any "sender pushes directly" design. |
+| G | **Separate push proxy:** a second, independently run server holds endpoints and sends pushes; the relay never sees endpoints | Exurelay: nothing about devices. Proxy: wake-ups, but no blobs | Only helps if the two operators don't collide. Senders can't call Apple's push service straight from the browser (CORS, likely; unverified), so a proxy is needed for any "sender pushes directly" design. |
 | H | **Cover pushes** (fake wake-ups to hide real ones) | — | **Not possible on iOS:** every push must show a visible notification. |
 
 Chosen: **A**, limited to mentions and manual call rings, with no push logs (above). B–F only help against an operator who logs, and IP correlation defeats them without IP hiding; G only if a second, trusted operator exists.
 
 **Alternatives considered** (all compatible with recipient-blind storage, but worse notifications):
 
-- **Generic throttled push:** the server pushes every member at most once every N minutes ("New activity in Relay"); the service worker syncs and updates the badge. It reveals nothing about recipients, but it's vague, and people get pinged for messages that weren't for them.
+- **Generic throttled push:** the server pushes every member at most once every N minutes ("New activity in Exurelay"); the service worker syncs and updates the badge. It reveals nothing about recipients, but it's vague, and people get pinged for messages that weren't for them.
 - **Digest at fixed times:** like the above, but on a schedule (e.g. every 30 min, only if anything is new). Fewer pings, more delay.
 - **Hybrid:** targeted push for members who opt in; everyone else gets the generic push or none.
 - **No push:** notify only while the app is open.

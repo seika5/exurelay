@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
-  A Relay server on Amazon Lightsail: one Ubuntu instance with a static IP and its firewall ports open, set up on
+  An Exurelay server on Amazon Lightsail: one Ubuntu instance with a static IP and its firewall ports open, set up on
   first boot by relay-server/deploy/install.sh. When the stack is done, wait about 5 minutes, then enter the
   ServerAddress output in the app (I'm setting up a new server) with the setup code you chose here.
 
@@ -36,7 +36,7 @@ Parameters:
       certificate is requested once it resolves (rerun install.sh if it took longer than about 10 minutes).
   RepoUrl:
     Type: String
-    Default: https://github.com/seika5/relay.git
+    Default: https://github.com/seika5/exurelay.git
     Description: Git repository to install from (a fork works).
   Branch:
     Type: String

@@ -125,9 +125,9 @@ export async function openIdentityFile(
   passphrase: string
 ): Promise<{ keys: IdentityKeys; settings: IdentitySettings; session: FileSession }> {
   if (bytes.length < HEADER_LEN || !MAGIC.every((b, i) => bytes[i] === b)) {
-    throw new Error("That isn't a Relay identity file.");
+    throw new Error("That isn't an Exurelay identity file.");
   }
-  if (bytes[MAGIC.length] !== VERSION) throw new Error("This identity file is from a newer version of Relay.");
+  if (bytes[MAGIC.length] !== VERSION) throw new Error("This identity file is from a newer version of Exurelay.");
   const header = bytes.slice(0, HEADER_LEN);
   const iterations = new DataView(header.buffer).getUint32(MAGIC.length + 1);
   if (iterations < 100_000 || iterations > 10_000_000) throw new Error("This identity file is damaged.");
