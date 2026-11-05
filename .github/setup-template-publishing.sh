@@ -26,7 +26,7 @@ ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
 OIDC_ARN="arn:aws:iam::$ACCOUNT:oidc-provider/token.actions.githubusercontent.com"
 echo "Repository $REPO, AWS account $ACCOUNT, bucket $BUCKET"
 
-if ! aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
+if ! aws s3api head-bucket --bucket "$BUCKET" >/dev/null 2>&1; then
   if [ "$REGION" = us-east-1 ]; then
     aws s3api create-bucket --bucket "$BUCKET" >/dev/null
   else
