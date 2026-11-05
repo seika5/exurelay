@@ -1,10 +1,11 @@
 "use client";
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { exportPrivateKey, exportPublicKey, generateKeyPair, generateSigningKeyPair, importIdentityKeys } from "@/lib/crypto";
+import { exportPrivateKey, exportPublicKey, generateKeyPair, generateSigningKeyPair, importIdentityKeys, importPublicKey } from "@/lib/crypto";
 import { createIdentityFile, openIdentityFile, rewriteSettings, type FileSession } from "@/lib/identityFile";
 import { getKeyHashFromKeyPair } from "@/lib/e2ee";
-import { ApiError, getDirectory, postDeviceCert, postDeviceRevoke, postLeave, publishDirectory, publishProfile } from "@/lib/api";
+import { ApiError, getDirectory, getProfileCopies, postDeviceCert, postDeviceRevoke, postLeave, postProfileCopies, publishDirectory } from "@/lib/api";
+import { openProfile, sealProfile, type ReceivedCopy } from "@/lib/profileSeal";
 import {
   deleteFolderRef,
   deleteIdentity,
@@ -37,7 +38,6 @@ import {
   readEnrollmentCode,
   type MemberDevice,
   verifyDirectory,
-  verifyProfiles,
   type Directory,
   type DirectoryMember,
   type Profile,
@@ -199,6 +199,61 @@ function writeMinDirectoryVersion(version: number) {
 /** What's stored for an identity: this device's keys, my name and contact settings. Member and devices are derived. */
 type BaseIdentity = Omit<IdentityState, "contacts" | "deviceKeyHash" | "myDevices">;
 
+/** Names for my devices, by device key hash, and when they last changed. Shared only sealed to my own devices. */
+type DeviceNames = { at: number; names: Record<string, string> };
+const DEVICE_NAMES_KEY = "relay.deviceNames";
+/** What this device last sent each recipient device (updatedAt, name, device names), so it re-sends only changes. */
+const PROFILE_SENT_KEY = "relay.profileSent";
+const MAX_DEVICE_NAMES = 24;
+
+function readJson<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(serverScopedKey(key));
+    return raw ? (JSON.parse(raw) as T) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+function writeJson(key: string, value: unknown) {
+  try {
+    localStorage.setItem(serverScopedKey(key), JSON.stringify(value));
+  } catch {
+    // Private mode or full storage: it only means re-sending copies later.
+  }
+}
+
+/** Decrypt the sealed profiles addressed to this device. Copies from a device that isn't the author's are dropped. */
+async function openProfiles(
+  copies: ReceivedCopy[],
+  myEcdh: CryptoKey,
+  myDeviceKeyHash: string,
+  devices: Map<string, MemberDevice[]>
+): Promise<{ profiles: Map<string, Profile>; ownDevices: Map<string, { at: number; names: Record<string, string> }> }> {
+  const profiles = new Map<string, Profile>();
+  const ownDevices = new Map<string, { at: number; names: Record<string, string> }>();
+  for (const c of copies) {
+    const sender = devices.get(c.author)?.find((d) => d.keyHash === c.sender);
+    if (!sender) continue;
+    const p = await openProfile(myEcdh, await importPublicKey(sender.ecdh), myDeviceKeyHash, c);
+    if (!p || !p.name.trim()) continue;
+    const prev = profiles.get(c.author);
+    if (!prev || p.updatedAt > prev.updatedAt) {
+      profiles.set(c.author, { type: "relay-profile", keyHash: c.author, name: p.name.slice(0, MAX_NAME_LENGTH), updatedAt: p.updatedAt });
+    }
+    if (p.devices) {
+      const names = Object.fromEntries(
+        Object.entries(p.devices)
+          .filter(([k, v]) => typeof k === "string" && typeof v === "string")
+          .slice(0, MAX_DEVICE_NAMES)
+          .map(([k, v]) => [k, v.slice(0, MAX_NAME_LENGTH)])
+      );
+      const prevOwn = ownDevices.get(c.author);
+      if (!prevOwn || p.updatedAt > prevOwn.at) ownDevices.set(c.author, { at: p.updatedAt, names });
+    }
+  }
+  return { profiles, ownDevices };
+}
+
 export function IdentityProvider({ children }: { children: React.ReactNode }) {
   const [base, setBase] = useState<BaseIdentity | null>(null);
   const [loading, setLoading] = useState(true);
@@ -217,7 +272,12 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
   const [settingsChangedAt, setSettingsChangedAt] = useState(0);
   const [directoryLoaded, setDirectoryLoaded] = useState(false);
   const [directoryError, setDirectoryError] = useState<string | null>(null);
-  const profilePublishedFor = useRef<string | null>(null);
+  const [deviceNames, setDeviceNames] = useState<DeviceNames>({ at: 0, names: {} });
+  const baseRef = useRef<BaseIdentity | null>(null);
+  baseRef.current = base;
+  const deviceNamesRef = useRef(deviceNames);
+  deviceNamesRef.current = deviceNames;
+  const publishingProfile = useRef(false);
 
   const [server, setServer] = useState<ServerConfig | null>(null);
   const [servers, setServers] = useState<ServerConfig[]>([]);
@@ -498,7 +558,28 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
       const verifiedDevices = await verifyDevices(res.devices ?? [], res.deviceRevocations ?? [], result.directory.members, revoked);
       setDevices(verifiedDevices);
       setRevokedDevices(revoked);
-      setProfiles(await verifyProfiles(res.profiles ?? [], result.directory.members, verifiedDevices));
+      // Names are sealed to each device (profileSeal.ts): fetch the copies for this one once it's a member.
+      const me = baseRef.current;
+      const meMember =
+        me &&
+        (result.directory.members.some((m) => m.keyHash === me.keyHash)
+          ? me.keyHash
+          : [...verifiedDevices].find(([, list]) => list.some((d) => d.keyHash === me.keyHash))?.[0]);
+      if (me && meMember) {
+        try {
+          const opened = await openProfiles(await getProfileCopies(), me.keyPair.privateKey, me.keyHash, verifiedDevices);
+          setProfiles(opened.profiles);
+          const own = opened.ownDevices.get(meMember);
+          if (own && own.at > deviceNamesRef.current.at) {
+            setDeviceNames(own);
+            writeJson(`${DEVICE_NAMES_KEY}:${me.keyHash}`, own);
+          }
+        } catch {
+          // Keep the names we have; the next refresh tries again.
+        }
+      } else {
+        setProfiles(new Map());
+      }
       setDeparted(await verifyDepartures(res.departures ?? [], result.directory.members));
       setDirectoryError(null);
     } catch (e) {
@@ -596,28 +677,61 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
     activate(removeServerConfig(server.url));
   }, [server, base, enrolled, myMember, activate, forgetHere]);
 
-  const signAndPublishProfile = useCallback(async (identity: BaseIdentity, name: string) => {
-    const env = await signRecord(identity.signingKeyPair.privateKey, {
-      type: "relay-profile",
-      keyHash: myMember ?? identity.keyHash,
-      name,
-      updatedAt: Date.now(),
-    });
-    await publishProfile(env);
-  }, [myMember]);
-
-  // Once enrolled, publish my display name if the directory doesn't have it yet.
+  // This device's device-name list for the active server.
   useEffect(() => {
-    if (!base || !enrolled || !directoryLoaded) return;
-    if (profiles.get(myMember ?? base.keyHash)?.name === base.myName) return;
-    if (profilePublishedFor.current === base.myName) return;
-    profilePublishedFor.current = base.myName;
-    signAndPublishProfile(base, base.myName)
-      .then(refreshDirectory)
+    setDeviceNames(base ? readJson<DeviceNames>(`${DEVICE_NAMES_KEY}:${base.keyHash}`, { at: 0, names: {} }) : { at: 0, names: {} });
+  }, [server, base?.keyHash]); // eslint-disable-line react-hooks/exhaustive-deps -- only when the identity changes
+
+  // Seal my name to every other current device (mine included), and my device names to my own devices only. Re-sends
+  // only what changed for each recipient. updatedAt follows the settings synced between my devices, so a device that
+  // hasn't caught up can't overwrite a newer name (the server keeps the newest copy).
+  useEffect(() => {
+    if (!base || !enrolled || !myMember || !directory || publishingProfile.current) return;
+    const name = base.myName.trim();
+    if (!name) return;
+    const updatedAt = Math.max(base.settingsAt ?? 0, deviceNames.at, 1);
+    const mine = devices.get(myMember) ?? [];
+    const ownNames = Object.fromEntries(
+      Object.entries(deviceNames.names)
+        .filter(([k]) => mine.some((d) => d.keyHash === k))
+        .slice(0, MAX_DEVICE_NAMES)
+    );
+    const targets: { keyHash: string; ecdh: string; own: boolean }[] = [];
+    for (const m of directory.members) {
+      if (departed.has(m.keyHash)) continue;
+      for (const d of devices.get(m.keyHash) ?? [{ keyHash: m.keyHash, ecdh: m.ecdh }]) {
+        if (d.keyHash !== base.keyHash) targets.push({ keyHash: d.keyHash, ecdh: d.ecdh, own: m.keyHash === myMember });
+      }
+    }
+    const digest = (own: boolean) => JSON.stringify([updatedAt, name, own ? ownNames : null]);
+    const sentKey = `${PROFILE_SENT_KEY}:${base.keyHash}`;
+    const sent = readJson<Record<string, string>>(sentKey, {});
+    const todo = targets.filter((t) => sent[t.keyHash] !== digest(t.own));
+    if (todo.length === 0) return;
+    publishingProfile.current = true;
+    (async () => {
+      const copies = await Promise.all(
+        todo.map(async (t) =>
+          sealProfile(
+            base.keyPair.privateKey,
+            await importPublicKey(t.ecdh),
+            { author: myMember, sender: base.keyHash, recipient: t.keyHash },
+            t.own ? { name, updatedAt, devices: ownNames } : { name, updatedAt }
+          )
+        )
+      );
+      await postProfileCopies(copies);
+      const next = Object.fromEntries(targets.filter((t) => sent[t.keyHash] !== undefined).map((t) => [t.keyHash, sent[t.keyHash]]));
+      for (const t of todo) next[t.keyHash] = digest(t.own);
+      writeJson(sentKey, next);
+    })()
       .catch(() => {
-        profilePublishedFor.current = null;
+        // Not sent: the next directory refresh tries again.
+      })
+      .finally(() => {
+        publishingProfile.current = false;
       });
-  }, [base, enrolled, myMember, directoryLoaded, profiles, signAndPublishProfile, refreshDirectory]);
+  }, [base, enrolled, myMember, directory, devices, departed, deviceNames]);
 
   const publishSignedDirectory = useCallback(async (next: Directory, setupCode?: string) => {
     if (!base || !isAdmin) throw new Error("Only an admin can change the member list");
@@ -657,6 +771,14 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
     [profiles]
   );
 
+  // Devices, with names on mine from the sealed device-name list (certificates carry none).
+  const namedDevices = useMemo(() => {
+    if (!myMember || !devices.has(myMember)) return devices;
+    const next = new Map(devices);
+    next.set(myMember, devices.get(myMember)!.map((d) => ({ ...d, name: deviceNames.names[d.keyHash] ?? "" })));
+    return next;
+  }, [devices, myMember, deviceNames]);
+
   const identity = useMemo<IdentityState | null>(() => {
     if (!base) return null;
     const me = myMember ?? base.keyHash;
@@ -671,11 +793,11 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
         volume: base.contactSettings.find((c) => c.keyHash === m.keyHash)?.volume ?? 100,
         devices: devicesOf(m),
       }));
-    const myDevices = devices.get(me) ?? [
+    const myDevices = namedDevices.get(me) ?? [
       { keyHash: base.keyHash, ecdh: base.publicKeyBase64, sig: base.signingPublicKeyBase64, name: "", addedAt: 0, primary: true },
     ];
     return { ...base, keyHash: me, deviceKeyHash: base.keyHash, contacts, myDevices };
-  }, [base, myMember, directory, devices, departed, resolveName]);
+  }, [base, myMember, directory, devices, namedDevices, departed, resolveName]);
 
   const updateSettings = useCallback((keyHash: string, change: Partial<ContactSettings>): BaseIdentity | null => {
     if (!base) return null;
@@ -698,17 +820,13 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
       const next = { ...base, myName: trimmed, settingsAt: Date.now() };
       setBase(next);
       setSettingsChangedAt(next.settingsAt);
-      profilePublishedFor.current = trimmed;
+      // The sealed copies go out from the effect above, now that the name and settingsAt changed.
       await persist(next);
-      if (enrolled) {
-        await signAndPublishProfile(next, trimmed);
-        await refreshDirectory();
-      }
       return;
     }
     const next = updateSettings(keyHash, { nickname: trimmed || undefined });
     if (next) await persist(next);
-  }, [base, myMember, enrolled, signAndPublishProfile, refreshDirectory, updateSettings, persist]);
+  }, [base, myMember, updateSettings, persist]);
 
   const getDisplayName = useCallback(
     (keyHash: string): string | undefined =>
@@ -774,8 +892,12 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
     const r = await readEnrollmentCode(code);
     if (!r.ok) throw new Error(r.error);
     if (!name.trim()) throw new Error("Name the device");
-    const cert = deviceCert(myMember, r.request, name, base.signingPublicKeyBase64);
+    const cert = deviceCert(myMember, r.request, base.signingPublicKeyBase64);
     await postDeviceCert(await signRecord(base.signingKeyPair.privateKey, cert));
+    // Its name never goes in the public certificate: it's sealed to my own devices with my profile.
+    const names = { at: Date.now(), names: { ...deviceNamesRef.current.names, [r.keyHash]: name.trim().slice(0, MAX_NAME_LENGTH) } };
+    setDeviceNames(names);
+    writeJson(`${DEVICE_NAMES_KEY}:${base.keyHash}`, names);
     await refreshDirectory();
     // The new device starts without my nicknames and settings: send them (the chat sends on this bump).
     setSettingsChangedAt(Date.now());
@@ -835,7 +957,7 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
         applyDeviceSync,
         settingsChangedAt,
         unlinked: !!base && revokedDevices.has(base.keyHash),
-        memberDevices: devices,
+        memberDevices: namedDevices,
         moveAdmin,
         startOver,
         error,

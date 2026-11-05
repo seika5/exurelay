@@ -103,22 +103,6 @@ export async function validateDirectory(envelope, adminKeys, currentVersion = 0,
   return { ok: true, directory: d };
 }
 
-/**
- * Check a member's self-signed profile against their directory entry.
- * Returns { ok, profile } or { ok: false, error }. updatedAt must be above previousUpdatedAt.
- */
-export async function validateProfile(envelope, member, previousUpdatedAt = 0, signers = member ? [member.signingPublicKey] : []) {
-  const p = parseBody(envelope);
-  if (!p || p.type !== "relay-profile" || typeof p.keyHash !== "string") return { ok: false, error: "not a profile" };
-  if (!member || member.keyHash !== p.keyHash) return { ok: false, error: "not a member" };
-  if (!(await verifiedByAny(envelope, signers))) return { ok: false, error: "bad signature" };
-  if (typeof p.name !== "string" || !p.name.trim() || p.name.length > MAX_NAME_LENGTH) {
-    return { ok: false, error: "bad name" };
-  }
-  if (!isTime(p.updatedAt) || p.updatedAt <= previousUpdatedAt) return { ok: false, error: "stale profile" };
-  return { ok: true, profile: p };
-}
-
 /** Signed by any of these keys (a member's enrolled key or one of their linked devices). */
 async function verifiedByAny(envelope, signers) {
   for (const k of signers) if (await verifySigned(envelope, k)) return true;
