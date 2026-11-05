@@ -1051,6 +1051,9 @@ function Chat() {
 
       {/* ── Modals ─────────────────────────────────────────────────────────── */}
 
+      {/* An enrolled member with no name (e.g. "Add to my account" picked by mistake): ask for one. */}
+      {enrolled && identity && identity.keyHash === identity.deviceKeyHash && !identity.myName.trim() && <NameNeeded onSave={(n) => setDisplayName(identity.keyHash, n)} />}
+
       {settingsOpen && (
         <SettingsModal
           onClose={() => setSettingsOpen(false)}
@@ -1212,4 +1215,38 @@ function MemberNotice({
   }
   if (!text) return null;
   return <div className="px-3 py-2 text-xs bg-amber-900/30 text-amber-200 border-b border-[var(--border)]">{text}</div>;
+}
+
+/** Shown until a member without a name picks one; everyone else sees a code for them until then. */
+function NameNeeded({ onSave }: { onSave: (name: string) => Promise<void> }) {
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const noop = useCallback(() => {}, []);
+  return (
+    <Modal title="Your name" onClose={noop} closeLabel={null}>
+      <form
+        className="flex flex-col gap-3"
+        onSubmit={async (e) => {
+          e.preventDefault();
+          setBusy(true);
+          setError(null);
+          try {
+            await onSave(name);
+          } catch (err) {
+            setError(err instanceof Error ? err.message : "Couldn't save");
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        <p className="text-sm text-[var(--muted)]">Pick the name others see. Until then they see a code.</p>
+        <input autoFocus value={name} maxLength={64} onChange={(e) => setName(e.target.value)} placeholder="Your name" className={field} />
+        {error && <p className="text-sm text-red-500">{error}</p>}
+        <button type="submit" disabled={busy || !name.trim()} className={btnPrimary}>
+          Save
+        </button>
+      </form>
+    </Modal>
+  );
 }
