@@ -77,7 +77,7 @@ export function SettingsModal({
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-30 p-4">
-      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-lg p-4 w-full max-w-lg max-h-[90vh] overflow-auto flex flex-col gap-4">
+      <div className="bg-[var(--surface)] border border-[var(--border)] rounded-lg p-4 w-full max-w-md max-h-[90vh] overflow-auto flex flex-col gap-4">
         <div className="flex items-center justify-between">
           <h2 className="font-semibold">Settings</h2>
           <button type="button" onClick={onClose} className="text-sm text-[var(--accent)]">
@@ -85,7 +85,7 @@ export function SettingsModal({
           </button>
         </div>
 
-        {/* One row at any width. On phones only the selected tab shows its name next to its icon; from sm up all do. */}
+        {/* One row at any width: every tab has an icon, and only the selected one also shows its name. */}
         <div className="flex gap-1 text-sm" role="tablist">
           {(isAdmin ? (["general", "devices", "storage", "plugins", "admin"] as const) : (["general", "devices", "storage", "plugins"] as const)).map((t) => (
             <button
@@ -96,10 +96,10 @@ export function SettingsModal({
               aria-label={TAB_LABELS[t]}
               title={TAB_LABELS[t]}
               onClick={() => setTab(t)}
-              className={`flex items-center justify-center gap-1.5 px-2 py-1.5 rounded whitespace-nowrap ${tab === t ? "flex-[2.2] sm:flex-1 bg-[var(--accent)] text-white" : "flex-1 border border-[var(--border)]"}`}
+              className={`flex items-center justify-center gap-1.5 px-2 py-1.5 rounded whitespace-nowrap ${tab === t ? "flex-[2.2] bg-[var(--accent)] text-white" : "flex-1 border border-[var(--border)]"}`}
             >
               <TabIcon tab={t} />
-              <span className={tab === t ? "" : "hidden sm:inline"}>{TAB_LABELS[t]}</span>
+              {tab === t && <span>{TAB_LABELS[t]}</span>}
             </button>
           ))}
         </div>
