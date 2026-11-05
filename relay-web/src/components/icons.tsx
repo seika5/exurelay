@@ -138,6 +138,8 @@ const PATHS = {
   ),
   callHangUp: <path d="M3 15.5v-2C3 11 7 9 12 9s9 2 9 4.5v2l-4.5 1-1-3c-2.3-.7-4.7-.7-7 0l-1 3z" />,
   callChat: <path d="M4 5h16v11H9l-5 4z" />,
+  callStart: <path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2z" />,
+  chatSend: <path d="M4 12l16-8-6 16-2.5-6.5zM11.5 13.5L20 4" />,
   // Onboarding
   onbScan: <path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3M4 12h16" />,
   onbBack: <path d="M15 5l-7 7 7 7" />,
