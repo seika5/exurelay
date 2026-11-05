@@ -46,13 +46,14 @@ export function SettingsModal({
           </button>
         </div>
 
-        <div className="flex flex-wrap gap-1 text-sm">
+        {/* One row of equal-width tabs at any width: five fit on a phone at text-xs. */}
+        <div className="grid grid-flow-col auto-cols-fr gap-1 text-xs sm:text-sm">
           {(isAdmin ? (["general", "devices", "storage", "plugins", "admin"] as const) : (["general", "devices", "storage", "plugins"] as const)).map((t) => (
             <button
               key={t}
               type="button"
               onClick={() => setTab(t)}
-              className={`px-3 py-1 rounded ${tab === t ? "bg-[var(--accent)] text-white" : "border border-[var(--border)]"}`}
+              className={`px-1 py-1.5 rounded truncate ${tab === t ? "bg-[var(--accent)] text-white" : "border border-[var(--border)]"}`}
             >
               {t === "general" ? "General" : t === "devices" ? "Devices" : t === "storage" ? "Storage" : t === "plugins" ? "Plugins" : "Admin"}
             </button>

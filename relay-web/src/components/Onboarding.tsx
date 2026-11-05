@@ -196,7 +196,8 @@ export function JoinServer({ onClose }: { onClose?: () => void } = {}) {
           )}
           <p className="text-sm text-[var(--muted)]">
             Enter your server&apos;s address and your name there. This creates your identity for that server; you&apos;ll
-            be its first admin. Have the setup code ready if your server showed one when it was installed.
+            be its first admin. Have your setup code ready: the one you chose when creating the server, or the one it showed
+            when it was installed.
           </p>
           <input
             type="url"
@@ -384,8 +385,8 @@ export function NotEnrolled() {
       <main className={screen} style={safeTop}>
         <h1 className="text-xl font-semibold">Set up Exurelay</h1>
         <p className="text-sm text-[var(--muted)] text-center max-w-sm">
-          Enter the setup code your server showed when it was installed, then create the member list to enroll
-          yourself. After that, share the join code and enroll everyone else from Settings → Admin.
+          Enter your setup code (the one you chose when creating the server, or the one it showed when it was
+          installed), then create the member list to enroll yourself. After that, share the join code and enroll everyone else from Settings → Admin.
         </p>
         <details className="w-full max-w-md text-sm text-[var(--muted)]">
           <summary className="cursor-pointer text-center">Set the server up by hand instead?</summary>
