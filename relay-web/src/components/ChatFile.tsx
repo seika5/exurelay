@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { Icon, IconButton, type IconName } from "@/components/icons";
+import { useEffect, useState } from "react";
+import { Icon, IconButton } from "@/components/icons";
 
 type Kind = "image" | "video" | "audio" | null;
 
@@ -22,8 +22,8 @@ export function mediaKind(filename: string): Kind {
 }
 
 /**
- * A file in a message. Photos, videos and audio get a Show button next to Download, and show here. Press and hold (or
- * right-click) any file for a menu with the same actions.
+ * A file in a message. Photos, videos and audio get a Show button next to Download, and show here. The file's data is
+ * only turned into something viewable when Show is pressed.
  */
 export function ChatFile({
   name,
@@ -44,27 +44,10 @@ export function ChatFile({
   const [url, setUrl] = useState<string | null>(null);
   const [shown, setShown] = useState(false);
   const [failed, setFailed] = useState(false);
-  const [menu, setMenu] = useState<"up" | "down" | null>(null);
-  const hold = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const start = useRef({ x: 0, y: 0 });
-  const box = useRef<HTMLSpanElement>(null);
 
   useEffect(() => () => {
     if (url) URL.revokeObjectURL(url);
   }, [url]);
-
-  // The menu closes on a tap elsewhere or Escape.
-  useEffect(() => {
-    if (!menu) return;
-    const away = (e: PointerEvent) => !box.current?.contains(e.target as Node) && setMenu(null);
-    const key = (e: KeyboardEvent) => e.key === "Escape" && setMenu(null);
-    document.addEventListener("pointerdown", away);
-    document.addEventListener("keydown", key);
-    return () => {
-      document.removeEventListener("pointerdown", away);
-      document.removeEventListener("keydown", key);
-    };
-  }, [menu]);
 
   const show = () => {
     setFailed(false);
@@ -76,49 +59,12 @@ export function ChatFile({
   };
   const open = shown && !!url && !failed;
 
-  const stop = () => hold.current && clearTimeout(hold.current);
-  // Opens above the file, or below it when it's near the top of the screen.
-  const openMenu = () => setMenu((box.current?.getBoundingClientRect().top ?? 999) < 160 ? "down" : "up");
-  const holdHandlers = removed
-    ? {}
-    : {
-        onContextMenu: (e: React.MouseEvent) => {
-          e.preventDefault();
-          openMenu();
-        },
-        onPointerDown: (e: React.PointerEvent) => {
-          if (e.pointerType === "mouse") return;
-          stop();
-          start.current = { x: e.clientX, y: e.clientY };
-          hold.current = setTimeout(openMenu, 500);
-        },
-        onPointerUp: stop,
-        onPointerLeave: stop,
-        onPointerCancel: stop,
-        onPointerMove: (e: React.PointerEvent) => (Math.abs(e.clientX - start.current.x) > 8 || Math.abs(e.clientY - start.current.y) > 8) && stop(),
-        style: { WebkitTouchCallout: "none", WebkitUserSelect: "none" } as React.CSSProperties,
-      };
-
-  const item = (icon: IconName, label: string, act: () => void) => (
-    <button
-      type="button"
-      role="menuitem"
-      className="flex items-center gap-2 w-full px-3 py-2 touch:py-3 text-sm text-left hover:bg-white/5"
-      onClick={() => {
-        setMenu(null);
-        act();
-      }}
-    >
-      <Icon name={icon} />
-      {label}
-    </button>
-  );
 
   return (
-    <span ref={box} className="relative inline-flex flex-col gap-1 max-w-full" {...holdHandlers}>
+    <span className="inline-flex flex-col gap-1 max-w-full">
       {open && kind === "image" && (
         // eslint-disable-next-line @next/next/no-img-element
-        <img src={url} alt={name} draggable={false} onError={() => setFailed(true)} className="max-w-full max-h-80 self-start rounded border border-[var(--border)]" />
+        <img src={url} alt={name} onError={() => setFailed(true)} className="max-w-full max-h-80 self-start rounded border border-[var(--border)]" />
       )}
       {open && kind === "video" && (
         <video src={url} controls playsInline onError={() => setFailed(true)} className="max-w-full max-h-80 self-start rounded border border-[var(--border)]" />
@@ -140,16 +86,6 @@ export function ChatFile({
         {removed && <span className="text-xs text-[var(--muted)]">Removed from this device</span>}
         {failed && <span className="text-xs text-red-500">Failed to load</span>}
       </span>
-      {menu && (
-        <span
-          role="menu"
-          aria-label={name}
-          className={`absolute left-0 z-20 ${menu === "up" ? "bottom-full mb-1" : "top-full mt-1"} min-w-40 overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--surface)] shadow-lg`}
-        >
-          {kind && (open ? item("chatHide", "Hide", () => setShown(false)) : item("chatShow", "Show", show))}
-          {item("chatDownload", "Download", onDownload)}
-        </span>
-      )}
     </span>
   );
 }

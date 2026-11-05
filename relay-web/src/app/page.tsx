@@ -357,20 +357,47 @@ function Chat() {
     fromBottomRef.current = list.scrollHeight - list.clientHeight - list.scrollTop;
   };
 
-  // When the list gets shorter or taller (the keyboard opening or closing), keep the newest visible messages just
-  // above the message box instead of letting them slide under the keyboard.
+  // Keep the bottom of the chat where it is, so things move up instead of off the bottom: when the list gets shorter
+  // or taller (the keyboard opening or closing), and when a message on screen or above it grows (a photo shown).
+  // New messages are left to the effect above.
   const fromBottomRef = useRef(0);
   useEffect(() => {
     const list = messagesListRef.current;
     if (!list) return;
     let height = list.clientHeight;
-    const ro = new ResizeObserver(() => {
-      if (list.clientHeight === height) return;
-      height = list.clientHeight;
+    const heights = new WeakMap<Element, number>();
+    const keep = () => {
       list.scrollTop = list.scrollHeight - list.clientHeight - fromBottomRef.current;
+    };
+    const ro = new ResizeObserver((entries) => {
+      let grew = false;
+      for (const e of entries) {
+        const h = e.borderBoxSize?.[0]?.blockSize ?? e.target.getBoundingClientRect().height;
+        if (e.target === list) {
+          if (list.clientHeight !== height) {
+            height = list.clientHeight;
+            grew = true;
+          }
+          continue;
+        }
+        const was = heights.get(e.target);
+        heights.set(e.target, h);
+        // Only a message already there that's on screen or above it, not one just added.
+        if (was !== undefined && was !== h && e.target.getBoundingClientRect().top < list.getBoundingClientRect().bottom) grew = true;
+      }
+      if (grew) keep();
     });
     ro.observe(list);
-    return () => ro.disconnect();
+    const watch = () => {
+      for (const li of list.children) if (!heights.has(li)) ro.observe(li);
+    };
+    watch();
+    const mo = new MutationObserver(watch);
+    mo.observe(list, { childList: true });
+    return () => {
+      ro.disconnect();
+      mo.disconnect();
+    };
   }, [selected]);
 
   useEffect(() => { wasAtBottomRef.current = true; }, [selected]);
@@ -903,8 +930,14 @@ function Chat() {
                 <IconButton icon="chatMembers" label="Members" onClick={() => setMembersOpen(true)} />
               )}
               {!inCall && !selectedInactive && (
-                <button type="button" onClick={handleStartCall} className={`${btnPrimary} flex-shrink-0`}>
-                  {ongoingRoom ? "Join call" : "Call"}
+                <button
+                  type="button"
+                  onClick={handleStartCall}
+                  aria-label={ongoingRoom ? "Join call" : "Call"}
+                  title={ongoingRoom ? "Join call" : "Call"}
+                  className={`${btnPrimary} flex-shrink-0 w-9 px-0 touch:w-10`}
+                >
+                  <span className={ongoingRoom ? "animate-pulse" : ""}><Icon name="callStart" size={18} /></span>
                 </button>
               )}
             </div>
@@ -1107,8 +1140,21 @@ function Chat() {
                   placeholder={selected ? `Message ${conversationLabel(selected, me, getDisplayName, groupNamesFromMessages)}` : "Message"}
                   className="flex-1 min-w-0 px-3 py-2 touch:min-h-10 rounded bg-[var(--surface)] border border-[var(--border)] text-[var(--text)] placeholder-[var(--muted)]"
                 />
-                <button type="button" onClick={handleSend} disabled={!canSend} className={`${btnPrimary} flex-shrink-0 px-4`}>
-                  Send
+                <button
+                  type="button"
+                  onClick={handleSend}
+                  // Keep the focus (and the keyboard) in the message box: pressing the button would otherwise take it.
+                  onMouseDown={(e) => e.preventDefault()}
+                  onTouchEnd={(e) => {
+                    e.preventDefault();
+                    if (canSend) handleSend();
+                  }}
+                  disabled={!canSend}
+                  aria-label="Send"
+                  title="Send"
+                  className={`${btnPrimary} flex-shrink-0 w-10 px-0 touch:min-h-10`}
+                >
+                  <Icon name="chatSend" size={18} />
                 </button>
               </div>
             </div>
