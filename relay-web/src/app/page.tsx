@@ -29,6 +29,7 @@ import { CallControls } from "@/components/CallControls";
 import { Icon, IconButton } from "@/components/icons";
 import { Modal, confirmDialog } from "@/components/Modal";
 import { btn, btnPrimary, field } from "@/components/ui";
+import { useVisibleViewport } from "@/lib/useVisibleViewport";
 
 const GROUP_BREAK_MS = 10 * 60 * 1000;
 
@@ -198,22 +199,14 @@ function Chat() {
   const [groupRenameModal, setGroupRenameModal] = useState<Conversation | null>(null);
   const [groupRenameValue, setGroupRenameValue] = useState("");
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
-  const [keyboardVisible, setKeyboardVisible] = useState(false);
+  // The chat screen is pinned to the area above the keyboard (useVisibleViewport.ts).
+  const visible = useVisibleViewport();
+  const keyboardVisible = visible.keyboard;
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesListRef = useRef<HTMLUListElement>(null);
   const wasAtBottomRef = useRef(true);
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressActivated = useRef(false);
-
-  // Detect software keyboard on mobile via visualViewport resize.
-  // When the keyboard is up the bottom safe-area padding is redundant (keyboard is the boundary).
-  useEffect(() => {
-    const vv = typeof window !== "undefined" ? window.visualViewport : null;
-    if (!vv) return;
-    const update = () => setKeyboardVisible(vv.height < window.innerHeight - 100);
-    vv.addEventListener("resize", update);
-    return () => vv.removeEventListener("resize", update);
-  }, []);
 
   const endLongPress = useCallback(() => {
     if (longPressTimer.current !== null) {
@@ -650,7 +643,10 @@ function Chat() {
   const canSend = !!input.trim() || pendingFiles.length > 0;
 
   return (
-    <main className="flex h-screen overflow-hidden bg-[var(--bg)] text-[var(--text)]">
+    <main
+      className="fixed inset-x-0 flex h-[100dvh] overflow-hidden bg-[var(--bg)] text-[var(--text)]"
+      style={visible.height ? { top: visible.top, height: visible.height } : { top: 0 }}
+    >
       <TokenWarning />
 
       {/* ── Sidebar ────────────────────────────────────────────────────────── */}
@@ -785,7 +781,7 @@ function Chat() {
         )}
 
         {/* Safe-area bottom spacer so sidebar content doesn't hide behind home indicator */}
-        <div style={{ height: "env(safe-area-inset-bottom, 0px)" }} className="flex-shrink-0" />
+        <div style={{ height: keyboardVisible ? 0 : "env(safe-area-inset-bottom, 0px)" }} className="flex-shrink-0" />
       </aside>
 
       {/* ── Main chat panel ────────────────────────────────────────────────── */}
