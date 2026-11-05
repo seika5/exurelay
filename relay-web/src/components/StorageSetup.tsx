@@ -121,7 +121,7 @@ export function StorageSetup({
             type="button"
             disabled={!ready || busy}
             onClick={submit}
-            className="px-3 py-1.5 rounded bg-[var(--accent)] text-white disabled:opacity-50"
+            className="px-3 py-1.5 rounded bg-[var(--accent)] text-on-accent disabled:opacity-50"
           >
             {busy ? "Creating…" : "Create identity"}
           </button>

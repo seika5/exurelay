@@ -5,6 +5,7 @@ import { ServiceWorkerSetup } from "@/components/AppShell";
 import { PluginProvider } from "@/context/PluginContext";
 import { appPath } from "@/lib/basePath";
 import "./globals.css";
+import { ConfirmHost } from "@/components/Modal";
 
 export const metadata: Metadata = {
   title: "Exurelay",
@@ -30,6 +31,7 @@ export default function RootLayout({
     <html lang="en">
       <body className="antialiased">
         <ServiceWorkerSetup />
+        <ConfirmHost />
         <PluginProvider>
           <IdentityProvider>
             <CallProvider>

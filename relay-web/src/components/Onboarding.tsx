@@ -50,7 +50,7 @@ export function CreateIdentity() {
         <button
           type="submit"
           disabled={!name.trim()}
-          className="py-2 rounded bg-[var(--accent)] text-white text-sm disabled:opacity-50"
+          className="py-2 rounded bg-[var(--accent)] text-on-accent text-sm disabled:opacity-50"
         >
           Create identity
         </button>
@@ -140,7 +140,7 @@ export function JoinServer({ onClose }: { onClose?: () => void } = {}) {
             />
           ) : (
             <div className="flex flex-col gap-2 w-full max-w-xs">
-              <button type="button" onClick={() => setScanning(true)} className="py-2 rounded bg-[var(--accent)] text-white text-sm">
+              <button type="button" onClick={() => setScanning(true)} className="py-2 rounded bg-[var(--accent)] text-on-accent text-sm">
                 Scan join code
               </button>
               <textarea
@@ -227,7 +227,7 @@ export function JoinServer({ onClose }: { onClose?: () => void } = {}) {
           <button
             type="submit"
             disabled={!url.trim() || !name.trim() || waiting !== null}
-            className="py-2 rounded bg-[var(--accent)] text-white text-sm disabled:opacity-50"
+            className="py-2 rounded bg-[var(--accent)] text-on-accent text-sm disabled:opacity-50"
           >
             {waiting === "checking" ? "Checking the server…" : waiting === "starting" ? "Waiting for the server…" : "Continue"}
           </button>
@@ -293,7 +293,7 @@ export function UnlockIdentity() {
           className="px-3 py-2 rounded bg-[var(--surface)] border border-[var(--border)] text-sm"
         />
         {error && <p className="text-sm text-red-500">{error}</p>}
-        <button type="submit" disabled={busy || !passphrase} className="py-2 rounded bg-[var(--accent)] text-white text-sm disabled:opacity-50">
+        <button type="submit" disabled={busy || !passphrase} className="py-2 rounded bg-[var(--accent)] text-on-accent text-sm disabled:opacity-50">
           {busy ? "Unlocking…" : "Unlock"}
         </button>
       </form>
@@ -352,7 +352,7 @@ export function NotEnrolled() {
         <button
           type="button"
           onClick={() => startOver().catch(() => {})}
-          className="px-4 py-2 rounded bg-[var(--accent)] text-white text-sm"
+          className="px-4 py-2 rounded bg-[var(--accent)] text-on-accent text-sm"
         >
           Start over
         </button>

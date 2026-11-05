@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { disablePush, enablePush, pushState, type PushState } from "@/lib/push";
 import { InfoTip, SectionTitle } from "@/components/InfoTip";
+import { Switch } from "@/components/Modal";
 import { appPath } from "@/lib/basePath";
 
 /** Settings → General: push for @mentions and call rings on this device, on or off (DESIGN.md §9). */
@@ -37,19 +38,7 @@ export function NotificationsSection() {
     <section className="flex flex-col gap-2">
       <div className="flex items-center justify-between gap-3">
         <SectionTitle tip="Only @mentions and call rings notify you. Nothing else does.">Notifications</SectionTitle>
-        {(state === "on" || state === "off") && (
-          <button
-            type="button"
-            role="switch"
-            aria-checked={on}
-            aria-label="Notifications"
-            disabled={busy}
-            onClick={toggle}
-            className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${on ? "bg-[var(--accent)]" : "bg-[var(--border)]"}`}
-          >
-            <span className={`inline-block h-5 w-5 rounded-full bg-white shadow transition-transform ${on ? "translate-x-5" : "translate-x-0.5"}`} />
-          </button>
-        )}
+        {(state === "on" || state === "off") && <Switch on={on} onChange={toggle} label="Notifications" disabled={busy} />}
       </div>
       {state && blocked[state] && <p className="text-xs text-[var(--muted)]">{blocked[state]}</p>}
       {error && <p className="text-xs text-red-500">{error}</p>}

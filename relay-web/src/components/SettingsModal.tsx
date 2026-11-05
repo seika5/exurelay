@@ -97,7 +97,7 @@ export function SettingsModal({
               aria-label={TAB_LABELS[t]}
               title={TAB_LABELS[t]}
               onClick={() => setTab(t)}
-              className={`flex items-center justify-center gap-1.5 px-2 py-1.5 rounded whitespace-nowrap ${tab === t ? "flex-[2.2] bg-[var(--accent)] text-white" : "flex-1 border border-[var(--border)]"}`}
+              className={`flex items-center justify-center gap-1.5 px-2 py-1.5 rounded whitespace-nowrap ${tab === t ? "flex-[2.2] bg-[var(--accent)] text-on-accent" : "flex-1 border border-[var(--border)]"}`}
             >
               <TabIcon tab={t} />
               {tab === t && <span>{TAB_LABELS[t]}</span>}
@@ -164,7 +164,7 @@ export function SettingsModal({
                   setSaving(false);
                 }
               }}
-              className="px-3 py-2 rounded bg-[var(--accent)] text-white text-sm disabled:opacity-50"
+              className="px-3 py-2 rounded bg-[var(--accent)] text-on-accent text-sm disabled:opacity-50"
             >
               Save
             </button>

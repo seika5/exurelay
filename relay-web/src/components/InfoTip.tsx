@@ -9,7 +9,7 @@ const WIDTH = 256;
  * The tip is positioned against the viewport, so a scrolling container can't clip it.
  */
 export function InfoTip({ children, label = "More info" }: { children: React.ReactNode; label?: string }) {
-  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+  const [pos, setPos] = useState<{ top?: number; bottom?: number; left: number } | null>(null);
   const button = useRef<HTMLButtonElement>(null);
   const tip = useRef<HTMLSpanElement>(null);
   const pointer = useRef<string>("mouse");
@@ -18,7 +18,9 @@ export function InfoTip({ children, label = "More info" }: { children: React.Rea
     const r = button.current?.getBoundingClientRect();
     if (!r) return;
     const left = Math.min(Math.max(8, r.left + r.width / 2 - WIDTH / 2), window.innerWidth - WIDTH - 8);
-    setPos({ top: r.bottom + 6, left });
+    // Below the "?", or above it when there's no room below (a tip low on the screen).
+    const below = r.bottom + 6;
+    setPos(below + 120 > window.innerHeight ? { bottom: window.innerHeight - r.top + 6, left } : { top: below, left });
   };
 
   useEffect(() => {
@@ -28,10 +30,13 @@ export function InfoTip({ children, label = "More info" }: { children: React.Rea
       if (!button.current?.contains(t) && !tip.current?.contains(t)) setPos(null);
     };
     const hide = () => setPos(null);
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setPos(null);
+    document.addEventListener("keydown", onKey);
     document.addEventListener("pointerdown", close);
     window.addEventListener("scroll", hide, true);
     window.addEventListener("resize", hide);
     return () => {
+      document.removeEventListener("keydown", onKey);
       document.removeEventListener("pointerdown", close);
       window.removeEventListener("scroll", hide, true);
       window.removeEventListener("resize", hide);
@@ -49,7 +54,7 @@ export function InfoTip({ children, label = "More info" }: { children: React.Rea
         onPointerEnter={(e) => e.pointerType === "mouse" && show()}
         onPointerLeave={(e) => e.pointerType === "mouse" && setPos(null)}
         onClick={() => (pointer.current === "mouse" ? show() : pos ? setPos(null) : show())}
-        className="inline-flex shrink-0 items-center justify-center w-4 h-4 rounded-full border border-[var(--muted)] text-[10px] leading-none text-[var(--muted)] align-middle"
+        className="relative inline-flex shrink-0 items-center justify-center w-4 h-4 rounded-full border border-[var(--muted)] text-[10px] leading-none text-[var(--muted)] align-middle before:absolute before:-inset-3 before:content-['']"
       >
         ?
       </button>
@@ -57,7 +62,7 @@ export function InfoTip({ children, label = "More info" }: { children: React.Rea
         <span
           ref={tip}
           role="tooltip"
-          style={{ position: "fixed", top: pos.top, left: pos.left, width: WIDTH }}
+          style={{ position: "fixed", top: pos.top, bottom: pos.bottom, left: pos.left, width: WIDTH }}
           className="z-50 p-2 rounded border border-[var(--border)] bg-[var(--surface)] text-xs text-[var(--text)] shadow-lg font-normal"
         >
           {children}

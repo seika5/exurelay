@@ -46,7 +46,7 @@ export function AbsentMembers() {
                 }
                 setTimeout(() => setState((s) => ({ ...s, [k]: "Notify" })), 30_000);
               }}
-              className="px-2 py-0.5 rounded text-xs bg-[var(--accent)] text-white disabled:opacity-60"
+              className="px-2 py-0.5 rounded text-xs bg-[var(--accent)] text-on-accent disabled:opacity-60"
             >
               {state[k] ?? "Notify"}
             </button>

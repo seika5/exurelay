@@ -574,7 +574,7 @@ function Chat() {
         <button
           type="button"
           onClick={() => window.location.reload()}
-          className="px-4 py-2 rounded bg-[var(--accent)] text-white text-sm"
+          className="px-4 py-2 rounded bg-[var(--accent)] text-on-accent text-sm"
         >
           Retry
         </button>
@@ -814,7 +814,7 @@ function Chat() {
                 <button
                   type="button"
                   onClick={handleStartCall}
-                  className="py-1.5 px-3 rounded text-sm bg-[var(--accent)] text-white font-medium hover:opacity-90 flex-shrink-0"
+                  className="py-1.5 px-3 rounded text-sm bg-[var(--accent)] text-on-accent font-medium hover:opacity-90 flex-shrink-0"
                 >
                   {ongoingRoom ? "Join call" : "Call"}
                 </button>
@@ -891,7 +891,7 @@ function Chat() {
                             <button
                               type="button"
                               onClick={() => downloadFile(m.body, m.filename || "download")}
-                              className="px-2 py-0.5 rounded text-xs bg-[var(--accent)] text-white hover:opacity-90"
+                              className="px-2 py-0.5 rounded text-xs bg-[var(--accent)] text-on-accent hover:opacity-90"
                             >
                               Download
                             </button>
@@ -1027,7 +1027,7 @@ function Chat() {
                 <button
                   type="button"
                   onClick={handleSend}
-                  className="px-4 py-2 rounded bg-[var(--accent)] text-white font-medium flex-shrink-0"
+                  className="px-4 py-2 rounded bg-[var(--accent)] text-on-accent font-medium flex-shrink-0"
                 >
                   Send
                 </button>
@@ -1093,7 +1093,7 @@ function Chat() {
                 Cancel
               </button>
               <button type="button" onClick={handleCreateGroup}
-                className="flex-1 py-2 rounded bg-[var(--accent)] text-white text-sm">
+                className="flex-1 py-2 rounded bg-[var(--accent)] text-on-accent text-sm">
                 Create
               </button>
             </div>
@@ -1142,7 +1142,7 @@ function Chat() {
                     setDisplayNameSaving(false);
                   }
                 }}
-                className="flex-1 py-2 rounded bg-[var(--accent)] text-white text-sm disabled:opacity-50"
+                className="flex-1 py-2 rounded bg-[var(--accent)] text-on-accent text-sm disabled:opacity-50"
               >
                 {displayNameSaving ? "Saving…" : "Save"}
               </button>
@@ -1183,7 +1183,7 @@ function Chat() {
                   setGroupRenameModal(null);
                   setGroupRenameValue("");
                 }}
-                className="flex-1 py-2 rounded bg-[var(--accent)] text-white text-sm"
+                className="flex-1 py-2 rounded bg-[var(--accent)] text-on-accent text-sm"
               >
                 Save
               </button>

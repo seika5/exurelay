@@ -159,7 +159,7 @@ export function DevicesPanel() {
             <button
               type="button"
               disabled={busy || !name.trim()}
-              className={`${button} self-start bg-[var(--accent)] text-white`}
+              className={`${button} self-start bg-[var(--accent)] text-on-accent`}
               onClick={() =>
                 run(async () => {
                   await linkDevice(code, name);

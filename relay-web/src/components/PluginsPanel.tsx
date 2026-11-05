@@ -95,7 +95,7 @@ export function PluginsPanel() {
           <div className="flex gap-2">
             <button
               type="button"
-              className={`${button} bg-[var(--accent)] text-white`}
+              className={`${button} bg-[var(--accent)] text-on-accent`}
               onClick={async () => {
                 const old = plugins.find((x) => x.url && x.url === pending.url);
                 if (old && old.id !== pending.id) await remove(old.id);

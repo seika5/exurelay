@@ -16,7 +16,7 @@ import {
 } from "@/lib/signed";
 
 const button = "px-3 py-1.5 rounded border border-[var(--border)] text-sm disabled:opacity-50";
-const primary = "px-3 py-1.5 rounded bg-[var(--accent)] text-white text-sm disabled:opacity-50";
+const primary = "px-3 py-1.5 rounded bg-[var(--accent)] text-on-accent text-sm disabled:opacity-50";
 
 function Fingerprint({ keyB64 }: { keyB64: string }) {
   const [fp, setFp] = useState("");
