@@ -684,8 +684,9 @@ function Chat() {
 
   return (
     <main
-      className="fixed inset-x-0 flex h-[100dvh] overflow-hidden bg-[var(--bg)] text-[var(--text)]"
-      style={visible.height ? { top: 0, height: visible.height, transform: `translateY(${visible.top}px)` } : { top: 0 }}
+      className="fixed inset-0 flex overflow-hidden bg-[var(--bg)] text-[var(--text)]"
+      // Keyboard closed: fill the screen (iOS can report a shorter visible height). Open: the area above it.
+      style={visible.keyboard && visible.height ? { bottom: "auto", height: visible.height, transform: `translateY(${visible.top}px)` } : undefined}
     >
       <PageLock />
       <TokenWarning />
@@ -1081,6 +1082,13 @@ function Chat() {
                     if (e.key === "Enter") handleSend();
                   }}
                   onBlur={() => setMentionQuery(null)}
+                  // Focus it ourselves without scrolling it into view: iOS's own scroll on focus is what made the
+                  // screen overshoot and flick back (the layout moves above the keyboard by itself).
+                  onTouchEnd={(e) => {
+                    if (document.activeElement === e.currentTarget) return;
+                    e.preventDefault();
+                    e.currentTarget.focus({ preventScroll: true });
+                  }}
                   placeholder={selected ? `Message ${conversationLabel(selected, me, getDisplayName, groupNamesFromMessages)}` : "Message"}
                   className="flex-1 min-w-0 px-3 py-2 touch:min-h-10 rounded bg-[var(--surface)] border border-[var(--border)] text-[var(--text)] placeholder-[var(--muted)]"
                 />
