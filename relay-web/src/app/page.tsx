@@ -144,7 +144,7 @@ function Chat() {
   } = useCall();
   // Messages need a login, which needs membership: nothing is fetched until we're enrolled on a server.
   // Wait for the cache key too, so the first sync resumes from the cached cursor instead of starting over.
-  const { messages, conversations, sendMessage, sendHistory, retrySend, cancelSend, storage, readMarks, markRead, error } = useMessages(
+  const { messages, conversations, sendMessage, sendHistory, retrySend, cancelSend, storage, readMarks, markRead, cacheReady, loading: messagesLoading, error } = useMessages(
     enrolled && server && cacheKey !== undefined ? identity : null,
     useMemo(() => blobSettings(directory), [directory]),
     cacheKey ?? null,
@@ -259,9 +259,20 @@ function Chat() {
     requestAnimationFrame(() => el?.setSelectionRange(pos, pos));
   };
 
-  // Seeing a conversation (open, app in front) clears its mention badge up to its newest message.
+  // On a phone the open chat replaces the list; on md+ both show. A chat only counts as seen when it's on screen.
+  const [wide, setWide] = useState(false);
   useEffect(() => {
-    if (!selected) return;
+    const mq = window.matchMedia("(min-width: 768px)");
+    const update = () => setWide(mq.matches);
+    update();
+    mq.addEventListener("change", update);
+    return () => mq.removeEventListener("change", update);
+  }, []);
+  const chatOnScreen = !!selected && (wide || !sidebarVisible);
+
+  // Seeing a conversation (open, on screen, app in front) marks it read up to its newest message.
+  useEffect(() => {
+    if (!selected || !chatOnScreen) return;
     const mark = () => {
       if (document.visibilityState !== "visible") return;
       const newest = filteredMessages.reduce((n, m) => Math.max(n, m.sentAt), 0);
@@ -270,7 +281,36 @@ function Chat() {
     mark();
     document.addEventListener("visibilitychange", mark);
     return () => document.removeEventListener("visibilitychange", mark);
-  }, [selected, filteredMessages, markRead]);
+  }, [selected, chatOnScreen, filteredMessages, markRead]);
+
+  // First run with unread tracking: chats from before count as read, so they don't all light up at once.
+  useEffect(() => {
+    if (!cacheReady || !identity) return;
+    const key = `relay.unreadStart:${identity.keyHash}`;
+    try {
+      if (localStorage.getItem(key)) return;
+      localStorage.setItem(key, "1");
+    } catch {
+      return;
+    }
+    for (const conv of conversations) {
+      if (readMarks[conversationId(conv, identity.keyHash)] !== undefined) continue;
+      const newest = messages.filter((m) => messageBelongsToConversation(m, conv, identity.keyHash)).reduce((n, m) => Math.max(n, m.sentAt), 0);
+      if (newest) markRead(conv, newest);
+    }
+    // Once, when the cache is first in place.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cacheReady, identity?.keyHash]);
+
+  /** Something from someone else after the read mark: the chat list shows a dot. */
+  const hasUnread = useCallback(
+    (conv: Conversation) => {
+      if (!identity) return false;
+      const seen = readMarks[conversationId(conv, identity.keyHash)] ?? 0;
+      return messages.some((m) => m.sentAt > seen && m.senderKeyHash !== identity.keyHash && messageBelongsToConversation(m, conv, identity.keyHash));
+    },
+    [identity, readMarks, messages]
+  );
 
   /** Unread mentions of me per conversation, for the sidebar badge. */
   const unreadMentions = useCallback(
@@ -659,7 +699,16 @@ function Chat() {
           className="px-3 pb-2 border-b border-[var(--border)] flex items-center justify-between gap-2"
           style={safeTop}
         >
-          <span className="font-semibold text-sm">Chats</span>
+          <span className="font-semibold text-sm flex items-center gap-2">
+            Chats
+            {messagesLoading && (
+              <span
+                role="status"
+                aria-label="Loading messages"
+                className="inline-block h-3.5 w-3.5 rounded-full border-2 border-[var(--muted)] border-t-transparent animate-spin"
+              />
+            )}
+          </span>
           <div className="flex items-center gap-1.5">
             <IconButton icon="chatNewGroup" label="New group" onClick={() => setNewGroupOpen(true)} />
             <IconButton icon="chatSettings" label="Settings" onClick={() => setSettingsOpen(true)} />
@@ -723,13 +772,15 @@ function Chat() {
                 >
                   <span className="flex items-center gap-2">
                     <span className="truncate">{conversationLabel(conv, me, getDisplayName, groupNamesFromMessages)}</span>
-                    {unreadMentions(conv) > 0 && (
+                    {unreadMentions(conv) > 0 ? (
                       <span
                         className="ml-auto shrink-0 px-1.5 rounded-full bg-amber-500 text-black text-xs font-semibold"
                         aria-label={`${unreadMentions(conv)} unread mentions`}
                       >
                         @{unreadMentions(conv)}
                       </span>
+                    ) : (
+                      hasUnread(conv) && <span className="ml-auto shrink-0 h-2.5 w-2.5 rounded-full bg-white" role="img" aria-label="Unread" />
                     )}
                   </span>
                 </button>

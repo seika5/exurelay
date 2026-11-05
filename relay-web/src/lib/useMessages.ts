@@ -99,6 +99,13 @@ export function conversationId(c: Conversation, myKeyHash: string): string {
 }
 
 /** True if this message belongs in this conversation. Group messages never belong in a DM. */
+/** The conversation a message belongs to, as the chat list groups them. */
+export function conversationIdOf(m: DecryptedMessage, myKeyHash: string): string | null {
+  if (m.groupMemberKeyHashes && m.groupMemberKeyHashes.length >= 2) return conversationId({ type: "group", memberKeyHashes: m.groupMemberKeyHashes }, myKeyHash);
+  const other = m.senderKeyHash === myKeyHash ? m.recipientKeyHash : m.senderKeyHash;
+  return other ? conversationId({ type: "dm", otherKeyHash: other }, myKeyHash) : null;
+}
+
 export function messageBelongsToConversation(
   msg: DecryptedMessage,
   conv: Conversation,
@@ -147,6 +154,10 @@ export function useMessages(
   /** The cursor last saved: safe to resume from (cursor.current may be past a send still waiting for pieces). */
   const savedCursor = useRef("0");
   const [readMarks, setReadMarks] = useState<Record<string, number>>({});
+  /** The cache has been read (or there is none): read marks and kept messages are in place. */
+  const [cacheReady, setCacheReady] = useState(false);
+  /** A download that has taken more than a moment (boot, catching up), for a spinner. */
+  const [loading, setLoading] = useState(false);
   const syncing = useRef<Promise<void> | null>(null);
   const syncAgain = useRef(false);
   /** Settings syncs between my devices seen this session (never shown, never cached). */
@@ -194,6 +205,19 @@ export function useMessages(
     setReceivedMessages([...received.current.values()].map((c) => c.message).sort((a, b) => a.sentAt - b.sentAt));
   }, [owner, cacheKey]);
 
+  /** Messages already seen on another of my devices (copied history): move their conversations' read marks past them. */
+  const seenAlready = (items: CachedMessage[]) => {
+    const me = identity?.keyHash;
+    if (!me || items.length === 0) return;
+    const next = { ...readRef.current };
+    for (const { message: m } of items) {
+      const id = conversationIdOf(m, me);
+      if (id && (next[id] ?? 0) < m.sentAt) next[id] = m.sentAt;
+    }
+    readRef.current = next;
+    setReadMarks(next);
+  };
+
   /** Download every blob after our cursor and keep the messages that decrypt for us from a current member. */
   const syncOnce = useCallback(async () => {
     if (!identity) return;
@@ -227,12 +251,15 @@ export function useMessages(
           return;
         }
         if (msg.type === "history") {
-          // Messages another of my devices had saved: keep the ones I don't have, with their original expiry.
+          // Messages another of my devices had saved: keep the ones I don't have, with their original expiry. They were
+          // seen there, so they count as read here.
           if (msg.senderKeyHash === identity.keyHash) {
-            for (const item of acceptHistory(msg.items, (id) => received.current.has(id), readRetention())) {
+            const items = acceptHistory(msg.items, (id) => received.current.has(id), readRetention());
+            for (const item of items) {
               received.current.set(item.message.messageId, item);
               fresh.push(item);
             }
+            seenAlready(items);
           }
           syncedIds.current.add(msg.messageId);
           return;
@@ -288,6 +315,8 @@ export function useMessages(
       return syncing.current;
     }
     setError(null);
+    // Only a download that takes a while shows the spinner, so a single new message doesn't flash it.
+    const slow = setTimeout(() => setLoading(true), 500);
     syncing.current = (async () => {
       try {
         do {
@@ -299,6 +328,8 @@ export function useMessages(
         if (e instanceof RateLimitError) syncLater.current?.(e.retryAfter * 1000);
         else setError(e instanceof Error ? e.message : "Load failed");
       } finally {
+        clearTimeout(slow);
+        setLoading(false);
         syncing.current = null;
       }
     })();
@@ -482,6 +513,7 @@ export function useMessages(
   useEffect(() => {
     setOutbox(() => []);
     setReceivedMessages([]);
+    setCacheReady(false);
     cursor.current = "0";
     opener.current = null;
     received.current = new Map();
@@ -492,6 +524,7 @@ export function useMessages(
     setRetentionState(readRetention());
     if (!owner || !cacheKey) {
       cacheLoaded.current = Promise.resolve();
+      setCacheReady(true);
       return;
     }
     cacheLoaded.current = loadCache(owner, cacheKey).then(
@@ -501,6 +534,7 @@ export function useMessages(
         const hidden = kept.filter((c) => HIDDEN_KINDS.has(c.message.type));
         for (const c of kept) if (!HIDDEN_KINDS.has(c.message.type)) received.current.set(c.message.messageId, c);
         const unpacked: CachedMessage[] = [];
+        readRef.current = read;
         for (const c of hidden) {
           if (c.message.type !== "history" || c.message.senderKeyHash !== owner) continue;
           for (const item of acceptHistory(c.message.items, (id) => received.current.has(id), readRetention())) {
@@ -508,15 +542,17 @@ export function useMessages(
             unpacked.push(item);
           }
         }
+        seenAlready(unpacked);
         if (unpacked.length) await saveMessages(owner, cacheKey, unpacked).catch(() => {});
         if (hidden.length) await deleteMessages(owner, hidden.map((c) => c.message.messageId)).catch(() => {});
         cursor.current = from;
         savedCursor.current = from;
-        readRef.current = read;
-        setReadMarks(read);
+        setReadMarks(readRef.current);
+        if (unpacked.length) await saveMeta(owner, cacheKey, { cursor: from, read: readRef.current }).catch(() => {});
         await publish();
+        setCacheReady(true);
       },
-      () => {} // unreadable cache: sync from the start
+      () => setCacheReady(true) // unreadable cache: sync from the start
     );
   }, [owner, cacheKey, setOutbox, publish]);
 
@@ -603,5 +639,5 @@ export function useMessages(
     [receivedMessages, retentionDays, setRetentionDays, clearFiles, clearConversation, clearAll, resync]
   );
 
-  return { messages, conversations, loadBlobs, sendMessage, sendHistory, retrySend, cancelSend, storage, readMarks, markRead, error };
+  return { messages, conversations, loadBlobs, sendMessage, sendHistory, retrySend, cancelSend, storage, readMarks, markRead, cacheReady, loading, error };
 }
