@@ -684,9 +684,9 @@ function Chat() {
 
   return (
     <main
-      className="fixed inset-0 flex overflow-hidden bg-[var(--bg)] text-[var(--text)]"
-      // Keyboard closed: fill the screen (iOS can report a shorter visible height). Open: the area above it.
-      style={visible.keyboard && visible.height ? { bottom: "auto", height: visible.height, transform: `translateY(${visible.top}px)` } : undefined}
+      className="fixed inset-x-0 top-0 flex h-[100dvh] overflow-hidden bg-[var(--bg)] text-[var(--text)]"
+      // Keyboard closed: the full screen height. Open: the area above it.
+      style={visible.keyboard && visible.height ? { height: visible.height, transform: `translateY(${visible.top}px)` } : undefined}
     >
       <PageLock />
       <TokenWarning />
