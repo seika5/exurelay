@@ -34,11 +34,12 @@ const PATHS = {
   // Actions
   makeAdmin: <path d="M12 3l7 3v5c0 4.5-3 8.4-7 10-4-1.6-7-5.5-7-10V6zM12 9v6M9 12h6" />,
   removeAdmin: <path d="M12 3l7 3v5c0 4.5-3 8.4-7 10-4-1.6-7-5.5-7-10V6zM9 12h6" />,
-  // A device with an ×: remove this device from my account.
+  // A broken chain: two links pulled apart, with break marks.
   unlink: (
     <>
-      <rect x="3" y="3" width="10" height="18" rx="2" />
-      <path d="M7 18h2M16 9l5 5M21 9l-5 5" />
+      <rect x="2" y="14.5" width="9" height="6" rx="3" transform="rotate(-45 6.5 17.5)" />
+      <rect x="13" y="3.5" width="9" height="6" rx="3" transform="rotate(-45 17.5 6.5)" />
+      <path d="M10 7.5V5M7.5 10H5M14 16.5V19M16.5 14H19" />
     </>
   ),
   removePerson: (
