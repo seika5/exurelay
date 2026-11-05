@@ -34,14 +34,6 @@ const PATHS = {
   // Actions
   makeAdmin: <path d="M12 3l7 3v5c0 4.5-3 8.4-7 10-4-1.6-7-5.5-7-10V6zM12 9v6M9 12h6" />,
   removeAdmin: <path d="M12 3l7 3v5c0 4.5-3 8.4-7 10-4-1.6-7-5.5-7-10V6zM9 12h6" />,
-  // A broken chain: two links pulled apart, with break marks.
-  unlink: (
-    <>
-      <rect x="2" y="14.5" width="9" height="6" rx="3" transform="rotate(-45 6.5 17.5)" />
-      <rect x="13" y="3.5" width="9" height="6" rx="3" transform="rotate(-45 17.5 6.5)" />
-      <path d="M10 7.5V5M7.5 10H5M14 16.5V19M16.5 14H19" />
-    </>
-  ),
   removePerson: (
     <>
       <circle cx="9" cy="8" r="3.5" />
@@ -139,9 +131,23 @@ const PATHS = {
   onbFolder: <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />,
 } as const;
 
-export type IconName = keyof typeof PATHS;
+/** Filled icons, each with its own grid. */
+const FILLED = {
+  // "Unlink" from SVG Repo (svgrepo.com/svg/352621), CC0.
+  unlink: { viewBox: "0 0 512 512", d: "M304.083 405.907c4.686 4.686 4.686 12.284 0 16.971l-44.674 44.674c-59.263 59.262-155.693 59.266-214.961 0-59.264-59.265-59.264-155.696 0-214.96l44.675-44.675c4.686-4.686 12.284-4.686 16.971 0l39.598 39.598c4.686 4.686 4.686 12.284 0 16.971l-44.675 44.674c-28.072 28.073-28.072 73.75 0 101.823 28.072 28.072 73.75 28.073 101.824 0l44.674-44.674c4.686-4.686 12.284-4.686 16.971 0l39.597 39.598zm-56.568-260.216c4.686 4.686 12.284 4.686 16.971 0l44.674-44.674c28.072-28.075 73.75-28.073 101.824 0 28.072 28.073 28.072 73.75 0 101.823l-44.675 44.674c-4.686 4.686-4.686 12.284 0 16.971l39.598 39.598c4.686 4.686 12.284 4.686 16.971 0l44.675-44.675c59.265-59.265 59.265-155.695 0-214.96-59.266-59.264-155.695-59.264-214.961 0l-44.674 44.674c-4.686 4.686-4.686 12.284 0 16.971l39.597 39.598zm234.828 359.28l22.627-22.627c9.373-9.373 9.373-24.569 0-33.941L63.598 7.029c-9.373-9.373-24.569-9.373-33.941 0L7.029 29.657c-9.373 9.373-9.373 24.569 0 33.941l441.373 441.373c9.373 9.372 24.569 9.372 33.941 0z" },
+} as const;
+
+export type IconName = keyof typeof PATHS | keyof typeof FILLED;
 
 export function Icon({ name, size = 16 }: { name: IconName; size?: number }) {
+  if (name in FILLED) {
+    const f = FILLED[name as keyof typeof FILLED];
+    return (
+      <svg viewBox={f.viewBox} width={size} height={size} fill="currentColor" aria-hidden="true" className="shrink-0">
+        <path d={f.d} />
+      </svg>
+    );
+  }
   return (
     <svg
       viewBox="0 0 24 24"
@@ -155,7 +161,7 @@ export function Icon({ name, size = 16 }: { name: IconName; size?: number }) {
       aria-hidden="true"
       className="shrink-0"
     >
-      {PATHS[name]}
+      {PATHS[name as keyof typeof PATHS]}
     </svg>
   );
 }
