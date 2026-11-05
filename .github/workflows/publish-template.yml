@@ -6,7 +6,9 @@
 #   TEMPLATE_BUCKET        an S3 bucket whose objects are publicly readable (a bucket policy allowing s3:GetObject)
 #   AWS_TEMPLATE_ROLE_ARN  an IAM role this repository can assume through GitHub's OIDC provider, allowed
 #                          s3:PutObject on that bucket
-# Until both are set, this workflow skips. The run summary prints the Launch Stack link.
+#   TEMPLATE_REGION        the bucket's region (optional, default us-east-2)
+# .github/setup-template-publishing.sh does all of this. Until both are set, this workflow skips. The run summary
+# prints the Launch Stack link.
 name: Publish Lightsail template
 
 on:
@@ -28,16 +30,17 @@ jobs:
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_TEMPLATE_ROLE_ARN }}
-          aws-region: us-east-1
+          aws-region: ${{ vars.TEMPLATE_REGION || 'us-east-2' }}
       - name: Upload
         env:
           BUCKET: ${{ vars.TEMPLATE_BUCKET }}
+          REGION: ${{ vars.TEMPLATE_REGION || 'us-east-2' }}
           REPO_URL: https://github.com/${{ github.repository }}.git
         run: |
           sed "s|Default: https://github.com/seika5/relay.git|Default: $REPO_URL|" relay-server/deploy/aws-lightsail.yaml > aws-lightsail.yaml
           grep -q "Default: $REPO_URL" aws-lightsail.yaml
           aws s3 cp aws-lightsail.yaml "s3://$BUCKET/aws-lightsail.yaml" --content-type text/yaml --cache-control max-age=300
-          url="https://$BUCKET.s3.amazonaws.com/aws-lightsail.yaml"
+          url="https://$BUCKET.s3.$REGION.amazonaws.com/aws-lightsail.yaml"
           {
             echo "Template: $url"
             echo

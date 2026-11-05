@@ -48,8 +48,9 @@ three ways to run it (1.1), then claim the server (1.2).
 
 ### 1.1 Create the server
 
-**Amazon Lightsail (CloudFormation).** In the AWS console, open **CloudFormation → Create stack → With new
-resources**, upload `relay-server/deploy/aws-lightsail.yaml` (or use a Launch Stack link, 1.8), make up a
+**Amazon Lightsail (CloudFormation).** [**Launch Stack**](https://console.aws.amazon.com/cloudformation/home#/stacks/quickcreate?templateURL=https://seika5-relay-templates.s3.us-east-2.amazonaws.com/aws-lightsail.yaml&stackName=relay)
+opens CloudFormation with the template filled in (pick the region you want first, top right). Or open
+**CloudFormation → Create stack → With new resources** and upload `relay-server/deploy/aws-lightsail.yaml`. Make up a
 **SetupCode** (8+ characters) and choose an instance size (default `micro_3_0`, 1 GB). Leave **Domain** empty for
 a free address (1.3). The stack creates the instance, a static IP and the firewall ports. Its **Outputs** tab
 shows the `ServerAddress`.
@@ -171,12 +172,19 @@ Messages waiting on the old server aren't moved: send anything important again a
 
 CloudFormation opens a template from a link only if it's in S3. `.github/workflows/publish-template.yml` uploads
 `aws-lightsail.yaml` to a public bucket on each change, with its `RepoUrl` set to your repository, and prints the
-link in the run summary. One-time setup: create an S3 bucket with a policy allowing public `s3:GetObject`, an IAM
-role your repository can assume through GitHub's OIDC provider with `s3:PutObject` on it, and set the repository
-variables `TEMPLATE_BUCKET` and `AWS_TEMPLATE_ROLE_ARN`. The link looks like:
+link in the run summary. One-time setup, with the AWS and GitHub CLIs signed in:
+
+```bash
+bash .github/setup-template-publishing.sh        # bucket <github-owner>-relay-templates
+```
+
+It creates the bucket (only the template is public), an IAM role only your `main` branch can assume and only to
+upload that file, and the repository variables `TEMPLATE_BUCKET` and `AWS_TEMPLATE_ROLE_ARN`, then uploads the
+template once. The bucket goes in `us-east-2` unless you set `RELAY_TEMPLATE_REGION`. In a fork, change the Launch
+Stack link in 1.1 to your bucket. The link looks like:
 
 ```text
-https://console.aws.amazon.com/cloudformation/home#/stacks/quickcreate?templateURL=https://BUCKET.s3.amazonaws.com/aws-lightsail.yaml&stackName=relay
+https://console.aws.amazon.com/cloudformation/home#/stacks/quickcreate?templateURL=https://BUCKET.s3.REGION.amazonaws.com/aws-lightsail.yaml&stackName=relay
 ```
 
 ---
