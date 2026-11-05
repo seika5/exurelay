@@ -11,6 +11,10 @@
 # Environment overrides: RELAY_DOMAIN, RELAY_REPO, RELAY_BRANCH, RELAY_SETUP_CODE (same as the flags).
 set -euo pipefail
 
+# Kept to run the updated installer with the same options once it has pulled new code (below).
+ORIGINAL_ARGS=("$@")
+SELF_HASH="$(sha256sum "$0" | cut -d' ' -f1)"
+
 DOMAIN="${RELAY_DOMAIN:-}"
 REPO="${RELAY_REPO:-https://github.com/seika5/exurelay.git}"
 BRANCH="${RELAY_BRANCH:-main}"
@@ -104,11 +108,20 @@ fi
 say "Getting the code"
 id relay >/dev/null 2>&1 || useradd --system --home-dir "$DIR" --shell /usr/sbin/nologin relay
 if [ -d "$DIR/.git" ]; then
-  git -C "$DIR" fetch -q --depth 1 origin "$BRANCH" && git -C "$DIR" reset -q --hard FETCH_HEAD
+  # As the relay user, who owns the checkout: git refuses a repository owned by someone else, root included.
+  chown -R relay:relay "$DIR"
+  sudo -u relay git -C "$DIR" fetch -q --depth 1 origin "$BRANCH" || die "couldn't download the update from $(sudo -u relay git -C "$DIR" remote get-url origin)"
+  sudo -u relay git -C "$DIR" reset -q --hard FETCH_HEAD || die "couldn't switch to the downloaded code"
 else
-  git clone -q --depth 1 --branch "$BRANCH" "$REPO" "$DIR"
+  git clone -q --depth 1 --branch "$BRANCH" "$REPO" "$DIR" || die "couldn't download $REPO"
 fi
 chown -R relay:relay "$DIR"
+echo "Code: $(sudo -u relay git -C "$DIR" log --oneline -1)"
+# The update may have changed this installer: finish with the new one, so its upgrade steps run.
+if [ -z "${RELAY_INSTALLER_UPDATED:-}" ] && [ "$(sha256sum "$SERVER/deploy/install.sh" | cut -d' ' -f1)" != "$SELF_HASH" ]; then
+  echo "The installer itself was updated: running the new one."
+  RELAY_INSTALLER_UPDATED=1 exec bash "$SERVER/deploy/install.sh" "${ORIGINAL_ARGS[@]}"
+fi
 cd "$SERVER"
 sudo -u relay npm ci --no-audit --no-fund --loglevel=error
 
