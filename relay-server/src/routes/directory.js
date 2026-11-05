@@ -76,7 +76,6 @@ export function directoryRouter(
         prisma.directory.create({ data: { version: d.version, body: req.body.body, signature: req.body.signature } }),
         prisma.member.deleteMany({ where: { keyHash: { notIn: keep } } }),
         prisma.profile.deleteMany({ where: { keyHash: { notIn: keep } } }),
-        prisma.adminLabel.deleteMany({ where: { keyHash: { notIn: keep } } }),
         prisma.device.deleteMany({ where: { member: { notIn: keep } } }),
         prisma.deviceRevocation.deleteMany({ where: { member: { notIn: keep } } }),
         // Departures the admin has now dropped are done; the rest stay until they're dropped too.
@@ -117,7 +116,6 @@ export function directoryRouter(
         prisma.departure.upsert({ where: { keyHash }, create: { keyHash, ...data }, update: data }),
         prisma.member.delete({ where: { keyHash } }),
         prisma.profile.deleteMany({ where: { keyHash } }),
-        prisma.adminLabel.deleteMany({ where: { keyHash } }),
         prisma.device.deleteMany({ where: { member: keyHash } }),
         prisma.deviceRevocation.deleteMany({ where: { member: keyHash } }),
       ]);

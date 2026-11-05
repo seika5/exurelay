@@ -12,12 +12,8 @@ const VACUUM_EVERY_MS = 60 * 60 * 1000;
 let lastVacuum = 0;
 
 async function run() {
-  const result = await prisma.blob.deleteMany({
-    where: { expiresAt: { lt: new Date() } },
-  });
-  if (result.count > 0) {
-    console.log(`Deleted ${result.count} expired blob(s)`);
-  }
+  // No log line here: counts per minute would leave a record of message volume over time.
+  await prisma.blob.deleteMany({ where: { expiresAt: { lt: new Date() } } });
   await prisma.spentToken.deleteMany({ where: { expiresAt: { lt: new Date() } } });
   // Keep expired issuer keys a week so the admin status page can show recent rotations.
   await prisma.issuerKey.deleteMany({ where: { notAfter: { lt: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } } });

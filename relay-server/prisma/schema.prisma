@@ -68,12 +68,6 @@ model SpentToken {
   @@index([expiresAt])
 }
 
-// Admin-only labels for members ("Mum's phone"). Never sent to non-admins.
-model AdminLabel {
-  keyHash String @id
-  label   String
-}
-
 // A member's own signed "I'm leaving" (DESIGN.md §3). Their Member row is deleted at once; this stays until an
 // admin publishes a directory without them, so clients can verify the departure and drop them meanwhile.
 model Departure {

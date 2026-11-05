@@ -167,6 +167,8 @@ EOF
 umask 022
 chown relay:relay "$ENV_FILE"
 sudo -u relay npx prisma generate >/dev/null
+# Member labels were removed: they were stored on the server in plain text. Drop their table, and any labels in it.
+sudo -u postgres psql -qd relay -c 'DROP TABLE IF EXISTS "AdminLabel"'
 sudo -u relay npx prisma db push --skip-generate || die "the database schema changed in a way that loses data. Read README.md §1.4 (Upgrading)."
 
 # ---------------------------------------------------------------------------------------------------------------
