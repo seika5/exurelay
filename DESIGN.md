@@ -268,6 +268,7 @@ A newly linked device can't read older messages: each was sealed to the devices 
 - **Small on purpose:** every member downloads every blob (recipient-blind storage), so a copy costs the whole group bandwidth. File contents stay behind (they show as "removed from this device"), and the copy stops at 2 MB, newest messages first; the app says how many were left out.
 - **Trust:** a device accepts history only from another of the member's own devices (the sealed slot proves which device sent it). That device could put words in other members' mouths in its copy, but it's the member's own device, which they already trust with everything.
 - **Only on request:** copying puts old messages on more devices, so it's a button, never automatic.
+- **Older versions:** a device still on a version that doesn't know `history` saves it like a message. Apps show only the message kinds they know, so it never appears as a blank message, and once updated, the app unpacks any saved `history` from the member's own devices when it loads its cache.
 
 ### Dropped: delete for me
 

@@ -67,6 +67,11 @@ const REFRESH_DEBOUNCE_MS = 1500;
  */
 export type OutboxStatus = "sending" | "sent" | "failed";
 export type ShownMessage = DecryptedMessage & { outbox?: { id: string; status: OutboxStatus } };
+
+/** Message kinds shown in conversations; anything else (hidden kinds, or a newer version's) isn't. */
+const SHOWN_KINDS = new Set<string>(["text", "file", "contact", "call_event", "group_rename", "plugin"]);
+/** Kinds only my own devices send each other, applied and never shown. */
+const HIDDEN_KINDS = new Set<string>(["device_sync", "history"]);
 type OutboxEntry = { id: string; message: DecryptedMessage; status: OutboxStatus; post: () => Promise<void> };
 
 /** Waits between retries when the server can't be reached (or errs); after the last, the message is "failed". */
@@ -168,7 +173,8 @@ export function useMessages(
   const contactByKeyHash = new Map(identity?.contacts.map((c) => [c.keyHash, c]) ?? []);
 
   const messages = useMemo(() => {
-    const list: ShownMessage[] = [...receivedMessages];
+    // Only kinds this version shows: a newer one's message kinds never appear as blank messages here.
+    const list: ShownMessage[] = receivedMessages.filter((m) => SHOWN_KINDS.has(m.type));
     for (const o of outbox) {
       if (o.message.type === "device_sync" || o.message.type === "history") continue;
       if (!receivedMessages.some((m) => outboxMatch(m, o.message))) list.push({ ...o.message, outbox: { id: o.id, status: o.status } });
@@ -490,7 +496,20 @@ export function useMessages(
     }
     cacheLoaded.current = loadCache(owner, cacheKey).then(
       async ({ messages: kept, cursor: from, read }) => {
-        for (const c of kept) received.current.set(c.message.messageId, c);
+        // A version that didn't know a hidden kind saved it like a message. Unpack history from my own devices now,
+        // and drop those records: they're never shown.
+        const hidden = kept.filter((c) => HIDDEN_KINDS.has(c.message.type));
+        for (const c of kept) if (!HIDDEN_KINDS.has(c.message.type)) received.current.set(c.message.messageId, c);
+        const unpacked: CachedMessage[] = [];
+        for (const c of hidden) {
+          if (c.message.type !== "history" || c.message.senderKeyHash !== owner) continue;
+          for (const item of acceptHistory(c.message.items, (id) => received.current.has(id), readRetention())) {
+            received.current.set(item.message.messageId, item);
+            unpacked.push(item);
+          }
+        }
+        if (unpacked.length) await saveMessages(owner, cacheKey, unpacked).catch(() => {});
+        if (hidden.length) await deleteMessages(owner, hidden.map((c) => c.message.messageId)).catch(() => {});
         cursor.current = from;
         savedCursor.current = from;
         readRef.current = read;
