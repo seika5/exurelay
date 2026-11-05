@@ -19,7 +19,7 @@ export function JoinCodePanel() {
   const link = code ? joinLink(code) : null;
 
   useEffect(() => {
-    if (link) QRCode.toDataURL(link, { errorCorrectionLevel: "L", margin: 1, width: 280 }).then(setQr, () => setQr(null));
+    if (link) QRCode.toDataURL(link, { errorCorrectionLevel: "L", margin: 4, width: 576 }).then(setQr, () => setQr(null));
   }, [link]);
 
   if (!code || !link) return null;
@@ -36,7 +36,7 @@ export function JoinCodePanel() {
       </p>
       {qr && (
         // eslint-disable-next-line @next/next/no-img-element
-        <img src={qr} alt="Join QR code" className="w-48 h-48 rounded bg-white" />
+        <img src={qr} alt="Join QR code" className="w-64 h-64 max-w-full rounded bg-white" />
       )}
       <div className="flex gap-2">
         <button type="button" className={button} onClick={() => copy("link", link)}>

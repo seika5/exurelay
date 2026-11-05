@@ -35,6 +35,23 @@ async function newMember(): Promise<{ ecdh: CryptoKeyPair; signing: CryptoKeyPai
 }
 
 describe("enrollment codes", () => {
+  it("accepts the prefix in any capitalization", async () => {
+    const ecdh = await generateKeyPair();
+    const sig = await generateSigningKeyPair();
+    const code = await createEnrollmentCode(ecdh.publicKey, sig, "Laptop", 1000);
+    const lowered = "relay-enroll:" + code.slice("RELAY-ENROLL:".length);
+    expect((await readEnrollmentCode(lowered, 1000)).ok).toBe(true);
+  });
+
+  it("says so when it's given the server's join code instead", async () => {
+    const join = await readEnrollmentCode("RELAY-JOIN:eyJ0eXBlIjoicmVsYXktam9pbiJ9");
+    expect(join.ok === false && join.error).toMatch(/join code/);
+    const link = await readEnrollmentCode("https://exurelay.com/#join=RELAY-JOIN:abc");
+    expect(link.ok === false && link.error).toMatch(/join code/);
+    const other = await readEnrollmentCode("hello");
+    expect(other.ok === false && other.error).toMatch(/RELAY-ENROLL:/);
+  });
+
   it("round-trips and carries the newcomer's keys and name", async () => {
     const m = await newMember();
     const code = await createEnrollmentCode(m.ecdh.publicKey, m.signing, "Ana", 1000);
