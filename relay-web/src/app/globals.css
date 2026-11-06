@@ -39,3 +39,22 @@ html.page-locked body {
   overflow: hidden;
   overscroll-behavior: none;
 }
+
+/* Touch screens: pressing and holding (a chat row, a button) shouldn't start selecting text, as it would in a web
+   page. Text fields, message text and codes can still be selected and copied. */
+@media (pointer: coarse) {
+  body {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+  }
+  input,
+  textarea,
+  [contenteditable="true"],
+  code,
+  .selectable {
+    -webkit-user-select: text;
+    user-select: text;
+    -webkit-touch-callout: default;
+  }
+}

@@ -16,7 +16,7 @@ export function PluginMessage({ type, data, fallback, mine, sender }: { type: st
     };
   }, [runtime, version, type, data, mine, sender]);
   return (
-    <span className="whitespace-pre-wrap break-words">
+    <span className="selectable whitespace-pre-wrap break-words">
       {text ?? fallback}
       {text === null && <span className="ml-1 text-xs text-[var(--muted)]">({type})</span>}
     </span>

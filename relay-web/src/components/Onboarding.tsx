@@ -374,7 +374,7 @@ function SigningKey({ value }: { value: string }) {
           await navigator.clipboard.writeText(value).catch(() => {});
           setCopied(true);
         }}
-        className={btnSmall}
+        className={btn}
       >
         {copied ? "Copied" : "Copy"}
       </button>

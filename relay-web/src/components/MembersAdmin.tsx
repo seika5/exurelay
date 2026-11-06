@@ -209,7 +209,7 @@ export function EnrollMember() {
             setError(null);
           }}
           onCheck={checkCode}
-          scanLabel="Scan their code"
+          scanLabel="Scan code"
           disabled={busy}
         />
       ) : (

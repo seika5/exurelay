@@ -9,7 +9,7 @@ import { StoragePanel, type StorageControls } from "@/components/StoragePanel";
 import { DevicesPanel } from "@/components/DevicesPanel";
 import { PluginsPanel } from "@/components/PluginsPanel";
 import { BuildInfo, NotificationsSection } from "@/components/GeneralExtras";
-import { InfoTip, SectionTitle } from "@/components/InfoTip";
+import { Collapsible, InfoTip, SectionTitle } from "@/components/InfoTip";
 import { Icon } from "@/components/icons";
 import { confirmDialog, Modal } from "@/components/Modal";
 import { btnDanger, btnPrimary, field } from "@/components/ui";
@@ -87,37 +87,37 @@ export function SettingsModal({
       ) : tab === "storage" ? (
         <StoragePanel storage={storage} conversations={conversations} />
       ) : tab === "admin" && isAdmin ? (
-        <>
-          <section className="flex flex-col gap-2">
-            <SectionTitle>Members</SectionTitle>
+        <div className="flex flex-col gap-2">
+          <Collapsible title={directory ? `Members (${directory.members.length})` : "Members"} defaultOpen={!directory}>
             <MembersAdmin />
-          </section>
+          </Collapsible>
           {directory && (
-            <section className="flex flex-col gap-3">
-              <SectionTitle>Add a member</SectionTitle>
+            <Collapsible title="Add a member">
               <div className="flex flex-col gap-2">
                 <Step tip="It opens Exurelay on this server for them. It isn't secret, but send it to them directly.">1. Send them the join link</Step>
                 <JoinCodePanel />
               </div>
-              <div className="flex flex-col gap-2">
+              <div className="flex flex-col gap-2 pt-1">
                 <Step tip="Once they've joined, their app shows a code. Scan it or paste it here, then check the safety code matches theirs.">
                   2. Scan their code
                 </Step>
                 <EnrollMember />
               </div>
-            </section>
+            </Collapsible>
           )}
-          <section className="flex flex-col gap-2">
-            <SectionTitle tip="Every message, file and call note is padded to one size, so the server can't tell them apart. Every member downloads everything, so a bigger size uses more data. Decoys hide how big a send is.">
-              Message padding
-            </SectionTitle>
-            <BlobSettingsPanel />
-          </section>
-          <section className="flex flex-col gap-2">
-            <SectionTitle>Server status</SectionTitle>
-            <ServerStatusPanel />
-          </section>
-        </>
+          <Collapsible title="Server details">
+            <section className="flex flex-col gap-2">
+              <SectionTitle tip="Every message, file and call note is padded to one size, so the server can't tell them apart. Every member downloads everything, so a bigger size uses more data. Decoys hide how big a send is.">
+                Message padding
+              </SectionTitle>
+              <BlobSettingsPanel />
+            </section>
+            <section className="flex flex-col gap-2 pt-2">
+              <SectionTitle>Server status</SectionTitle>
+              <ServerStatusPanel />
+            </section>
+          </Collapsible>
+        </div>
       ) : (
         <>
           <section className="flex flex-col gap-2">
@@ -206,7 +206,8 @@ export function SettingsModal({
               {leaveError && <p className="text-xs text-red-500">{leaveError}</p>}
           </div>
 
-          <div className="border-t border-[var(--border)] pt-3 flex flex-col gap-1 text-xs text-[var(--muted)]">
+          {/* Pushed to the bottom of the screen when everything fits. */}
+          <div className="mt-auto border-t border-[var(--border)] pt-3 flex flex-col gap-1 text-xs text-[var(--muted)]">
             <p className="flex items-center gap-1.5 flex-wrap">
               Your safety code <code className="whitespace-nowrap">{fp}</code>
               <InfoTip>Others see this code for you. If theirs matches, no one swapped your keys.</InfoTip>

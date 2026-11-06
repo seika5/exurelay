@@ -119,7 +119,7 @@ export function DevicesPanel() {
           Link a device
         </SectionTitle>
         {!checked ? (
-          <CodeInput value={code} onChange={setCode} onCheck={check} scanLabel="Scan its code" disabled={busy} />
+          <CodeInput value={code} onChange={setCode} onCheck={check} scanLabel="Scan code" disabled={busy} />
         ) : (
           <div className="flex flex-col gap-2 p-2 rounded border border-[var(--border)]">
             <p>
