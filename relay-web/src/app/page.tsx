@@ -21,7 +21,7 @@ import { activeCallRoom, newRoomId } from "@/lib/callRoom";
 import type { DecryptedMessage } from "@/lib/blobPayload";
 import { blobSettings } from "@/lib/signed";
 import { activeMentionQuery, encodeDraft, mentionsMe, EVERYONE, type PickedMention } from "@/lib/mentions";
-import { sendPushes } from "@/lib/push";
+import { sendPushes, syncPush } from "@/lib/push";
 import { usePlugins } from "@/context/PluginContext";
 import { PluginMessage } from "@/components/PluginMessage";
 import { MentionPicker, MessageText, type MentionCandidate } from "@/components/Mentions";
@@ -187,6 +187,10 @@ function Chat() {
   const [mentionQuery, setMentionQuery] = useState<{ start: number; query: string } | null>(null);
   const [mentionActive, setMentionActive] = useState(0);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  // With notifications on, tell the server again which subscription is this device's (push.ts syncPush).
+  useEffect(() => {
+    if (identity?.deviceKeyHash) syncPush().catch(() => {});
+  }, [identity?.deviceKeyHash]);
   // On a touch screen Return adds a line (send with the button); with a keyboard Enter sends and Shift+Enter adds one.
   const [touchKeyboard, setTouchKeyboard] = useState(false);
   useEffect(() => setTouchKeyboard(window.matchMedia("(pointer: coarse)").matches), []);

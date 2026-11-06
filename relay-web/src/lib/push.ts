@@ -194,3 +194,54 @@ export async function enablePush(): Promise<PushState> {
   pushable = null;
   return "on";
 }
+
+/** Whether a subscription was made with this server key (a subscription made with another can't receive its pushes). */
+export function sameKey(sub: PushSubscription, publicKey: string): boolean {
+  const have = sub.options?.applicationServerKey;
+  if (!have) return true; // the browser doesn't say: assume it's right
+  const a = new Uint8Array(have);
+  const b = urlBase64ToBytes(publicKey);
+  return a.length === b.length && a.every((x, i) => x === b[i]);
+}
+
+/**
+ * On every launch with notifications on: tell the server again which subscription is this device's. The switch only
+ * knows what this browser has; the server may not (this device's key changed, or the subscription was made with an
+ * old server key, which the push service then refuses). Quiet: failures leave things as they were.
+ */
+export async function syncPush(): Promise<void> {
+  if (!pushSupported() || Notification.permission !== "granted" || isOffHere()) return;
+  const reg = await navigator.serviceWorker.getRegistration();
+  let sub = await reg?.pushManager.getSubscription();
+  if (!reg || !sub) return;
+  const res = await fetch(`${getServerUrl()}/api/push/vapid`, { cache: "no-store" });
+  if (!res.ok) return;
+  const { publicKey } = (await res.json()) as { publicKey: string };
+  if (!sameKey(sub, publicKey)) {
+    await sub.unsubscribe().catch(() => {});
+    sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToBytes(publicKey) as BufferSource });
+  }
+  const json = sub.toJSON();
+  await sessionFetch("/api/push/subscribe", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ endpoint: json.endpoint, keys: json.keys }),
+  });
+  pushable = null;
+}
+
+/**
+ * Settings → Notifications → Test: register again, check the server lists this device, then push it a test mention.
+ * Says what went wrong, if anything.
+ */
+export async function testPush(me: { keyHash: string; keyPair: CryptoKeyPair; deviceKeyHash: string; publicKeyBase64: string }): Promise<string> {
+  await syncPush();
+  pushable = null;
+  const on = await pushableDevices();
+  if (on === null) return "This server doesn't send notifications.";
+  if (!on.has(me.deviceKeyHash)) return "The server doesn't have this device. Turn notifications off and on again.";
+  const r = await sendPushes("mention", me, [{ keyHash: me.deviceKeyHash, publicKey: me.publicKeyBase64 }], { member: me.keyHash });
+  if (r.limited) return "Too many notifications just now. Try again in a minute.";
+  if (!r.sent) return "The server couldn't deliver it. Turn notifications off and on again.";
+  return "Sent. If nothing shows, check your phone's notification settings for Exurelay.";
+}
