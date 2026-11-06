@@ -655,11 +655,9 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
       setDirectoryError(null);
     } catch (e) {
       const message = e instanceof Error ? e.message : "";
-      setDirectoryError(
-        ["Failed to fetch", "Load failed", "NetworkError when attempting to fetch resource."].includes(message)
-          ? `Cannot reach the server (${server.url}).`
-          : message || "Couldn't load the member list."
-      );
+      // Not reaching the server is passing (and the chat list says so if it lasts): only other failures show here.
+      const offline = ["Failed to fetch", "Load failed", "NetworkError when attempting to fetch resource."].includes(message);
+      if (!offline) setDirectoryError(message || "Couldn't load the member list.");
     } finally {
       setDirectoryLoaded(true);
     }

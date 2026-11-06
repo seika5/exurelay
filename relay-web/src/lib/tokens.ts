@@ -123,6 +123,31 @@ function setWarning(w: string | null) {
 export function setTokenDirectory(d: Directory | null) {
   directoryRef = d;
   keysCache = null;
+  if (recheck) setTimeout(() => recheck?.(), 0);
+}
+
+/**
+ * A key that looks off may only be newer than our member list: a removal makes a new key at once, and a message
+ * using it can arrive before the updated list does (which would show the removal that explains it). So look again
+ * once the next member list is in, or after a minute, and warn only if it still looks off.
+ */
+let recheck: (() => void) | null = null;
+let looks: (() => Promise<string | null>)[] = [];
+function warnIfStill(look: () => Promise<string | null>) {
+  looks.push(look);
+  if (recheck) return;
+  const run = async () => {
+    clearTimeout(timer);
+    recheck = null;
+    const pending = looks;
+    looks = [];
+    for (const l of pending) {
+      const w = await l().catch(() => null);
+      if (w) return setWarning(w);
+    }
+  };
+  const timer = setTimeout(run, 60_000);
+  recheck = run;
 }
 
 function readJson<T>(name: string, fallback: T): T {
@@ -165,7 +190,7 @@ export function resetWalletMemory() {
   setWarning(null);
 }
 
-export async function loadIssuerKeys(force = false): Promise<NonNullable<typeof keysCache>> {
+export async function loadIssuerKeys(force = false, quiet = false): Promise<NonNullable<typeof keysCache>> {
   const url = getServerUrl();
   if (!force && keysCache && keysCache.url === url && Date.now() - keysCache.at < KEYS_TTL_MS) return keysCache;
   const res = await fetch(`${url}/api/tokens/keys`, { cache: "no-store" });
@@ -178,8 +203,12 @@ export async function loadIssuerKeys(force = false): Promise<NonNullable<typeof 
   for (const day of Object.keys(seen)) if (Number(day) < Date.now() - 8 * DAY_MS) delete seen[day];
   writeJson("relay.issuerSeen", seen);
   const live = (k: IssuerKey) => k.notBefore <= Date.now() + CLOCK_SKEW_MS && k.notAfter > Date.now();
-  if (rejected.some((r) => live(r.key))) {
-    setWarning(`This server published a token key that breaks the schedule (${rejected[0].reason}). It may be trying to track members.`);
+  if (!quiet && rejected.some((r) => live(r.key))) {
+    warnIfStill(async () => {
+      const again = await loadIssuerKeys(true, true);
+      const bad = again.all.filter((k) => again.rejected.includes(k.id) && live(k));
+      return bad.length ? "This server published a token key that breaks the schedule. It may be trying to track members." : null;
+    });
   }
   keysCache = { at: Date.now(), url, all, accepted, rejected: rejected.map((r) => r.key.id) };
   return keysCache;
@@ -333,11 +362,14 @@ export async function checkPeerIssuer(issuerId: string): Promise<void> {
   let keys = await loadIssuerKeys();
   if (!keys.all.some((k) => k.id === issuerId)) keys = await loadIssuerKeys(true);
   checkedIssuers.add(issuerId);
-  if (!keys.all.some((k) => k.id === issuerId)) {
-    setWarning(
-      "Another member is using a token key this server never showed you. The server may be giving members different keys to tell them apart."
-    );
-  } else if (keys.rejected.includes(issuerId)) {
-    setWarning("Another member is using a token key that breaks the schedule. The server may be trying to track members.");
+  if (!keys.all.some((k) => k.id === issuerId) || keys.rejected.includes(issuerId)) {
+    warnIfStill(async () => {
+      const again = await loadIssuerKeys(true, true);
+      if (!again.all.some((k) => k.id === issuerId)) {
+        return "Another member is using a token key this server never showed you. The server may be giving members different keys to tell them apart.";
+      }
+      if (again.rejected.includes(issuerId)) return "Another member is using a token key that breaks the schedule. The server may be trying to track members.";
+      return null;
+    });
   }
 }
