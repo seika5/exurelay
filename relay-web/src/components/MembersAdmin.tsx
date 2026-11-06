@@ -5,7 +5,7 @@ import { useIdentity } from "@/context/IdentityContext";
 import { CodeInput } from "@/components/CodeInput";
 import { IconButton } from "@/components/icons";
 import { confirmDialog } from "@/components/Modal";
-import { btn, btnPrimary, field } from "@/components/ui";
+import { btn, btnPrimary, field, scrollList } from "@/components/ui";
 import {
   directoryWithAdmins,
   directoryWithMember,
@@ -119,12 +119,12 @@ export function MembersAdmin() {
 
   return (
     <div className="flex flex-col gap-2">
-      <ul className="flex flex-col gap-1">
+      <ul className={scrollList}>
         {directory.members.map((m) => {
           const isMe = m.keyHash === identity.keyHash;
           const admin = adminOf(m);
           return (
-            <li key={m.keyHash} className="flex items-center gap-2 py-1">
+            <li key={m.keyHash} className="flex items-center gap-2 pl-3 pr-1 py-1">
               <div className="flex-1 min-w-0">
                 <div className="flex flex-wrap items-baseline gap-x-1.5 text-sm">
                   <span className="break-words min-w-0">{nameOf(m)}</span>

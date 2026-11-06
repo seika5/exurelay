@@ -58,3 +58,29 @@ html.page-locked body {
     -webkit-touch-callout: default;
   }
 }
+
+/* A list that scrolls inside a box (Settings: chats to clear, members): it shows there's more to see. A scrollbar
+   that stays visible, where the browser allows one (Firefox draws its own), and a shadow at an edge with more beyond
+   it, which iPhones show too. The shadows scroll with the content (background-attachment: local), so they appear
+   only where there is more. Rows need a see-through background. */
+.scroll-visible {
+  background:
+    linear-gradient(var(--surface) 30%, transparent) center top,
+    linear-gradient(transparent, var(--surface) 70%) center bottom,
+    radial-gradient(farthest-side at 50% 0, rgba(0, 0, 0, 0.55), transparent) center top,
+    radial-gradient(farthest-side at 50% 100%, rgba(0, 0, 0, 0.55), transparent) center bottom;
+  background-repeat: no-repeat;
+  background-size: 100% 40px, 100% 40px, 100% 14px, 100% 14px;
+  background-attachment: local, local, scroll, scroll;
+  background-color: var(--surface);
+}
+.scroll-visible::-webkit-scrollbar {
+  width: 6px;
+}
+.scroll-visible::-webkit-scrollbar-thumb {
+  background: var(--muted);
+  border-radius: 3px;
+}
+.scroll-visible::-webkit-scrollbar-track {
+  background: transparent;
+}

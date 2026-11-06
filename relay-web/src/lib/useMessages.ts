@@ -588,6 +588,16 @@ export function useMessages(
     await publish();
   }, [owner, cacheKey, publish]);
 
+  /** Download everything the server still holds again, keeping what's here (anything already here is skipped). */
+  const downloadAgain = useCallback(async () => {
+    cursor.current = "0";
+    savedCursor.current = "0";
+    opener.current = null;
+    if (owner && cacheKey) await saveMeta(owner, cacheKey, { cursor: "0", read: readRef.current });
+    await loadBlobs();
+  }, [owner, cacheKey, loadBlobs]);
+
+  /** Clear a conversation from this device, then download what the server still has of it (the last ~3–4 days). */
   const clearConversation = useCallback(
     async (conv: Conversation) => {
       if (!identity) return;
@@ -597,8 +607,9 @@ export function useMessages(
       for (const id of ids) received.current.delete(id);
       if (owner) await deleteMessages(owner, ids);
       await publish();
+      await downloadAgain();
     },
-    [identity, owner, publish]
+    [identity, owner, publish, downloadAgain]
   );
 
   /** Clear everything kept on this device. Messages still on the server don't come back unless you re-sync. */

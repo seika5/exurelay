@@ -6,7 +6,7 @@ import { MAX_RETENTION_DAYS } from "@/lib/messageCache";
 import { SectionTitle } from "@/components/InfoTip";
 import { IconButton } from "@/components/icons";
 import { confirmDialog } from "@/components/Modal";
-import { btnDanger, btnPrimary, field } from "@/components/ui";
+import { btnDanger, btnPrimary, field, scrollList } from "@/components/ui";
 
 export type StorageControls = {
   stats: StorageStats;
@@ -91,10 +91,12 @@ export function StoragePanel({
         </div>
       </section>
 
-      {conversations.length > 0 && (
-        <section className="flex flex-col gap-1">
-          <SectionTitle tip="Removes a chat's messages and files from this device only. Others keep their copies.">Clear a chat</SectionTitle>
-          <ul className="flex flex-col max-h-60 overflow-auto rounded border border-[var(--border)] divide-y divide-[var(--border)]">
+      <section className="flex flex-col gap-2">
+        <SectionTitle tip="Clears this device only, then downloads again what the server still has (the last 3 to 4 days). Others keep their copies.">
+          Clear storage
+        </SectionTitle>
+        {conversations.length > 0 && (
+          <ul className={scrollList}>
             {conversations.map((c, i) => (
               <li key={i} className="flex items-center gap-2 pl-3 pr-1 py-1">
                 <span className="flex-1 min-w-0 truncate">{c.label}</span>
@@ -103,43 +105,22 @@ export function StoragePanel({
                   label={`Clear ${c.label}`}
                   danger
                   disabled={busy}
-                  onClick={() => act(`Clear "${c.label}" from this device?`, "Clear", () => storage.clearConversation(c.conv), "Chat cleared.")}
+                  onClick={() => act(`Clear "${c.label}" from this device? What the server still has of it downloads again.`, "Clear", () => storage.clearConversation(c.conv), "Chat cleared.")}
                 />
               </li>
             ))}
           </ul>
-        </section>
-      )}
-
-      <section className="flex flex-col gap-2">
-        <SectionTitle tip="Clearing all messages also downloads again what the server still has (the last 3 to 4 days).">Clear storage</SectionTitle>
-        <div className="flex flex-wrap gap-2">
-          {stats.files > 0 && (
-            <button
-              type="button"
-              disabled={busy}
-              className={btnDanger}
-              onClick={() => act("Remove all files from this device? The messages stay.", "Remove", storage.clearFiles, "Files removed.")}
-            >
-              Remove files ({fmt(stats.fileBytes)})
-            </button>
-          )}
-          <button
-            type="button"
-            disabled={busy}
-            className={btnDanger}
-            onClick={() =>
-              act(
-                "Clear every message from this device? What the server still has (the last 3 to 4 days) downloads again. Others keep their copies.",
-                "Clear",
-                storage.resync,
-                "All messages cleared."
-              )
-            }
-          >
-            Clear all messages
-          </button>
-        </div>
+        )}
+        <button
+          type="button"
+          disabled={busy}
+          className={`${btnDanger} self-start`}
+          onClick={() =>
+            act("Clear every message from this device? What the server still has downloads again. Others keep their copies.", "Clear", storage.resync, "All messages cleared.")
+          }
+        >
+          Clear all messages
+        </button>
         {message && <p className="text-xs text-[var(--muted)]">{message}</p>}
       </section>
     </div>
