@@ -20,7 +20,7 @@ import {
 import { activeCallRoom, newRoomId } from "@/lib/callRoom";
 import type { DecryptedMessage } from "@/lib/blobPayload";
 import { blobSettings } from "@/lib/signed";
-import { activeMentionQuery, encodeDraft, mentionsMe, EVERYONE, type PickedMention } from "@/lib/mentions";
+import { activeMentionQuery, encodeDraft, mentionsMe, splitMentions, EVERYONE, type PickedMention } from "@/lib/mentions";
 import { sendPushes, syncPush } from "@/lib/push";
 import { usePlugins } from "@/context/PluginContext";
 import { PluginMessage } from "@/components/PluginMessage";
@@ -31,6 +31,8 @@ import { Modal, confirmDialog } from "@/components/Modal";
 import { btn, btnPrimary, field } from "@/components/ui";
 import { PageLock, useVisibleViewport } from "@/lib/useVisibleViewport";
 import { ChatFile } from "@/components/ChatFile";
+import { MessageSheet, ReactionChips, ReactionPopover } from "@/components/Reactions";
+import { getQuickEmoji } from "@/lib/emoji";
 import { ScrollList } from "@/components/ScrollList";
 
 const GROUP_BREAK_MS = 10 * 60 * 1000;
@@ -72,12 +74,14 @@ function conversationLabel(
   conv: Conversation,
   myKeyHash: string,
   getDisplayName: (k: string) => string | undefined,
-  groupNames: Map<string, string>
+  groupNames: Map<string, string>,
+  /** Members still on the member list: removed ones aren't counted. */
+  stillHere: (k: string) => boolean = () => true
 ): string {
   if (conv.type === "dm") {
     return getDisplayName(conv.otherKeyHash) || conv.otherKeyHash.slice(0, 8);
   }
-  const n = conv.memberKeyHashes.length;
+  const n = conv.memberKeyHashes.filter(stillHere).length;
   const name = groupNames.get(conversationId(conv, myKeyHash)) || "Group Chat";
   return `${name} (${n})`;
 }
@@ -146,7 +150,7 @@ function Chat() {
   } = useCall();
   // Messages need a login, which needs membership: nothing is fetched until we're enrolled on a server.
   // Wait for the cache key too, so the first sync resumes from the cached cursor instead of starting over.
-  const { messages, conversations, sendMessage, sendHistory, retrySend, cancelSend, storage, readMarks, markRead, cacheReady, loading: messagesLoading, error } = useMessages(
+  const { messages, reactions, conversations, sendMessage, sendHistory, retrySend, cancelSend, storage, readMarks, markRead, cacheReady, loading: messagesLoading, error } = useMessages(
     enrolled && server && cacheKey !== undefined ? identity : null,
     useMemo(() => blobSettings(directory), [directory]),
     cacheKey ?? null,
@@ -219,6 +223,29 @@ function Chat() {
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   // The chat screen is pinned to the area above the keyboard (useVisibleViewport.ts).
   const visible = useVisibleViewport();
+  /**
+   * Still on the member list (you always are). Removed members drop out of chats: a DM with one isn't listed, and
+   * a group lists, counts and sends to the rest only (it keeps its identity, so its history stays with it).
+   */
+  const stillHere = useCallback(
+    (k: string) => !directoryLoaded || k === identity?.keyHash || !!getMember(k),
+    [directoryLoaded, identity?.keyHash, getMember]
+  );
+  // Reactions: the desktop picker (which message, where its button is) and the phone's press-and-hold sheet.
+  const [reactPicker, setReactPicker] = useState<{ id: string; anchor: DOMRect } | null>(null);
+  const [sheetFor, setSheetFor] = useState<string | null>(null);
+  const holdTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const holdStart = useRef({ x: 0, y: 0 });
+  // Phones: a double tap reacts with your first quick reaction.
+  const lastTap = useRef<{ id: string; at: number } | null>(null);
+  const closePicker = useCallback(() => setReactPicker(null), []);
+  const closeSheet = useCallback(() => setSheetFor(null), []);
+
+  // The chats the list shows: not a DM with a removed member, nor a group that's down to just you.
+  const listed = useMemo(
+    () => conversations.filter((c) => (c.type === "dm" ? stillHere(c.otherKeyHash) : c.memberKeyHashes.filter(stillHere).length >= 2)),
+    [conversations, stillHere]
+  );
   const keyboardVisible = visible.keyboard;
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesListRef = useRef<HTMLUListElement>(null);
@@ -258,7 +285,7 @@ function Chat() {
   // "@…" suggestions: the conversation's other members by your names for them, and @everyone in groups.
   const mentionCandidates = useMemo<MentionCandidate[]>(() => {
     if (!mentionQuery || !selected || !identity) return [];
-    const others = selected.type === "dm" ? [selected.otherKeyHash] : selected.memberKeyHashes.filter((k) => k !== identity.keyHash);
+    const others = selected.type === "dm" ? [selected.otherKeyHash] : selected.memberKeyHashes.filter((k) => k !== identity.keyHash && stillHere(k));
     const all: MentionCandidate[] = others.map((k) => ({ keyHash: k, label: nameFor(k) }));
     if (selected.type === "group") all.push({ keyHash: EVERYONE, label: EVERYONE });
     const q = mentionQuery.query.toLowerCase();
@@ -538,7 +565,7 @@ function Chat() {
       } else {
         sendMessage(
           { ...base, groupMemberKeyHashes: selected.memberKeyHashes } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
-          selected.memberKeyHashes.filter((k) => k !== identity.keyHash)
+          selected.memberKeyHashes.filter((k) => k !== identity.keyHash && stillHere(k))
         );
       }
     });
@@ -560,13 +587,42 @@ function Chat() {
     });
   }, [filteredMessages, plugins, identity, nameFor]);
 
+  /** Add your reaction, or take it back if it's already yours. Sent to the conversation like a message. */
+  const toggleReaction = (messageId: string, emoji: string) => {
+    if (!identity || !selected) return;
+    const mine = reactions.get(messageId)?.find((r) => r.emoji === emoji)?.by.includes(identity.keyHash) ?? false;
+    const base = { type: "reaction", target: messageId, emoji, on: !mine };
+    if (selected.type === "dm") {
+      sendMessage({ ...base, recipientKeyHash: selected.otherKeyHash } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">, [selected.otherKeyHash], {
+        recipientKeyHash: selected.otherKeyHash,
+      });
+    } else {
+      sendMessage(
+        { ...base, groupMemberKeyHashes: selected.memberKeyHashes } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
+        selected.memberKeyHashes.filter((k) => k !== identity.keyHash && stillHere(k))
+      );
+    }
+  };
+
+  /** A double tap: your first quick reaction, added (a second double tap doesn't take it back, like a "like"). */
+  const likeMessage = (messageId: string) => {
+    const emoji = getQuickEmoji()[0];
+    if (!reactions.get(messageId)?.find((r) => r.emoji === emoji)?.by.includes(identity?.keyHash ?? "")) toggleReaction(messageId, emoji);
+  };
+
+  /** A message's text as you'd read it (mentions as @names), for Copy. */
+  const plainText = (body: string) =>
+    splitMentions(body)
+      .map((seg) => ("text" in seg ? seg.text : `@${seg.mention === EVERYONE ? "everyone" : nameFor(seg.mention)}`))
+      .join("");
+
   const handleSend = async () => {
     if (!identity || (!input.trim() && pendingFiles.length === 0)) return;
     const recipients =
       selected?.type === "dm"
         ? [selected.otherKeyHash]
         : selected?.type === "group"
-          ? selected.memberKeyHashes.filter((k) => k !== identity.keyHash)
+          ? selected.memberKeyHashes.filter((k) => k !== identity.keyHash && stillHere(k))
           : [];
 
     // The composer clears at once; the message shows faded until the server has it (see useMessages' outbox).
@@ -709,7 +765,7 @@ function Chat() {
       } else {
         await sendMessage(
           { type: "call_event", event: "started", groupMemberKeyHashes: selected.memberKeyHashes, roomId: callRoomId } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
-          selected.memberKeyHashes.filter((k) => k !== identity.keyHash)
+          selected.memberKeyHashes.filter((k) => k !== identity.keyHash && stillHere(k))
         );
       }
     };
@@ -850,14 +906,14 @@ function Chat() {
 
         {/* Conversation + contact list */}
         <ul className="flex-1 overflow-auto py-1">
-          {conversations.length === 0 && contactsWithoutDmSorted.length === 0 && (
+          {listed.length === 0 && contactsWithoutDmSorted.length === 0 && (
             <li className="px-3 py-4 text-sm text-[var(--muted)] flex flex-col gap-1">
               <span>No one else here yet.</span>
               {isAdmin && <span className="text-xs">Add people in Settings → Admin.</span>}
             </li>
           )}
 
-          {conversations.map((conv) => {
+          {listed.map((conv) => {
             const key = conv.type === "dm"
               ? `dm:${conv.otherKeyHash}`
               : `g:${[...conv.memberKeyHashes].sort().join(",")}`;
@@ -899,7 +955,7 @@ function Chat() {
                   className={`w-full text-left px-3 py-2.5 text-sm truncate transition-colors ${isSelected ? "bg-[var(--accent)]/30" : "hover:bg-[var(--border)] active:bg-[var(--border)]"} ${isInactive(conv) ? "opacity-50" : ""}`}
                 >
                   <span className="flex items-center gap-2">
-                    <span className="truncate">{conversationLabel(conv, me, getDisplayName, groupNamesFromMessages)}</span>
+                    <span className="truncate">{conversationLabel(conv, me, getDisplayName, groupNamesFromMessages, stillHere)}</span>
                     {unreadMentions(conv) > 0 ? (
                       <span className="ml-auto shrink-0 h-2.5 w-2.5 rounded-full bg-amber-400" role="img" aria-label="Unread mention" />
                     ) : (
@@ -991,7 +1047,7 @@ function Chat() {
                 <IconButton icon="chatBack" label="Back to chat list" onClick={() => setSidebarVisible(true)} />
                 {/* Something new in another chat: white, or yellow if it mentions you. */}
                 {(() => {
-                  const others = conversations.filter((c) => !selected || conversationId(c, identity?.keyHash ?? "") !== conversationId(selected, identity?.keyHash ?? ""));
+                  const others = listed.filter((c) => !selected || conversationId(c, identity?.keyHash ?? "") !== conversationId(selected, identity?.keyHash ?? ""));
                   const mention = others.some((c) => unreadMentions(c) > 0);
                   if (!mention && !others.some(hasUnread)) return null;
                   return (
@@ -1010,7 +1066,7 @@ function Chat() {
                   title={selected.type === "dm" ? "Set nickname" : "Rename group"}
                   className={`${btn} min-w-0 max-w-full justify-start font-medium`}
                 >
-                  <span className="truncate">{conversationLabel(selected, me, getDisplayName, groupNamesFromMessages)}</span>
+                  <span className="truncate">{conversationLabel(selected, me, getDisplayName, groupNamesFromMessages, stillHere)}</span>
                   <span className="text-[var(--muted)]">
                     <Icon name="chatPencil" size={14} />
                   </span>
@@ -1073,11 +1129,52 @@ function Chat() {
                 // Regular message
                 const grouped = isGroupedWithPrev(m, prev);
                 const forMe = mentionsMe(m, me);
+                const canReact = !m.outbox;
+                const endHold = () => holdTimer.current && clearTimeout(holdTimer.current);
                 return (
                   <li
                     key={i}
-                    className={`${grouped ? "mt-0.5" : "mt-3"} ${forMe ? "border-l-2 border-amber-400 bg-amber-500/5 pl-2 -ml-2" : ""}`}
+                    className={`group relative ${grouped ? "mt-0.5" : "mt-3"} ${forMe ? "border-l-2 border-amber-400 bg-amber-500/5 pl-2 -ml-2" : ""}`}
+                    // Phones: press and hold for reactions and Copy (no text selection).
+                    onPointerDown={(e) => {
+                      // Only one finger on the message itself: not a pinch in the photo viewer (it's drawn elsewhere on the
+                      // page, but React still passes its touches up to here).
+                      if (!canReact || e.pointerType === "mouse" || !e.isPrimary || !e.currentTarget.contains(e.target as Node)) return;
+                      if ((e.target as HTMLElement).closest("button, a, video, audio")) return;
+                      endHold();
+                      holdStart.current = { x: e.clientX, y: e.clientY };
+                      holdTimer.current = setTimeout(() => setSheetFor(m.messageId), 450);
+                    }}
+                    onPointerMove={(e) => (Math.abs(e.clientX - holdStart.current.x) > 8 || Math.abs(e.clientY - holdStart.current.y) > 8) && endHold()}
+                    onPointerUp={(e) => {
+                      endHold();
+                      if (!canReact || e.pointerType === "mouse" || sheetFor || !e.isPrimary || !e.currentTarget.contains(e.target as Node)) return;
+                      if ((e.target as HTMLElement).closest("button, a, video, audio")) return;
+                      const now = Date.now();
+                      if (lastTap.current?.id === m.messageId && now - lastTap.current.at < 300) {
+                        lastTap.current = null;
+                        likeMessage(m.messageId);
+                      } else lastTap.current = { id: m.messageId, at: now };
+                    }}
+                    onPointerCancel={endHold}
+                    // No double-tap zoom on a message: a double tap reacts.
+                    style={{ touchAction: "manipulation" }}
+                    onContextMenu={(e) => window.matchMedia("(pointer: coarse)").matches && e.preventDefault()}
                   >
+                    {/* Desktop: a react button at the top right when hovering the message. */}
+                    {canReact && (
+                      <button
+                        type="button"
+                        aria-label="Add reaction"
+                        title="Add reaction"
+                        onClick={(e) => setReactPicker({ id: m.messageId, anchor: e.currentTarget.getBoundingClientRect() })}
+                        className={`absolute -top-3 right-1 z-10 h-7 w-7 items-center justify-center rounded border border-[var(--border)] bg-[var(--surface)] text-[var(--text)] shadow touch:!hidden ${
+                          reactPicker?.id === m.messageId ? "flex" : "hidden group-hover:flex"
+                        }`}
+                      >
+                        <Icon name="chatReact" />
+                      </button>
+                    )}
                     {!grouped && (
                       <div className="flex items-baseline gap-2 mb-0.5">
                         <span className="text-xs font-semibold text-[var(--text)]">{senderName(m.senderKeyHash)}</span>
@@ -1101,6 +1198,7 @@ function Chat() {
                           body={m.body}
                           removed={m.removed}
                           onDownload={() => downloadFile(m.body, m.filename || "download")}
+                          onDoubleTap={m.outbox ? undefined : () => likeMessage(m.messageId)}
                         />
                       )}
                       {m.type === "contact" && (
@@ -1119,6 +1217,12 @@ function Chat() {
                         />
                       )}
                     </div>
+                    <ReactionChips
+                      reactions={reactions.get(m.messageId) ?? []}
+                      me={me}
+                      nameFor={nameFor}
+                      onToggle={(emoji) => toggleReaction(m.messageId, emoji)}
+                    />
                     {m.outbox?.status === "failed" && (
                       <div className="flex items-center gap-1.5 mt-1 text-xs text-red-500">
                         Not sent
@@ -1232,7 +1336,7 @@ function Chat() {
                     e.preventDefault();
                     e.currentTarget.focus({ preventScroll: true });
                   }}
-                  placeholder={selected ? `Message ${conversationLabel(selected, me, getDisplayName, groupNamesFromMessages)}` : "Message"}
+                  placeholder={selected ? `Message ${conversationLabel(selected, me, getDisplayName, groupNamesFromMessages, stillHere)}` : "Message"}
                   className="flex-1 min-w-0 px-3 py-2 touch:min-h-10 resize-none block rounded bg-[var(--surface)] border border-[var(--border)] text-[var(--text)] placeholder-[var(--muted)]"
                 />
                 <button
@@ -1271,7 +1375,7 @@ function Chat() {
         <SettingsModal
           onClose={() => setSettingsOpen(false)}
           storage={storage}
-          conversations={conversations.map((c) => ({ conv: c, label: conversationLabel(c, me, getDisplayName, groupNamesFromMessages) }))}
+          conversations={conversations.map((c) => ({ conv: c, label: conversationLabel(c, me, getDisplayName, groupNamesFromMessages, stillHere) }))}
         />
       )}
 
@@ -1331,15 +1435,29 @@ function Chat() {
         </Modal>
       )}
 
+      {reactPicker && (
+        <ReactionPopover anchor={reactPicker.anchor} onPick={(e) => toggleReaction(reactPicker.id, e)} onClose={closePicker} />
+      )}
+      {sheetFor && (() => {
+        const m = filteredMessages.find((x) => x.messageId === sheetFor);
+        if (!m) return null;
+        return (
+          <MessageSheet
+            onReact={(e) => toggleReaction(m.messageId, e)}
+            copyText={m.type === "text" ? plainText(m.body) : null}
+            onClose={closeSheet}
+          />
+        );
+      })()}
+
       {membersOpen && selected?.type === "group" && identity && (
         <Modal title="Members" onClose={closeMembers} compact>
           <ul className="flex flex-col gap-1">
-            {[...selected.memberKeyHashes]
+            {selected.memberKeyHashes.filter(stillHere)
               .sort((x, y) => (x === identity.keyHash ? -1 : y === identity.keyHash ? 1 : 0))
               .map((k) => (
                 <li key={k} className="flex items-center gap-2 py-1 text-sm">
                   <span className="truncate">{k === identity.keyHash ? "You" : getDisplayName(k) || k.slice(0, 8)}</span>
-                  {k !== identity.keyHash && isRemoved(k) && <span className="text-xs text-[var(--muted)]">left</span>}
                 </li>
               ))}
           </ul>

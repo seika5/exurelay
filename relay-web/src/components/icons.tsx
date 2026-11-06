@@ -78,6 +78,13 @@ const PATHS = {
   chatPencil: <path d="M4 20h4L19 9l-4-4L4 16zM13.5 6.5l4 4" />,
   chatDownload: <path d="M12 4v11M7 10l5 5 5-5M5 20h14" />,
   chatFile: <path d="M14 3H6v18h12V7zM14 3v4h4" />,
+  chatReact: (
+    <>
+      <path d="M20.5 12A8.5 8.5 0 1 1 12 3.5" />
+      <path d="M8.5 14.5c.9 1.2 2.1 1.8 3.5 1.8s2.6-.6 3.5-1.8M9 10h.01M15 10h.01M19 2.5v5M16.5 5h5" />
+    </>
+  ),
+  chatCopy: <path d="M9 9h10v11H9zM5 15H4V4h11v1" />,
   chatShow: (
     <>
       <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z" />

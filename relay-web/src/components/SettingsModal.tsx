@@ -9,6 +9,7 @@ import { StoragePanel, type StorageControls } from "@/components/StoragePanel";
 import { DevicesPanel } from "@/components/DevicesPanel";
 import { PluginsPanel } from "@/components/PluginsPanel";
 import { BuildInfo, NotificationsSection } from "@/components/GeneralExtras";
+import { QuickReactionsSection } from "@/components/Reactions";
 import { Collapsible, InfoTip, SectionTitle } from "@/components/InfoTip";
 import { Icon } from "@/components/icons";
 import { confirmDialog, Modal } from "@/components/Modal";
@@ -166,6 +167,8 @@ export function SettingsModal({
           </section>
 
           <NotificationsSection />
+
+          <QuickReactionsSection />
 
           <div className="flex flex-col gap-1">
               <button
