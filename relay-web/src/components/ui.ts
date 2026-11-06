@@ -16,3 +16,5 @@ export const btnDanger = `${base} border border-red-500/50 text-red-400 hover:bg
 export const btnSmall = `inline-flex items-center justify-center gap-1 px-2 py-1 touch:min-h-10 rounded text-xs border border-[var(--border)] hover:bg-white/5 disabled:opacity-50`;
 /** Text inputs and selects. */
 export const field = "px-3 py-2 rounded bg-[var(--bg)] border border-[var(--border)] text-sm";
+/** A bordered list that scrolls inside its box, with a scrollbar that always shows (globals.css). Rows go in <li>s. */
+export const scrollList = "scroll-visible flex flex-col max-h-60 overflow-auto rounded border border-[var(--border)] divide-y divide-[var(--border)]";
