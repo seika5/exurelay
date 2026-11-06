@@ -41,7 +41,7 @@ html.page-locked body {
 }
 
 /* Touch screens: pressing and holding (a chat row, a button) shouldn't start selecting text, as it would in a web
-   page. Text fields, message text and codes can still be selected and copied. */
+   page. Text fields and codes can still be selected; a message's press and hold has Copy instead (Reactions.tsx). */
 @media (pointer: coarse) {
   body {
     -webkit-user-select: none;
@@ -51,8 +51,7 @@ html.page-locked body {
   input,
   textarea,
   [contenteditable="true"],
-  code,
-  .selectable {
+  code {
     -webkit-user-select: text;
     user-select: text;
     -webkit-touch-callout: default;

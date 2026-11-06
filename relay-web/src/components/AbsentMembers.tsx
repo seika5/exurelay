@@ -14,12 +14,13 @@ const RING_COOLDOWN_MS = 30_000;
 /** Conversation members who aren't in the call (DESIGN.md §7): the app only knows who joined the room. */
 export function useAbsentMembers(): string[] {
   const { currentCallConversation, peerKeyHashes } = useCall();
-  const { identity } = useIdentity();
+  const { identity, getMember, directoryLoaded } = useIdentity();
   if (!currentCallConversation || !identity) return [];
   const members =
     currentCallConversation.type === "dm" ? [currentCallConversation.otherKeyHash] : currentCallConversation.memberKeyHashes;
   const here = new Set(peerKeyHashes.values());
-  return members.filter((k) => k !== identity.keyHash && !here.has(k));
+  // Removed members aren't missing from the call: they're not in the group any more.
+  return members.filter((k) => k !== identity.keyHash && !here.has(k) && (!directoryLoaded || !!getMember(k)));
 }
 
 /**

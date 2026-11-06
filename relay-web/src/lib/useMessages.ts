@@ -1,5 +1,6 @@
 "use client";
 
+import { tallyReactions, type Reaction } from "./reactions";
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { ApiError, getBlobsSince, postBlobs } from "@/lib/api";
 import { createSocket } from "@/lib/socket";
@@ -187,12 +188,19 @@ export function useMessages(
     // Only kinds this version shows: a newer one's message kinds never appear as blank messages here.
     const list: ShownMessage[] = receivedMessages.filter((m) => SHOWN_KINDS.has(m.type));
     for (const o of outbox) {
-      if (o.message.type === "device_sync" || o.message.type === "history") continue;
+      if (!SHOWN_KINDS.has(o.message.type)) continue;
       if (!receivedMessages.some((m) => outboxMatch(m, o.message))) list.push({ ...o.message, outbox: { id: o.id, status: o.status } });
     }
     list.sort((a, b) => a.sentAt - b.sentAt);
     return list;
   }, [receivedMessages, outbox]);
+
+  /** Reactions on each message by its id, including ones still on their way (they show at once). */
+  const reactions = useMemo(() => {
+    if (!identity) return new Map<string, Reaction[]>();
+    const pending = outbox.map((o) => o.message).filter((m) => m.type === "reaction" && !receivedMessages.some((r) => r.messageId === m.messageId));
+    return tallyReactions([...receivedMessages, ...pending, ...outbox.map((o) => o.message).filter((m) => m.type !== "reaction")], identity.keyHash);
+  }, [receivedMessages, outbox, identity]);
 
   const owner = identity?.keyHash ?? null;
 
@@ -658,5 +666,5 @@ export function useMessages(
     [receivedMessages, retentionDays, setRetentionDays, clearFiles, clearConversation, clearAll, resync]
   );
 
-  return { messages, conversations, loadBlobs, sendMessage, sendHistory, retrySend, cancelSend, storage, readMarks, markRead, cacheReady, loading, error };
+  return { messages, reactions, conversations, loadBlobs, sendMessage, sendHistory, retrySend, cancelSend, storage, readMarks, markRead, cacheReady, loading, error };
 }

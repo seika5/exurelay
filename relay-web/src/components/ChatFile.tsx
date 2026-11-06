@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useDoubleTap } from "@/lib/doubleTap";
+import { getQuickEmoji } from "@/lib/emoji";
 import { createPortal } from "react-dom";
 import { Icon, IconButton } from "@/components/icons";
 
@@ -32,6 +34,7 @@ export function ChatFile({
   body,
   removed,
   onDownload,
+  onDoubleTap,
 }: {
   name: string;
   /** e.g. "1.2 MB", or null when unknown. */
@@ -40,12 +43,20 @@ export function ChatFile({
   body: string;
   removed?: boolean;
   onDownload: () => void;
+  /** Phones: a double tap on the photo or video (here or full screen) reacts to its message. */
+  onDoubleTap?: () => void;
 }) {
   const kind = removed ? null : mediaKind(name);
   const [url, setUrl] = useState<string | null>(null);
   const [shown, setShown] = useState(false);
   const [failed, setFailed] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  // Phones: one tap opens it full screen (once it's clear no second tap is coming), a double tap reacts.
+  const touched = useRef(false);
+  const taps = useDoubleTap(
+    () => onDoubleTap?.(),
+    () => setExpanded(true)
+  );
 
   useEffect(() => () => {
     if (url) URL.revokeObjectURL(url);
@@ -71,7 +82,15 @@ export function ChatFile({
         <button
           type="button"
           aria-label={`Open ${name}`}
-          onClick={() => setExpanded(true)}
+          onPointerDown={(e) => {
+            touched.current = e.pointerType === "touch";
+            taps.onPointerDown(e);
+          }}
+          onPointerUp={taps.onPointerUp}
+          onPointerCancel={taps.onPointerCancel}
+          // A mouse opens it at once; a touch waits for the tap handling above.
+          onClick={() => !touched.current && setExpanded(true)}
+          style={{ touchAction: "manipulation" }}
           className="relative self-start max-w-full rounded border border-[var(--border)] overflow-hidden cursor-zoom-in"
         >
           {kind === "image" ? (
@@ -91,7 +110,7 @@ export function ChatFile({
         </button>
       )}
       {open && expanded && url && (kind === "image" || kind === "video") && (
-        <MediaViewer kind={kind} url={url} name={name} onDownload={onDownload} onClose={() => setExpanded(false)} />
+        <MediaViewer kind={kind} url={url} name={name} onDownload={onDownload} onDoubleTap={onDoubleTap} onClose={() => setExpanded(false)} />
       )}
       {open && kind === "audio" && <audio src={url} controls onError={() => setFailed(true)} className="max-w-full" />}
       <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1 max-w-full">
@@ -120,14 +139,25 @@ function MediaViewer({
   url,
   name,
   onDownload,
+  onDoubleTap,
   onClose,
 }: {
   kind: "image" | "video";
   url: string;
   name: string;
   onDownload: () => void;
+  onDoubleTap?: () => void;
   onClose: () => void;
 }) {
+  // A double tap reacts: show it, since the message isn't on screen.
+  const [burst, setBurst] = useState<string | null>(null);
+  const react = onDoubleTap
+    ? () => {
+        onDoubleTap();
+        setBurst(getQuickEmoji()[0]);
+        setTimeout(() => setBurst(null), 700);
+      }
+    : undefined;
   useEffect(() => {
     const key = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     document.addEventListener("keydown", key);
@@ -154,9 +184,14 @@ function MediaViewer({
         <IconButton icon="chatDownload" label={`Download ${name}`} onClick={onDownload} />
         <IconButton icon="close" label="Close" onClick={onClose} />
       </div>
-      <div className="flex-1 min-h-0 flex items-center justify-center p-2 overflow-hidden" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="relative flex-1 min-h-0 flex items-center justify-center p-2 overflow-hidden" onClick={(e) => e.target === e.currentTarget && onClose()}>
+        {burst && (
+          <span className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center text-7xl animate-ping" aria-live="polite" aria-label={`Reacted ${burst}`}>
+            {burst}
+          </span>
+        )}
         {kind === "image" ? (
-          <ZoomableImage url={url} name={name} />
+          <ZoomableImage url={url} name={name} onDoubleTap={react} />
         ) : (
           <video src={url} controls playsInline className="w-full h-full object-contain" />
         )}
@@ -173,7 +208,8 @@ const MAX_ZOOM = 5;
  * A photo scaled to fit the screen. On a touch screen, pinch to zoom (up to 5x) and drag to move around while zoomed
  * in; letting go below 1x snaps back to fit. A mouse can't zoom it (for now).
  */
-function ZoomableImage({ url, name }: { url: string; name: string }) {
+function ZoomableImage({ url, name, onDoubleTap }: { url: string; name: string; onDoubleTap?: () => void }) {
+  const taps = useDoubleTap(() => onDoubleTap?.());
   const img = useRef<HTMLImageElement>(null);
   const [view, setView] = useState<View>({ s: 1, x: 0, y: 0 });
   const live = useRef(view);
@@ -205,6 +241,7 @@ function ZoomableImage({ url, name }: { url: string; name: string }) {
 
   const onPointerDown = (e: React.PointerEvent<HTMLImageElement>) => {
     if (e.pointerType !== "touch") return;
+    taps.onPointerDown(e);
     e.currentTarget.setPointerCapture(e.pointerId);
     touches.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     begin();
@@ -223,6 +260,8 @@ function ZoomableImage({ url, name }: { url: string; name: string }) {
     }
   };
   const onPointerUp = (e: React.PointerEvent<HTMLImageElement>) => {
+    if (e.type === "pointercancel") taps.onPointerCancel(e);
+    else taps.onPointerUp(e);
     if (!touches.current.delete(e.pointerId)) return;
     if (touches.current.size === 0 && live.current.s <= 1) setView({ s: 1, x: 0, y: 0 });
     begin();
