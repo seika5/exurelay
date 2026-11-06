@@ -33,7 +33,6 @@ import { PageLock, useVisibleViewport } from "@/lib/useVisibleViewport";
 import { ChatFile } from "@/components/ChatFile";
 import { MessageSheet, ReactionChips, ReactionPopover } from "@/components/Reactions";
 import { getQuickEmoji } from "@/lib/emoji";
-import { haptic } from "@/lib/haptic";
 import { ScrollList } from "@/components/ScrollList";
 
 const GROUP_BREAK_MS = 10 * 60 * 1000;
@@ -607,7 +606,6 @@ function Chat() {
 
   /** A double tap: your first quick reaction, added (a second double tap doesn't take it back, like a "like"). */
   const likeMessage = (messageId: string) => {
-    haptic();
     const emoji = getQuickEmoji()[0];
     if (!reactions.get(messageId)?.find((r) => r.emoji === emoji)?.by.includes(identity?.keyHash ?? "")) toggleReaction(messageId, emoji);
   };
@@ -1150,7 +1148,6 @@ function Chat() {
                       holdTimer.current = setTimeout(() => {
                         // The keyboard goes down for the sheet.
                         if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
-                        haptic();
                         setSheetFor(m.messageId);
                       }, 450);
                     }}
