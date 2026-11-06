@@ -5,7 +5,8 @@ import { useIdentity } from "@/context/IdentityContext";
 import { CodeInput } from "@/components/CodeInput";
 import { IconButton } from "@/components/icons";
 import { confirmDialog } from "@/components/Modal";
-import { btn, btnPrimary, field, scrollList } from "@/components/ui";
+import { btn, btnPrimary, field } from "@/components/ui";
+import { ScrollList } from "@/components/ScrollList";
 import {
   directoryWithAdmins,
   directoryWithMember,
@@ -119,7 +120,7 @@ export function MembersAdmin() {
 
   return (
     <div className="flex flex-col gap-2">
-      <ul className={scrollList}>
+      <ScrollList>
         {directory.members.map((m) => {
           const isMe = m.keyHash === identity.keyHash;
           const admin = adminOf(m);
@@ -150,7 +151,7 @@ export function MembersAdmin() {
             </li>
           );
         })}
-      </ul>
+      </ScrollList>
       {error && <p className="text-sm text-red-500">{error}</p>}
     </div>
   );
