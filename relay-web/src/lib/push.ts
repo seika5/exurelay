@@ -142,12 +142,27 @@ function setOffHere(off: boolean) {
   }
 }
 
-export async function pushState(): Promise<PushState> {
+/**
+ * On only if this browser is subscribed and the server lists this device: the server drops a subscription the push
+ * service refused (relay-server lib/pushErrors.js), so this shows off whenever notifications can't reach it. If the
+ * server can't be asked just now, what this browser has decides.
+ */
+export async function pushState(myDevice: string): Promise<PushState> {
   if (!pushSupported()) return "unsupported";
   if (Notification.permission === "denied") return "denied";
   const reg = await navigator.serviceWorker.getRegistration();
   const sub = await reg?.pushManager.getSubscription();
-  return sub && Notification.permission === "granted" && !isOffHere() ? "on" : "off";
+  if (!sub || Notification.permission !== "granted" || isOffHere()) return "off";
+  try {
+    const res = await sessionFetch("/api/push/devices", { cache: "no-store" });
+    if (res.status === 503) return "server-off";
+    if (!res.ok) return "on";
+    const { devices } = (await res.json()) as { devices: string[] };
+    pushable = { url: getServerUrl(), at: Date.now(), devices: new Set(devices) };
+    return devices.includes(myDevice) ? "on" : "off";
+  } catch {
+    return "on";
+  }
 }
 
 /** Turn notifications off for this device on the active server; in the browser too if no other server uses them. */
@@ -180,9 +195,10 @@ export async function enablePush(): Promise<PushState> {
   if (!res.ok) throw new Error(`Couldn't reach the server (${res.status})`);
   const { publicKey } = (await res.json()) as { publicKey: string };
   const reg = await navigator.serviceWorker.ready;
-  const sub =
-    (await reg.pushManager.getSubscription()) ??
-    (await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToBytes(publicKey) as BufferSource }));
+  // Always a fresh subscription: an old one may be what the push service refused. Other servers joined here pick up
+  // the new one the next time they're opened (syncPush).
+  await (await reg.pushManager.getSubscription())?.unsubscribe().catch(() => {});
+  const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToBytes(publicKey) as BufferSource });
   const json = sub.toJSON();
   const r = await sessionFetch("/api/push/subscribe", {
     method: "POST",
@@ -228,20 +244,4 @@ export async function syncPush(): Promise<void> {
     body: JSON.stringify({ endpoint: json.endpoint, keys: json.keys }),
   });
   pushable = null;
-}
-
-/**
- * Settings → Notifications → Test: register again, check the server lists this device, then push it a test mention.
- * Says what went wrong, if anything.
- */
-export async function testPush(me: { keyHash: string; keyPair: CryptoKeyPair; deviceKeyHash: string; publicKeyBase64: string }): Promise<string> {
-  await syncPush();
-  pushable = null;
-  const on = await pushableDevices();
-  if (on === null) return "This server doesn't send notifications.";
-  if (!on.has(me.deviceKeyHash)) return "The server doesn't have this device. Turn notifications off and on again.";
-  const r = await sendPushes("mention", me, [{ keyHash: me.deviceKeyHash, publicKey: me.publicKeyBase64 }], { member: me.keyHash });
-  if (r.limited) return "Too many notifications just now. Try again in a minute.";
-  if (!r.sent) return "The server couldn't deliver it. Turn notifications off and on again.";
-  return "Sent. If nothing shows, check your phone's notification settings for Exurelay.";
 }
