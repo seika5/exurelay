@@ -309,12 +309,12 @@ export function useMessages(
   }, [identity, setOutbox, owner, cacheKey, publish, onDeviceSync]);
 
   /** One sync at a time; a ping during a sync runs one more afterwards. */
+  const syncFailures = useRef(0);
   const loadBlobs = useCallback(async () => {
     if (syncing.current) {
       syncAgain.current = true;
       return syncing.current;
     }
-    setError(null);
     // Only a download that takes a while shows the spinner, so a single new message doesn't flash it.
     const slow = setTimeout(() => setLoading(true), 500);
     syncing.current = (async () => {
@@ -323,10 +323,18 @@ export function useMessages(
           syncAgain.current = false;
           await syncOnce();
         } while (syncAgain.current && alive.current);
+        syncFailures.current = 0;
+        setError(null);
       } catch (e) {
         // Out of tokens: sync again once there are some (from the same cursor).
         if (e instanceof RateLimitError) syncLater.current?.(e.retryAfter * 1000);
-        else setError(e instanceof Error ? e.message : "Load failed");
+        else {
+          // Try again quietly, waiting longer each time (5 s, 15 s, 45 s, then every 2 minutes). Only a problem
+          // that lasts (about a minute of failures) is worth telling the user about.
+          const n = ++syncFailures.current;
+          syncLater.current?.(Math.min(5_000 * 3 ** (n - 1), 120_000));
+          if (n >= 4) setError("Can't reach the server. Trying again.");
+        }
       } finally {
         clearTimeout(slow);
         setLoading(false);

@@ -287,6 +287,8 @@ function Chat() {
     return () => mq.removeEventListener("change", update);
   }, []);
   const chatOnScreen = !!selected && (wide || !sidebarVisible);
+  // Rings that reached this device while the app was on screen (the service worker shows no banner then): when.
+  const [rings, setRings] = useState<Record<string, number>>({});
 
   // Seeing a conversation (open, on screen, app in front) marks it read up to its newest message.
   useEffect(() => {
@@ -300,6 +302,13 @@ function Chat() {
     document.addEventListener("visibilitychange", mark);
     return () => document.removeEventListener("visibilitychange", mark);
   }, [selected, chatOnScreen, filteredMessages, markRead]);
+
+  // A ring for the chat that's on screen has been seen.
+  useEffect(() => {
+    if (!selected || !chatOnScreen || !identity) return;
+    const id = conversationId(selected, identity.keyHash);
+    if (rings[id]) setRings((r) => Object.fromEntries(Object.entries(r).filter(([k]) => k !== id)));
+  }, [rings, selected, chatOnScreen, identity]);
 
   // First run with unread tracking: chats from before count as read, so they don't all light up at once.
   useEffect(() => {
@@ -331,13 +340,22 @@ function Chat() {
   );
 
   /** Unread mentions of me per conversation, for the sidebar badge. */
+  /**
+   * Unread things that call for you: mentions, someone else starting a call, and being rung. A ring after you've
+   * opened the chat (say you joined the call and left) counts again.
+   */
   const unreadMentions = useCallback(
     (conv: Conversation) => {
       if (!identity) return 0;
-      const seen = readMarks[conversationId(conv, identity.keyHash)] ?? 0;
-      return messages.filter((m) => m.sentAt > seen && mentionsMe(m, identity.keyHash) && messageBelongsToConversation(m, conv, identity.keyHash)).length;
+      const id = conversationId(conv, identity.keyHash);
+      const seen = readMarks[id] ?? 0;
+      const calls = (m: (typeof messages)[number]) => m.type === "call_event" && m.event === "started" && m.senderKeyHash !== identity.keyHash;
+      return (
+        messages.filter((m) => m.sentAt > seen && (mentionsMe(m, identity.keyHash) || calls(m)) && messageBelongsToConversation(m, conv, identity.keyHash)).length +
+        ((rings[id] ?? 0) > seen ? 1 : 0)
+      );
     },
-    [identity, readMarks, messages]
+    [identity, readMarks, messages, rings]
   );
 
   const groupNamesFromMessages = useMemo(() => {
@@ -354,6 +372,26 @@ function Chat() {
     }
     return map;
   }, [conversations, messages, identity?.keyHash]);
+
+  // A ring while the app is open (sw.js): mark that chat, so it shows yellow until it's seen.
+  const ringTargets = useRef({ conversations, groupNamesFromMessages });
+  ringTargets.current = { conversations, groupNamesFromMessages };
+  useEffect(() => {
+    if (!identity || !("serviceWorker" in navigator)) return;
+    const onMessage = (e: MessageEvent) => {
+      const d = e.data as { type?: string; member?: string; group?: string; ts?: number } | null;
+      if (d?.type !== "relay-ring" || typeof d.member !== "string") return;
+      const { conversations: convs, groupNamesFromMessages: names } = ringTargets.current;
+      const conv = d.group
+        ? convs.find((c) => c.type === "group" && c.memberKeyHashes.includes(d.member!) && names.get(conversationId(c, identity.keyHash)) === d.group)
+        : convs.find((c) => c.type === "dm" && c.otherKeyHash === d.member);
+      if (!conv) return;
+      const id = conversationId(conv, identity.keyHash);
+      setRings((r) => ({ ...r, [id]: typeof d.ts === "number" ? d.ts : Date.now() }));
+    };
+    navigator.serviceWorker.addEventListener("message", onMessage);
+    return () => navigator.serviceWorker.removeEventListener("message", onMessage);
+  }, [identity]);
 
   const prevFilteredLengthRef = useRef(0);
   useEffect(() => {

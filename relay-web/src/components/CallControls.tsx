@@ -15,14 +15,14 @@ function ControlButton({
   icon: IconName;
   label: string;
   onClick: () => void;
-  /** Shown filled (amber), e.g. while muted. */
+  /** Shown filled (white), e.g. while muted. */
   active?: boolean;
   danger?: boolean;
 }) {
   const look = danger
     ? "bg-red-600 border-red-600 text-white hover:opacity-90"
     : active
-      ? "bg-amber-500 border-amber-500 text-black"
+      ? "bg-white border-white text-black"
       : "border-[var(--border)] text-[var(--text)] hover:bg-white/5";
   return (
     <button
@@ -79,8 +79,8 @@ export function CallControls({ onHangUp, onChat }: { onHangUp: () => void; onCha
       )}
       {canSpeaker && (
         <ControlButton
-          icon={speaker ? "callSpeaker" : "callEarpiece"}
-          label={speaker ? "Use the earpiece" : "Use the speaker"}
+          icon="callSpeaker"
+          label={speaker ? "Speaker on" : "Speaker off"}
           active={speaker}
           onClick={() => {
             setSpeaker(!speaker);

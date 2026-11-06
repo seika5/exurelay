@@ -136,6 +136,10 @@ self.addEventListener("push", (event) => {
         silent: inApp,
       });
       if (inApp) for (const n of await self.registration.getNotifications({ tag })) n.close();
+      // A ring with the app open: tell the app, which marks that chat (no banner, and no call screen pops up).
+      if (inApp && data.kind === "ring" && content) {
+        for (const c of windows) c.postMessage({ type: "relay-ring", server: data.server, member: content.member, group: content.group, ts: content.ts });
+      }
     })()
   );
 });
