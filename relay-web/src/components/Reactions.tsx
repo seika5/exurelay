@@ -184,7 +184,8 @@ export function MessageSheet({
         role="dialog"
         aria-label="Message"
         className="rounded-t-2xl border-t border-[var(--border)] bg-[var(--surface)] px-3 pt-3 flex flex-col gap-3 shadow-[0_-8px_24px_rgba(0,0,0,0.4)]"
-        style={{ paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 0.75rem)" }}
+        // At least a third of the screen tall, however little is in it.
+        style={{ paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 0.75rem)", minHeight: visible.height ? visible.height / 3 : "33vh" }}
       >
         <div className="flex items-center justify-between gap-1">
           {quick.map((e) => (
@@ -206,7 +207,7 @@ export function MessageSheet({
         {copyText !== null && !all && (
           <button
             type="button"
-            className={`${btn} justify-start gap-3 h-12`}
+            className={`${btn} !justify-start gap-3 h-12 px-4`}
             onClick={async () => {
               await navigator.clipboard.writeText(copyText).catch(() => {});
               onClose();
