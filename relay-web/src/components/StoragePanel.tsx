@@ -6,7 +6,8 @@ import { MAX_RETENTION_DAYS } from "@/lib/messageCache";
 import { SectionTitle } from "@/components/InfoTip";
 import { IconButton } from "@/components/icons";
 import { confirmDialog } from "@/components/Modal";
-import { btnDanger, btnPrimary, field, scrollList } from "@/components/ui";
+import { btnDanger, btnPrimary, field } from "@/components/ui";
+import { ScrollList } from "@/components/ScrollList";
 
 export type StorageControls = {
   stats: StorageStats;
@@ -96,7 +97,7 @@ export function StoragePanel({
           Clear storage
         </SectionTitle>
         {conversations.length > 0 && (
-          <ul className={scrollList}>
+          <ScrollList>
             {conversations.map((c, i) => (
               <li key={i} className="flex items-center gap-2 pl-3 pr-1 py-1">
                 <span className="flex-1 min-w-0 truncate">{c.label}</span>
@@ -109,7 +110,7 @@ export function StoragePanel({
                 />
               </li>
             ))}
-          </ul>
+          </ScrollList>
         )}
         <button
           type="button"

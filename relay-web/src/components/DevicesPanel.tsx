@@ -5,6 +5,7 @@ import { useIdentity } from "@/context/IdentityContext";
 import { fingerprint, readEnrollmentCode } from "@/lib/signed";
 import { SectionTitle } from "@/components/InfoTip";
 import { CodeInput } from "@/components/CodeInput";
+import { ScrollList } from "@/components/ScrollList";
 import { IconButton } from "@/components/icons";
 import { confirmDialog } from "@/components/Modal";
 import { btn, btnPrimary, field } from "@/components/ui";
@@ -67,13 +68,13 @@ export function DevicesPanel() {
         >
           Your devices
         </SectionTitle>
-        <ul className="flex flex-col gap-1.5">
+        <ScrollList>
           {identity.myDevices.map((d) => {
             const isThis = d.keyHash === identity.deviceKeyHash;
             const isAdminDevice = adminSigs.includes(d.sig);
             const label = d.primary ? "First device" : d.name || "Device";
             return (
-              <li key={d.keyHash} className="flex items-center gap-2 px-2 py-1.5 rounded border border-[var(--border)]">
+              <li key={d.keyHash} className="flex items-center gap-2 pl-3 pr-1 py-1.5">
                 <div className="flex-1 min-w-0">
                   <div className="flex flex-wrap items-baseline gap-x-2">
                     <span className="break-words min-w-0">{label}</span>
@@ -111,7 +112,7 @@ export function DevicesPanel() {
               </li>
             );
           })}
-        </ul>
+        </ScrollList>
       </section>
 
       <section className="flex flex-col gap-2">

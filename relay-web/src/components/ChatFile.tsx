@@ -49,6 +49,8 @@ export function ChatFile({
     if (url) URL.revokeObjectURL(url);
   }, [url]);
 
+  // Tells the message list a size change is coming, so it can keep what's below this file in place (page.tsx).
+  const soon = (e: React.MouseEvent) => e.currentTarget.dispatchEvent(new Event("relay:resize-soon", { bubbles: true }));
   const show = () => {
     setFailed(false);
     if (!url) {
@@ -77,9 +79,9 @@ export function ChatFile({
           {size && <span className="shrink-0 text-xs text-[var(--muted)]">· {size}</span>}
           {kind &&
             (open ? (
-              <IconButton icon="chatHide" label={`Hide ${name}`} onClick={() => setShown(false)} />
+              <IconButton icon="chatHide" label={`Hide ${name}`} onClick={(e) => { soon(e); setShown(false); }} />
             ) : (
-              <IconButton icon="chatShow" label={`Show ${name}`} onClick={show} />
+              <IconButton icon="chatShow" label={`Show ${name}`} onClick={(e) => { soon(e); show(); }} />
             ))}
           {!removed && <IconButton icon="chatDownload" label={`Download ${name}`} onClick={onDownload} />}
         </span>

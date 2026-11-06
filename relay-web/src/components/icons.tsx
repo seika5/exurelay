@@ -57,8 +57,8 @@ const PATHS = {
   // Chat
   chatNewGroup: (
     <>
-      <circle cx="9" cy="8" r="3.5" />
-      <path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6M18 8v6M15 11h6" />
+      <circle cx="8" cy="8.5" r="3" />
+      <path d="M2.5 19.5c0-3 2.5-5.5 5.5-5.5 1.6 0 3 .7 4 1.7M12.2 6a3 3 0 1 1 1.6 5.4M17 13.5v7M13.5 17h7" />
     </>
   ),
   chatSettings: (
@@ -191,7 +191,7 @@ export function IconButton({
 }: {
   icon: IconName;
   label: string;
-  onClick: () => void;
+  onClick: (e: React.MouseEvent<HTMLButtonElement>) => void;
   disabled?: boolean;
   danger?: boolean;
 }) {

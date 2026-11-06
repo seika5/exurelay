@@ -186,7 +186,17 @@ function Chat() {
   const [picked, setPicked] = useState<PickedMention[]>([]);
   const [mentionQuery, setMentionQuery] = useState<{ start: number; query: string } | null>(null);
   const [mentionActive, setMentionActive] = useState(0);
-  const composerRef = useRef<HTMLInputElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
+  // On a touch screen Return adds a line (send with the button); with a keyboard Enter sends and Shift+Enter adds one.
+  const [touchKeyboard, setTouchKeyboard] = useState(false);
+  useEffect(() => setTouchKeyboard(window.matchMedia("(pointer: coarse)").matches), []);
+  // The message box grows with its text, up to about six lines, then scrolls.
+  useEffect(() => {
+    const el = composerRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight + 2, 160)}px`;
+  }, [input]);
   const [newGroupOpen, setNewGroupOpen] = useState(false);
   const [newGroupSelected, setNewGroupSelected] = useState<Set<string>>(new Set());
   const [newGroupName, setNewGroupName] = useState("");
@@ -395,10 +405,19 @@ function Chat() {
       }
       if (resized) list.scrollTop = list.scrollHeight - list.clientHeight - fromBottomRef.current;
       // From where the view was, not where it is now: a photo shrinking has already pulled it in.
-      else if (shift) list.scrollTop = lastTopRef.current + shift;
+      // From where the view was before the change (a photo shrinking has already pulled it in by now).
+      else if (shift) list.scrollTop = (heldTop ?? lastTopRef.current) + shift;
+      heldTop = null;
       measure();
     });
     ro.observe(list);
+    // A photo about to be shown or hidden (ChatFile.tsx) says so first: note where the view is, before any browser
+    // (iPhone Safari) moves it.
+    let heldTop: number | null = null;
+    const hold = () => {
+      heldTop = list.scrollTop;
+    };
+    list.addEventListener("relay:resize-soon", hold);
     // Messages added or removed: watch the new ones, and note where the view is now (no scroll event says so).
     const watch = () => {
       for (const li of list.children) if (!heights.has(li)) ro.observe(li);
@@ -410,6 +429,7 @@ function Chat() {
     return () => {
       ro.disconnect();
       mo.disconnect();
+      list.removeEventListener("relay:resize-soon", hold);
     };
   }, [selected]);
 
@@ -830,6 +850,9 @@ function Chat() {
                   onPointerUp={endLongPress}
                   onPointerLeave={endLongPress}
                   onPointerCancel={endLongPress}
+                  // After a press and hold opened a popup, end the touch here: otherwise iPhone keeps the gesture going
+                  // and eats the next tap (Cancel needed two).
+                  onTouchEnd={(e) => longPressActivated.current && e.preventDefault()}
                   className={`w-full text-left px-3 py-2.5 text-sm truncate transition-colors ${isSelected ? "bg-[var(--accent)]/30" : "hover:bg-[var(--border)] active:bg-[var(--border)]"} ${isInactive(conv) ? "opacity-50" : ""}`}
                 >
                   <span className="flex items-center gap-2">
@@ -877,6 +900,9 @@ function Chat() {
                   onPointerUp={endLongPress}
                   onPointerLeave={endLongPress}
                   onPointerCancel={endLongPress}
+                  // After a press and hold opened a popup, end the touch here: otherwise iPhone keeps the gesture going
+                  // and eats the next tap (Cancel needed two).
+                  onTouchEnd={(e) => longPressActivated.current && e.preventDefault()}
                   className={`w-full text-left px-3 py-2.5 text-sm truncate transition-colors ${isSelected ? "bg-[var(--accent)]/30" : "hover:bg-[var(--border)] active:bg-[var(--border)]"}`}
                 >
                   {getDisplayName(c.keyHash) || c.keyHash.slice(0, 8)}
@@ -1081,7 +1107,7 @@ function Chat() {
                 </div>
               )}
               <MentionPicker candidates={mentionCandidates} active={mentionActive} onPick={pickMention} />
-              <div className="flex gap-2">
+              <div className="flex items-end gap-2">
                 {/*
                   sr-only keeps the input in the DOM (not display:none) so iOS Safari
                   recognises the label click as a real user gesture and opens the file picker.
@@ -1114,9 +1140,10 @@ function Chat() {
                 >
                   <Icon name="attach" size={18} />
                 </label>
-                <input
+                <textarea
                   ref={composerRef}
-                  type="text"
+                  rows={1}
+                  enterKeyHint={touchKeyboard ? "enter" : "send"}
                   value={input}
                   onChange={(e) => {
                     setInput(e.target.value);
@@ -1141,7 +1168,10 @@ function Chat() {
                         return;
                       }
                     }
-                    if (e.key === "Enter") handleSend();
+                    if (e.key === "Enter" && !e.shiftKey && !window.matchMedia("(pointer: coarse)").matches && !e.nativeEvent.isComposing) {
+                      e.preventDefault();
+                      handleSend();
+                    }
                   }}
                   onBlur={() => setMentionQuery(null)}
                   // Focus it ourselves without scrolling it into view: iOS's own scroll on focus is what made the
@@ -1152,7 +1182,7 @@ function Chat() {
                     e.currentTarget.focus({ preventScroll: true });
                   }}
                   placeholder={selected ? `Message ${conversationLabel(selected, me, getDisplayName, groupNamesFromMessages)}` : "Message"}
-                  className="flex-1 min-w-0 px-3 py-2 touch:min-h-10 rounded bg-[var(--surface)] border border-[var(--border)] text-[var(--text)] placeholder-[var(--muted)]"
+                  className="flex-1 min-w-0 px-3 py-2 touch:min-h-10 resize-none block rounded bg-[var(--surface)] border border-[var(--border)] text-[var(--text)] placeholder-[var(--muted)]"
                 />
                 <button
                   type="button"
