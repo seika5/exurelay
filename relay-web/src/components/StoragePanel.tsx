@@ -112,7 +112,7 @@ export function StoragePanel({
       )}
 
       <section className="flex flex-col gap-2">
-        <SectionTitle tip="Clearing all messages also downloads again what the server still has (the last 3 to 4 days).">Everything on this device</SectionTitle>
+        <SectionTitle tip="Clearing all messages also downloads again what the server still has (the last 3 to 4 days).">Clear storage</SectionTitle>
         <div className="flex flex-wrap gap-2">
           {stats.files > 0 && (
             <button
