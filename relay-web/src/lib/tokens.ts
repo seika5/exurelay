@@ -303,7 +303,12 @@ export async function currentIssuerId(): Promise<string | undefined> {
   }
 }
 
-/** fetch() paid for with one anonymous token. Retries once with a fresh token if the server refuses it. */
+/**
+ * fetch() paid for with one anonymous token. If the server refuses the token, try again with another:
+ * - first, after reloading the keys (probably a rotation, e.g. a removal, we haven't seen yet);
+ * - then with a fresh stock: the saved pool itself is stale. On an iPhone the app can be closed before the pool
+ *   with a spent token taken out is written to storage, so the next launch offers tokens the server has already seen.
+ */
 export async function tokenFetch(path: string, init: RequestInit = {}): Promise<Response> {
   for (let attempt = 0; ; attempt++) {
     const t = await takeToken();
@@ -311,12 +316,9 @@ export async function tokenFetch(path: string, init: RequestInit = {}): Promise<
       ...init,
       headers: { ...(init.headers as Record<string, string>), "Relay-Token": `${t.keyId}.${t.msg}.${t.sig}` },
     });
-    if (res.status === 401 && attempt === 0) {
-      // Probably a rotation (e.g. a removal) we haven't seen yet.
-      keysCache = null;
-      continue;
-    }
-    return res;
+    if (res.status !== 401 || attempt >= 2 || (await res.clone().json().catch(() => null))?.code !== "token") return res;
+    keysCache = null;
+    if (attempt === 1) writePool([]);
   }
 }
 

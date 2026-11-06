@@ -1,8 +1,8 @@
 /**
  * Earpiece or loudspeaker for calls on a phone. Safari's Audio Session API is the only control a web app has:
  * "play-and-record" tells iOS this is a call, which plays through the earpiece (the quieter one, the default here);
- * "playback" plays through the loudspeaker. Only a hint to the system: other browsers don't have it, and then the
- * phone decides.
+ * "auto" leaves it to iOS, which plays a web call through the loudspeaker ("playback" didn't: tried on an iPhone).
+ * Only a hint to the system: other browsers don't have it, and then the phone decides.
  */
 type AudioSessionLike = { type: string };
 const KEY = "relay.callSpeaker";
@@ -35,7 +35,7 @@ export function applyAudioRoute(): void {
   const session = (navigator as Navigator & { audioSession?: AudioSessionLike }).audioSession;
   if (!session) return;
   try {
-    session.type = speakerPreferred() ? "playback" : "play-and-record";
+    session.type = speakerPreferred() ? "auto" : "play-and-record";
   } catch {
     // An older Safari that doesn't take this type.
   }

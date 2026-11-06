@@ -460,6 +460,8 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
       // Earpiece or loudspeaker, as chosen (audioRoute.ts): set before the microphone opens.
       applyAudioRoute();
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      // And again once it's open: opening it can set the route back (a call started on the speaker otherwise).
+      applyAudioRoute();
       setLocalStream(stream);
       localStreamRef.current = stream;
       setCameraOn(false);
