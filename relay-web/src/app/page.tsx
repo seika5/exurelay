@@ -355,41 +355,54 @@ function Chat() {
     if (!list) return;
     wasAtBottomRef.current = list.scrollHeight - list.clientHeight <= list.scrollTop + 80;
     fromBottomRef.current = list.scrollHeight - list.clientHeight - list.scrollTop;
+    lastTopRef.current = list.scrollTop;
   };
 
-  // Keep the bottom of the chat where it is, so things move up instead of off the bottom: when the list gets shorter
-  // or taller (the keyboard opening or closing), and when a message on screen or above it grows (a photo shown).
-  // New messages are left to the effect above.
+  // Keep things in place when sizes change, so nothing slides off the bottom:
+  // - the list gets shorter or taller (the keyboard opening or closing): the newest messages in view stay just above
+  //   the message box;
+  // - a message on screen or above it grows or shrinks (a photo shown or hidden): everything below it stays put, so
+  //   the photo opens upward and the buttons stay under your finger.
+  // New messages are left to the effect above. The browser's own scroll anchoring is off for this list (it would
+  // move things a second time).
   const fromBottomRef = useRef(0);
+  const lastTopRef = useRef(0);
   useEffect(() => {
     const list = messagesListRef.current;
     if (!list) return;
     let height = list.clientHeight;
     const heights = new WeakMap<Element, number>();
-    const keep = () => {
-      list.scrollTop = list.scrollHeight - list.clientHeight - fromBottomRef.current;
+    const measure = () => {
+      fromBottomRef.current = list.scrollHeight - list.clientHeight - list.scrollTop;
+      lastTopRef.current = list.scrollTop;
     };
     const ro = new ResizeObserver((entries) => {
-      let grew = false;
+      let shift = 0;
+      let resized = false;
       for (const e of entries) {
-        const h = e.borderBoxSize?.[0]?.blockSize ?? e.target.getBoundingClientRect().height;
         if (e.target === list) {
           if (list.clientHeight !== height) {
             height = list.clientHeight;
-            grew = true;
+            resized = true;
           }
           continue;
         }
+        const h = e.borderBoxSize?.[0]?.blockSize ?? e.target.getBoundingClientRect().height;
         const was = heights.get(e.target);
         heights.set(e.target, h);
         // Only a message already there that's on screen or above it, not one just added.
-        if (was !== undefined && was !== h && e.target.getBoundingClientRect().top < list.getBoundingClientRect().bottom) grew = true;
+        if (was !== undefined && was !== h && e.target.getBoundingClientRect().top < list.getBoundingClientRect().bottom) shift += h - was;
       }
-      if (grew) keep();
+      if (resized) list.scrollTop = list.scrollHeight - list.clientHeight - fromBottomRef.current;
+      // From where the view was, not where it is now: a photo shrinking has already pulled it in.
+      else if (shift) list.scrollTop = lastTopRef.current + shift;
+      measure();
     });
     ro.observe(list);
+    // Messages added or removed: watch the new ones, and note where the view is now (no scroll event says so).
     const watch = () => {
       for (const li of list.children) if (!heights.has(li)) ro.observe(li);
+      if (list.clientHeight === height) measure();
     };
     watch();
     const mo = new MutationObserver(watch);
@@ -951,6 +964,7 @@ function Chat() {
               ref={messagesListRef}
               onScroll={handleMessagesScroll}
               className="flex-1 overflow-auto px-3 py-2 flex flex-col"
+              style={{ overflowAnchor: "none" }}
             >
               {/* Pushes a short chat to the bottom, so new messages push older ones up. */}
               <li aria-hidden className="mt-auto" />

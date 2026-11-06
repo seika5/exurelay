@@ -59,7 +59,7 @@ export function MessageText({
   fromMe: boolean;
 }) {
   return (
-    <span className="whitespace-pre-wrap break-words">
+    <span className="selectable whitespace-pre-wrap break-words">
       {splitMentions(body).map((s, i) => {
         if ("text" in s) return <span key={i}>{s.text}</span>;
         const isEveryone = s.mention === EVERYONE;

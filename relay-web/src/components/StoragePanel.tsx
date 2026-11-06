@@ -3,9 +3,10 @@
 import { useState } from "react";
 import type { Conversation, StorageStats } from "@/lib/useMessages";
 import { MAX_RETENTION_DAYS } from "@/lib/messageCache";
-import { InfoTip, SectionTitle } from "@/components/InfoTip";
+import { SectionTitle } from "@/components/InfoTip";
+import { IconButton } from "@/components/icons";
 import { confirmDialog } from "@/components/Modal";
-import { btn, btnDanger, field } from "@/components/ui";
+import { btnDanger, btnPrimary, field } from "@/components/ui";
 
 export type StorageControls = {
   stats: StorageStats;
@@ -33,9 +34,16 @@ export function StoragePanel({
 }) {
   const { stats } = storage;
   const [days, setDays] = useState(String(storage.retentionDays));
-  const [convIndex, setConvIndex] = useState(0);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+
+  const daysValue = Math.round(Number(days));
+  const daysValid = Number.isFinite(daysValue) && daysValue >= 1 && daysValue <= MAX_RETENTION_DAYS;
+  const saveDays = () => {
+    if (!daysValid) return;
+    storage.setRetentionDays(daysValue);
+    setDays(String(daysValue));
+  };
 
   const act = async (confirmText: string, ok: string, fn: () => Promise<void>, done: string, danger = true) => {
     if (!(await confirmDialog(confirmText, { ok, danger }))) return;
@@ -72,45 +80,39 @@ export function StoragePanel({
             max={MAX_RETENTION_DAYS}
             value={days}
             onChange={(e) => setDays(e.target.value)}
-            onBlur={() => {
-              storage.setRetentionDays(Number(days) || storage.retentionDays);
-              setDays(String(Math.min(MAX_RETENTION_DAYS, Math.max(1, Math.round(Number(days) || storage.retentionDays)))));
-            }}
+            onKeyDown={(e) => e.key === "Enter" && saveDays()}
+            aria-label="Days"
             className={`${field} w-20`}
           />
-          <span>days after the server deletes them</span>
+          <span className="flex-1">days after the server deletes them</span>
+          <button type="button" disabled={!daysValid || daysValue === storage.retentionDays} onClick={saveDays} className={btnPrimary}>
+            Save
+          </button>
         </div>
       </section>
 
+      {conversations.length > 0 && (
+        <section className="flex flex-col gap-1">
+          <SectionTitle tip="Removes a chat's messages and files from this device only. Others keep their copies.">Clear a chat</SectionTitle>
+          <ul className="flex flex-col max-h-60 overflow-auto rounded border border-[var(--border)] divide-y divide-[var(--border)]">
+            {conversations.map((c, i) => (
+              <li key={i} className="flex items-center gap-2 pl-3 pr-1 py-1">
+                <span className="flex-1 min-w-0 truncate">{c.label}</span>
+                <IconButton
+                  icon="trash"
+                  label={`Clear ${c.label}`}
+                  danger
+                  disabled={busy}
+                  onClick={() => act(`Clear "${c.label}" from this device?`, "Clear", () => storage.clearConversation(c.conv), "Chat cleared.")}
+                />
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       <section className="flex flex-col gap-2">
-        <SectionTitle>Clear</SectionTitle>
-        {conversations.length > 0 && (
-          <div className="flex items-stretch gap-2">
-            <select
-              value={convIndex}
-              onChange={(e) => setConvIndex(Number(e.target.value))}
-              aria-label="Conversation"
-              className={`${field} flex-1 min-w-0 sm:flex-none sm:max-w-[14rem]`}
-            >
-              {conversations.map((c, i) => (
-                <option key={i} value={i}>
-                  {c.label}
-                </option>
-              ))}
-            </select>
-            <button
-              type="button"
-              disabled={busy}
-              className={`${btnDanger} shrink-0`}
-              onClick={() => {
-                const c = conversations[Math.min(convIndex, conversations.length - 1)];
-                act(`Clear "${c.label}" from this device?`, "Clear", () => storage.clearConversation(c.conv), "Conversation cleared.");
-              }}
-            >
-              Clear conversation
-            </button>
-          </div>
-        )}
+        <SectionTitle tip="Clearing all messages also downloads again what the server still has (the last 3 to 4 days).">Everything on this device</SectionTitle>
         <div className="flex flex-wrap gap-2">
           {stats.files > 0 && (
             <button
@@ -126,29 +128,17 @@ export function StoragePanel({
             type="button"
             disabled={busy}
             className={btnDanger}
-            onClick={() => act("Clear every message from this device? Others keep their copies.", "Clear", storage.clearAll, "All messages cleared.")}
-          >
-            Clear all messages
-          </button>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            disabled={busy}
-            className={btn}
             onClick={() =>
               act(
-                "Clear this device and download what the server still has?",
-                "Download again",
+                "Clear every message from this device? What the server still has (the last 3 to 4 days) downloads again. Others keep their copies.",
+                "Clear",
                 storage.resync,
-                "Downloaded again from the server.",
-                false
+                "All messages cleared."
               )
             }
           >
-            Download again
+            Clear all messages
           </button>
-          <InfoTip>Clears this device, then downloads what the server still has (the last 3 to 4 days).</InfoTip>
         </div>
         {message && <p className="text-xs text-[var(--muted)]">{message}</p>}
       </section>

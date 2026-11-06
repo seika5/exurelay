@@ -8,7 +8,7 @@ import { createJoinCode, joinLink } from "@/lib/server";
 import { blobSettings, directoryWithBlobSettings } from "@/lib/signed";
 import { MAX_DECOYS } from "@/lib/sealed";
 import { Icon, IconButton } from "@/components/icons";
-import { btn, btnPrimary, btnSmall, field } from "@/components/ui";
+import { btn, btnPrimary, field } from "@/components/ui";
 
 /** The server's join link and code to copy, and on request the link as a QR (it opens this app). */
 export function JoinCodePanel() {
@@ -32,14 +32,14 @@ export function JoinCodePanel() {
   return (
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap gap-2">
-        <button type="button" className={btnPrimary} onClick={() => copy("link", link)}>
+        <button type="button" className={btn} onClick={() => copy("link", link)}>
           {copied === "link" ? "Copied" : "Copy link"}
         </button>
         <button type="button" className={btn} onClick={() => setShowQr(!showQr)} aria-expanded={showQr}>
           <Icon name="settingsQr" />
           {showQr ? "Hide QR" : "Show QR"}
         </button>
-        <button type="button" className={btnSmall} onClick={() => copy("code", code)}>
+        <button type="button" className={btn} onClick={() => copy("code", code)}>
           {copied === "code" ? "Copied" : "Copy code"}
         </button>
       </div>
@@ -101,7 +101,7 @@ export function BlobSettingsPanel() {
       <button
         type="button"
         disabled={!changed || busy}
-        className={`${btn} self-start`}
+        className={`${btnPrimary} self-start`}
         onClick={async () => {
           setBusy(true);
           setMessage(null);
@@ -153,7 +153,7 @@ export function ServerStatusPanel() {
         </div>
         {refresh}
       </div>
-      <details className="text-xs text-[var(--muted)]">
+      <details className="text-xs">
         <summary className="cursor-pointer py-1 touch:py-2 select-none">Technical details</summary>
         <div className="flex flex-col gap-1 pt-1">
           <div>Stored items: {status.blobs}</div>
@@ -162,7 +162,7 @@ export function ServerStatusPanel() {
             Tokens issued today (all members): {status.tokens.issuedToday} · limit {status.tokens.ratePerMinute}/min per member after a burst of{" "}
             {status.tokens.burst}
           </div>
-          <div className="mt-1 font-medium text-[var(--text)]">Token keys</div>
+          <div className="mt-1 font-medium">Token keys</div>
           <ul className="flex flex-col gap-0.5">
             {status.issuerKeys.map((k) => (
               <li key={k.id} className={k.notAfter <= now ? "opacity-60" : ""}>

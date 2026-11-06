@@ -81,3 +81,29 @@ export function SectionTitle({ children, tip }: { children: React.ReactNode; tip
     </h3>
   );
 }
+
+/** A section that opens and closes (Settings → Admin): a heading row with an arrow, the content below. */
+export function Collapsible({
+  title,
+  tip,
+  defaultOpen = false,
+  children,
+}: {
+  title: React.ReactNode;
+  tip?: React.ReactNode;
+  defaultOpen?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <details open={defaultOpen} className="group flex flex-col">
+      <summary className="flex items-center gap-1.5 py-1 touch:py-2 cursor-pointer list-none [&::-webkit-details-marker]:hidden text-sm font-medium">
+        <svg viewBox="0 0 24 24" width={14} height={14} fill="none" stroke="currentColor" strokeWidth={2} className="shrink-0 transition-transform group-open:rotate-90" aria-hidden>
+          <path d="M9 5l7 7-7 7" />
+        </svg>
+        {title}
+        {tip && <InfoTip>{tip}</InfoTip>}
+      </summary>
+      <div className="flex flex-col gap-2 pt-2">{children}</div>
+    </details>
+  );
+}
