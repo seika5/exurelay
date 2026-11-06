@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useCall } from "@/context/CallContext";
 import { Icon, type IconName } from "@/components/icons";
+import { canChooseSpeaker, setSpeaker, speakerPreferred } from "@/lib/audioRoute";
 
 function ControlButton({
   icon,
@@ -44,7 +45,13 @@ function ControlButton({
 export function CallControls({ onHangUp, onChat }: { onHangUp: () => void; onChat?: () => void }) {
   const { muted, deafened, cameraOn, screenSharing, setMuted, setDeafened, setCameraOn, setScreenSharing } = useCall();
   const [canShare, setCanShare] = useState(false);
-  useEffect(() => setCanShare(typeof navigator !== "undefined" && !!navigator.mediaDevices?.getDisplayMedia), []);
+  const [canSpeaker, setCanSpeaker] = useState(false);
+  const [speaker, setSpeakerState] = useState(false);
+  useEffect(() => {
+    setCanShare(typeof navigator !== "undefined" && !!navigator.mediaDevices?.getDisplayMedia);
+    setCanSpeaker(canChooseSpeaker());
+    setSpeakerState(speakerPreferred());
+  }, []);
 
   return (
     <div className="flex items-center justify-center gap-1.5" role="group" aria-label="Call controls">
@@ -68,6 +75,17 @@ export function CallControls({ onHangUp, onChat }: { onHangUp: () => void; onCha
           label={screenSharing ? "Stop sharing screen" : "Share screen"}
           active={screenSharing}
           onClick={() => setScreenSharing(!screenSharing)}
+        />
+      )}
+      {canSpeaker && (
+        <ControlButton
+          icon={speaker ? "callSpeaker" : "callEarpiece"}
+          label={speaker ? "Use the earpiece" : "Use the speaker"}
+          active={speaker}
+          onClick={() => {
+            setSpeaker(!speaker);
+            setSpeakerState(!speaker);
+          }}
         />
       )}
       <ControlButton icon="callHangUp" label="Hang up" danger onClick={onHangUp} />

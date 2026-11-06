@@ -19,7 +19,7 @@ export function NotificationsSection() {
 
   // Shown instead of the switch when it can't be turned on here.
   const blocked: Partial<Record<PushState, string>> = {
-    denied: "Blocked in your browser or phone settings.",
+    denied: "Blocked. Allow notifications for this site in your browser or phone settings, then reload.",
     unsupported: "Not available here. On iPhone, add Exurelay to the Home Screen first.",
     "server-off": "This server doesn't send notifications.",
   };

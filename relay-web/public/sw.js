@@ -122,13 +122,20 @@ self.addEventListener("push", (event) => {
       } catch {
         content = null;
       }
+      // The app is on screen: it shows the mention or call itself, so no banner. Safari still needs every push to show
+      // a notification (or it drops the subscription), so show one and take it away at once.
+      const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+      const inApp = windows.some((c) => c.visibilityState === "visible");
+      const tag = inApp ? "relay-in-app" : data.kind === "ring" ? "relay-ring" : undefined;
       // Every push must show a notification (Safari revokes subscriptions that don't).
-      await self.registration.showNotification("Exurelay", {
-        body: text(data.kind, content),
+      // The message is the title: iPhone already adds "from Exurelay" under it, so an "Exurelay" title only repeats it.
+      await self.registration.showNotification(text(data.kind, content), {
         icon: `${BASE}icon-192.png`,
         badge: `${BASE}icon-192.png`,
-        tag: data.kind === "ring" ? "relay-ring" : undefined,
+        tag,
+        silent: inApp,
       });
+      if (inApp) for (const n of await self.registration.getNotifications({ tag })) n.close();
     })()
   );
 });
