@@ -55,10 +55,11 @@ const PATHS = {
     </>
   ),
   // Chat
+  // The members icon, a little smaller and lower, with a plus at the top right.
   chatNewGroup: (
     <>
-      <circle cx="7" cy="8.5" r="2.75" />
-      <path d="M2 19.5c0-2.8 2.2-5 5-5 1.4 0 2.7.6 3.6 1.5M10.6 6.2a2.75 2.75 0 1 1 1.4 5.1M12 14.6c2.4.3 4 2.4 4 4.9M20 9v6M17 12h6" />
+      <circle cx="6.4" cy="9.1" r="2.9" />
+      <path d="M1.05 18.9c0-2.95 2.38-5.33 5.33-5.33s5.33 2.38 5.33 5.33M12.1 6.2a2.9 2.9 0 0 1 0 5.75M13.75 13.75c1.72.66 2.87 2.38 2.87 4.35M20 4.5v6M17 7.5h6" />
     </>
   ),
   chatSettings: (
