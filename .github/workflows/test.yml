@@ -1,9 +1,17 @@
-# Tests for the server and the web app on every push and pull request.
+# Tests for the server and the web app: on pull requests, and on main after a merge. Not on every push to a branch
+# as well (that ran everything twice per PR push). A newer push to the same PR cancels the run still going.
 name: Test
 
 on:
   push:
+    branches: [main]
+    paths-ignore: ["**.md", "docs/**"]
   pull_request:
+    paths-ignore: ["**.md", "docs/**"]
+
+concurrency:
+  group: test-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   server:
