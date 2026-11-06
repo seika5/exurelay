@@ -31,6 +31,7 @@ import { Modal, confirmDialog } from "@/components/Modal";
 import { btn, btnPrimary, field } from "@/components/ui";
 import { PageLock, useVisibleViewport } from "@/lib/useVisibleViewport";
 import { ChatFile } from "@/components/ChatFile";
+import { ScrollList } from "@/components/ScrollList";
 
 const GROUP_BREAK_MS = 10 * 60 * 1000;
 
@@ -1229,7 +1230,7 @@ function Chat() {
       )}
 
       {newGroupOpen && (
-        <Modal title="New group" onClose={closeNewGroup} closeLabel={null}>
+        <Modal title="New group" onClose={closeNewGroup} closeLabel={null} compact>
           {newGroupCandidates.length === 0 ? (
             <p className="text-sm text-[var(--muted)]">No one else here yet.</p>
           ) : (
@@ -1249,10 +1250,10 @@ function Chat() {
                 aria-label="Group name"
                 className={field}
               />
-              <ul className="sm:max-h-64 overflow-auto">
+              <ScrollList>
                 {newGroupCandidates.map((c) => (
                   <li key={c.keyHash}>
-                    <label className="flex items-center gap-3 cursor-pointer py-1.5 touch:py-2.5">
+                    <label className="flex items-center gap-3 cursor-pointer pl-3 pr-2 py-1.5 touch:py-2.5">
                       <input
                         type="checkbox"
                         className="w-4 h-4"
@@ -1270,7 +1271,7 @@ function Chat() {
                     </label>
                   </li>
                 ))}
-              </ul>
+              </ScrollList>
             </form>
           )}
           <div className="flex justify-end gap-2">

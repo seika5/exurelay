@@ -67,7 +67,7 @@ export function MessageText({
         return (
           <span
             key={i}
-            className={`px-1 rounded ${me ? "bg-amber-500/30 text-amber-200 font-medium" : "bg-[var(--accent)]/20 text-[var(--accent)]"}`}
+            className={me ? "text-amber-300 font-medium" : "text-[var(--accent)] font-medium"}
           >
             @{isEveryone ? "everyone" : nameFor(s.mention)}
           </span>
