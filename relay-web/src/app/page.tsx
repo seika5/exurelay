@@ -33,6 +33,7 @@ import { PageLock, useVisibleViewport } from "@/lib/useVisibleViewport";
 import { ChatFile } from "@/components/ChatFile";
 import { MessageSheet, ReactionChips, ReactionPopover } from "@/components/Reactions";
 import { getQuickEmoji } from "@/lib/emoji";
+import { haptic } from "@/lib/haptic";
 import { ScrollList } from "@/components/ScrollList";
 
 const GROUP_BREAK_MS = 10 * 60 * 1000;
@@ -606,6 +607,7 @@ function Chat() {
 
   /** A double tap: your first quick reaction, added (a second double tap doesn't take it back, like a "like"). */
   const likeMessage = (messageId: string) => {
+    haptic();
     const emoji = getQuickEmoji()[0];
     if (!reactions.get(messageId)?.find((r) => r.emoji === emoji)?.by.includes(identity?.keyHash ?? "")) toggleReaction(messageId, emoji);
   };
@@ -1097,7 +1099,9 @@ function Chat() {
               ref={messagesListRef}
               onScroll={handleMessagesScroll}
               className="flex-1 overflow-auto px-3 py-2 flex flex-col"
-              style={{ overflowAnchor: "none" }}
+              // Scrolling past either end bounces this list only: passed on to the page, it moved the whole screen while
+              // the keyboard was up.
+              style={{ overflowAnchor: "none", overscrollBehavior: "contain" }}
             >
               {/* Pushes a short chat to the bottom, so new messages push older ones up. */}
               <li aria-hidden className="mt-auto" />
@@ -1143,7 +1147,12 @@ function Chat() {
                       if ((e.target as HTMLElement).closest("button, a, video, audio")) return;
                       endHold();
                       holdStart.current = { x: e.clientX, y: e.clientY };
-                      holdTimer.current = setTimeout(() => setSheetFor(m.messageId), 450);
+                      holdTimer.current = setTimeout(() => {
+                        // The keyboard goes down for the sheet.
+                        if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+                        haptic();
+                        setSheetFor(m.messageId);
+                      }, 450);
                     }}
                     onPointerMove={(e) => (Math.abs(e.clientX - holdStart.current.x) > 8 || Math.abs(e.clientY - holdStart.current.y) > 8) && endHold()}
                     onPointerUp={(e) => {

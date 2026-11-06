@@ -4,22 +4,53 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { DEFAULT_QUICK_EMOJI, EMOJI_GROUPS, getQuickEmoji, setQuickEmoji } from "@/lib/emoji";
 import { SectionTitle } from "@/components/InfoTip";
+import { useVisibleViewport } from "@/lib/useVisibleViewport";
 import type { Reaction } from "@/lib/reactions";
 import { Icon } from "@/components/icons";
-import { btn } from "@/components/ui";
+import { btn, field } from "@/components/ui";
+import { EMOJI_NAMES } from "@/lib/emojiNames";
 
 /**
- * Every emoji, by group, as buttons, with your quick reactions on top. `onPick` gets the click too (shift-click keeps
- * a popover open).
+ * Every emoji, by group, as buttons, with a search box, and your quick reactions on top unless `showQuick` is off
+ * (where they're already shown just above). `onPick` gets the click too (shift-click keeps a popover open).
  */
-export function EmojiPicker({ onPick, className = "" }: { onPick: (emoji: string, e: React.MouseEvent) => void; className?: string }) {
+export function EmojiPicker({
+  onPick,
+  className = "",
+  showQuick = true,
+  autoFocus = false,
+}: {
+  onPick: (emoji: string, e: React.MouseEvent) => void;
+  className?: string;
+  showQuick?: boolean;
+  autoFocus?: boolean;
+}) {
   const [quick] = useState(getQuickEmoji);
+  const [query, setQuery] = useState("");
+  const q = query.trim().toLowerCase();
+  const groups = q
+    ? [{ name: "Results", emoji: EMOJI_GROUPS.flatMap((g) => g.emoji).filter((e, i, all) => all.indexOf(e) === i && (EMOJI_NAMES[e] ?? "").includes(q)) }]
+    : showQuick
+      ? [{ name: "Quick reactions", emoji: quick }, ...EMOJI_GROUPS]
+      : EMOJI_GROUPS;
   return (
     <div className={`overflow-auto ${className}`}>
-      {[{ name: "Quick reactions", emoji: quick }, ...EMOJI_GROUPS].map((g) => (
+      <div className="sticky top-0 z-20 bg-[var(--surface)] pb-1">
+        <input
+          type="search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search"
+          aria-label="Search emoji"
+          autoFocus={autoFocus}
+          className={`${field} w-full`}
+        />
+      </div>
+      {q && groups[0].emoji.length === 0 && <p className="px-1 py-3 text-sm text-[var(--muted)]">No emoji found.</p>}
+      {groups.map((g) => (
         <section key={g.name} aria-label={g.name}>
-          {/* Your quick reactions sit on top without a heading. */}
-          {g.name !== "Quick reactions" && <h4 className="sticky top-0 z-10 bg-[var(--surface)] px-1 py-1 text-xs text-[var(--muted)]">{g.name}</h4>}
+          {/* Your quick reactions and search results sit on top without a heading. */}
+          {g.name !== "Quick reactions" && g.name !== "Results" && <h4 className="sticky top-11 z-10 bg-[var(--surface)] px-1 py-1 text-xs text-[var(--muted)]">{g.name}</h4>}
           <div className="grid grid-cols-8 gap-0.5">
             {g.emoji.map((e) => (
               <button
@@ -131,6 +162,7 @@ export function MessageSheet({
 }) {
   const [all, setAll] = useState(false);
   const [quick] = useState(getQuickEmoji);
+  const visible = useVisibleViewport();
   useEffect(() => {
     const key = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     document.addEventListener("keydown", key);
@@ -142,14 +174,18 @@ export function MessageSheet({
   };
   return createPortal(
     // Closes on a new touch outside it, not a click: lifting the finger that opened it sends a click here.
-    <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/50" onPointerDown={(e) => e.target === e.currentTarget && onClose()}>
+    // Pinned to the part of the screen above the keyboard (the search box can bring it up).
+    <div
+      className="fixed inset-x-0 top-0 z-50 flex flex-col justify-end"
+      style={{ top: visible.top, height: visible.height ?? "100%" }}
+      onPointerDown={(e) => e.target === e.currentTarget && onClose()}
+    >
       <div
         role="dialog"
         aria-label="Message"
-        className="rounded-t-2xl border-t border-[var(--border)] bg-[var(--surface)] px-3 pt-3 flex flex-col gap-3"
+        className="rounded-t-2xl border-t border-[var(--border)] bg-[var(--surface)] px-3 pt-3 flex flex-col gap-3 shadow-[0_-8px_24px_rgba(0,0,0,0.4)]"
         style={{ paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 0.75rem)" }}
       >
-        <div className="mx-auto h-1 w-10 rounded-full bg-[var(--border)]" aria-hidden />
         <div className="flex items-center justify-between gap-1">
           {quick.map((e) => (
             <button key={e} type="button" aria-label={e} onClick={() => pick(e)} className="h-12 w-12 rounded-full bg-[var(--bg)] text-2xl">
@@ -166,7 +202,7 @@ export function MessageSheet({
             <Icon name="chatReact" size={22} />
           </button>
         </div>
-        {all && <EmojiPicker className="max-h-[45vh]" onPick={(e) => pick(e)} />}
+        {all && <EmojiPicker className="max-h-[45vh]" showQuick={false} onPick={(e) => pick(e)} />}
         {copyText !== null && !all && (
           <button
             type="button"
@@ -200,7 +236,9 @@ export function QuickReactionsSection() {
   };
   return (
     <section className="flex flex-col gap-2">
-      <SectionTitle tip="The five on top when you react. Tap one to change it.">Quick reactions</SectionTitle>
+      <SectionTitle tip="The five on top when you react. A double tap on a message reacts with the first (leftmost) one. Tap one to change it.">
+        Quick reactions
+      </SectionTitle>
       <div className="flex gap-2">
         {quick.map((e, i) => (
           <button
@@ -215,7 +253,7 @@ export function QuickReactionsSection() {
           </button>
         ))}
       </div>
-      {editing !== null && <EmojiPicker className="max-h-64 rounded border border-[var(--border)] p-1" onPick={(e) => choose(e)} />}
+      {editing !== null && <EmojiPicker className="max-h-64 rounded border border-[var(--border)] p-1" showQuick={false} onPick={(e) => choose(e)} />}
     </section>
   );
 }
