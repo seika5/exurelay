@@ -2,6 +2,7 @@ import express, { Router } from "express";
 import webpush from "web-push";
 import { requireSession } from "./auth.js";
 import { createPushLimiter } from "../lib/pushLimits.js";
+import { isPermanentPushError } from "../lib/pushErrors.js";
 
 const jsonBody = express.json({ limit: "64kb" });
 const KINDS = new Set(["mention", "everyone", "ring"]);
@@ -89,8 +90,8 @@ export function pushRouter(prisma, auth, requireToken, { publicUrl = process.env
           );
           sent++;
         } catch (e) {
-          // Gone: the browser dropped it (uninstalled, permission revoked).
-          if (e?.statusCode === 404 || e?.statusCode === 410) await prisma.pushSubscription.deleteMany({ where: { endpoint: sub.endpoint } });
+          // It will never work (gone, or refused): drop it, so the member's switch shows off (lib/pushErrors.js).
+          if (isPermanentPushError(e?.statusCode)) await prisma.pushSubscription.deleteMany({ where: { endpoint: sub.endpoint } });
         }
       }
     }

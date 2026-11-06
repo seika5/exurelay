@@ -10,7 +10,7 @@
     "db:push": "prisma db push",
     "db:migrate": "prisma migrate dev",
     "worker": "node ./src/worker.js",
-    "test": "node --test src/lib/__tests__/expiry.test.js src/lib/__tests__/turn.test.js src/lib/__tests__/directory.test.js src/lib/__tests__/tokens.test.js src/lib/__tests__/devices.test.js src/lib/__tests__/pushLimits.test.js src/lib/__tests__/profiles.test.js src/__tests__/socket.test.js",
+    "test": "node --test src/lib/__tests__/expiry.test.js src/lib/__tests__/turn.test.js src/lib/__tests__/directory.test.js src/lib/__tests__/tokens.test.js src/lib/__tests__/devices.test.js src/lib/__tests__/pushLimits.test.js src/lib/__tests__/pushErrors.test.js src/lib/__tests__/profiles.test.js src/__tests__/socket.test.js",
     "vapid": "node -e \"const k=require('web-push').generateVAPIDKeys(); console.log('VAPID_PUBLIC_KEY='+k.publicKey+'\\\\nVAPID_PRIVATE_KEY='+k.privateKey)\""
   },
   "dependencies": {

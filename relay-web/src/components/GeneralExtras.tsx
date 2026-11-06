@@ -1,9 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { disablePush, enablePush, pushState, testPush, type PushState } from "@/lib/push";
+import { disablePush, enablePush, pushState, type PushState } from "@/lib/push";
 import { useIdentity } from "@/context/IdentityContext";
-import { btn } from "@/components/ui";
 import { InfoTip, SectionTitle } from "@/components/InfoTip";
 import { Switch } from "@/components/Modal";
 import { appPath } from "@/lib/basePath";
@@ -13,11 +12,10 @@ export function NotificationsSection() {
   const [state, setState] = useState<PushState | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [testResult, setTestResult] = useState<string | null>(null);
-  const { identity } = useIdentity();
+  const device = useIdentity().identity?.deviceKeyHash;
   useEffect(() => {
-    pushState().then(setState, () => setState("unsupported"));
-  }, []);
+    if (device) pushState(device).then(setState, () => setState("unsupported"));
+  }, [device]);
 
   // Shown instead of the switch when it can't be turned on here.
   const blocked: Partial<Record<PushState, string>> = {
@@ -56,27 +54,6 @@ export function NotificationsSection() {
         )}
       </div>
       {state && blocked[state] && <p className="text-xs text-[var(--muted)]">{blocked[state]}</p>}
-      {on && identity && (
-        <button
-          type="button"
-          disabled={busy}
-          className={`${btn} self-start`}
-          onClick={async () => {
-            setBusy(true);
-            setTestResult(null);
-            try {
-              setTestResult(await testPush(identity));
-            } catch (e) {
-              setTestResult(e instanceof Error ? e.message : "Couldn't send a test");
-            } finally {
-              setBusy(false);
-            }
-          }}
-        >
-          Test
-        </button>
-      )}
-      {testResult && <p className="text-xs text-[var(--muted)]">{testResult}</p>}
       {error && <p className="text-xs text-red-500">{error}</p>}
     </section>
   );
