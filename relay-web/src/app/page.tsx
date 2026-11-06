@@ -863,12 +863,7 @@ function Chat() {
                   <span className="flex items-center gap-2">
                     <span className="truncate">{conversationLabel(conv, me, getDisplayName, groupNamesFromMessages)}</span>
                     {unreadMentions(conv) > 0 ? (
-                      <span
-                        className="ml-auto shrink-0 px-1.5 rounded-full bg-amber-500 text-black text-xs font-semibold"
-                        aria-label={`${unreadMentions(conv)} unread mentions`}
-                      >
-                        @{unreadMentions(conv)}
-                      </span>
+                      <span className="ml-auto shrink-0 h-2.5 w-2.5 rounded-full bg-amber-400" role="img" aria-label="Unread mention" />
                     ) : (
                       hasUnread(conv) && <span className="ml-auto shrink-0 h-2.5 w-2.5 rounded-full bg-white" role="img" aria-label="Unread" />
                     )}
@@ -954,8 +949,21 @@ function Chat() {
               className="px-3 pb-2 border-b border-[var(--border)] flex items-center gap-2"
               style={safeTop}
             >
-              <span className="md:hidden -ml-1 flex">
+              <span className="md:hidden -ml-1 flex relative">
                 <IconButton icon="chatBack" label="Back to chat list" onClick={() => setSidebarVisible(true)} />
+                {/* Something new in another chat: white, or yellow if it mentions you. */}
+                {(() => {
+                  const others = conversations.filter((c) => !selected || conversationId(c, identity?.keyHash ?? "") !== conversationId(selected, identity?.keyHash ?? ""));
+                  const mention = others.some((c) => unreadMentions(c) > 0);
+                  if (!mention && !others.some(hasUnread)) return null;
+                  return (
+                    <span
+                      className={`pointer-events-none absolute -top-0.5 -right-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-[var(--bg)] ${mention ? "bg-amber-400" : "bg-white"}`}
+                      role="img"
+                      aria-label={mention ? "Unread mention in another chat" : "Unread messages in another chat"}
+                    />
+                  );
+                })()}
               </span>
               <div className="flex-1 min-w-0 flex">
                 <button
@@ -979,7 +987,7 @@ function Chat() {
                   onClick={handleStartCall}
                   aria-label={ongoingRoom ? "Join call" : "Call"}
                   title={ongoingRoom ? "Join call" : "Call"}
-                  className={`${btnPrimary} flex-shrink-0 w-9 px-0 touch:w-10`}
+                  className={`${btnPrimary} flex-shrink-0 h-9 w-9 p-0 touch:h-10 touch:w-10`}
                 >
                   <span className={ongoingRoom ? "animate-pulse" : ""}><Icon name="callStart" size={18} /></span>
                 </button>
@@ -1141,7 +1149,7 @@ function Chat() {
                       fileInputRef.current?.click();
                     }
                   }}
-                  className={`${btn} flex-shrink-0 cursor-pointer select-none`}
+                  className={`${btn} flex-shrink-0 h-[42px] w-[42px] p-0 cursor-pointer select-none`}
                 >
                   <Icon name="attach" size={18} />
                 </label>
@@ -1201,7 +1209,7 @@ function Chat() {
                   disabled={!canSend}
                   aria-label="Send"
                   title="Send"
-                  className={`${btnPrimary} flex-shrink-0 w-10 px-0 touch:min-h-10`}
+                  className={`${btnPrimary} flex-shrink-0 h-[42px] w-[42px] p-0`}
                 >
                   <Icon name="chatSend" size={18} />
                 </button>

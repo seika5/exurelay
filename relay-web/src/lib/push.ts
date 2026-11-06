@@ -151,8 +151,11 @@ export async function pushState(myDevice: string): Promise<PushState> {
   if (!pushSupported()) return "unsupported";
   if (Notification.permission === "denied") return "denied";
   const reg = await navigator.serviceWorker.getRegistration();
+  if (Notification.permission !== "granted" || isOffHere()) return "off";
+  // Permission granted and not turned off here: re-register first (and subscribe again if iPhone dropped it).
+  await syncPush().catch(() => {});
   const sub = await reg?.pushManager.getSubscription();
-  if (!sub || Notification.permission !== "granted" || isOffHere()) return "off";
+  if (!sub) return "off";
   try {
     const res = await sessionFetch("/api/push/devices", { cache: "no-store" });
     if (res.status === 503) return "server-off";
@@ -185,28 +188,60 @@ export async function disablePush(): Promise<PushState> {
   return "off";
 }
 
-/** Turn notifications on for this device on the active server. Must run from a click (the permission prompt). */
+/** Each step of turning notifications on gives up after this long (the permission prompt waits for you instead). */
+const STEP_TIMEOUT_MS = 15_000;
+
+function step<T>(p: Promise<T>, failure: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(failure)), STEP_TIMEOUT_MS);
+    p.then(
+      (v) => (clearTimeout(t), resolve(v)),
+      (e) => (clearTimeout(t), reject(e))
+    );
+  });
+}
+
+/**
+ * Turn notifications on for this device on the active server. Must run from a click (the permission prompt). Throws
+ * with a message saying what went wrong, so the switch can say why it didn't turn on.
+ */
 export async function enablePush(): Promise<PushState> {
   if (!pushSupported()) return "unsupported";
   const permission = await Notification.requestPermission();
-  if (permission !== "granted") return permission === "denied" ? "denied" : "off";
-  const res = await fetch(`${getServerUrl()}/api/push/vapid`, { cache: "no-store" });
+  if (permission === "denied") return "denied";
+  // No answer: the prompt was closed, or the browser didn't show one (some keep it quiet in the address bar).
+  if (permission !== "granted") throw new Error("The browser didn't allow it. Allow notifications for this site (the icon by the address), then try again.");
+  // Marked on before the rest: if the app is closed partway, the next launch finishes it (syncPush).
+  setOffHere(false);
+  const res = await step(fetch(`${getServerUrl()}/api/push/vapid`, { cache: "no-store" }), "The server didn't answer. Try again.");
   if (res.status === 503) return "server-off";
   if (!res.ok) throw new Error(`Couldn't reach the server (${res.status})`);
   const { publicKey } = (await res.json()) as { publicKey: string };
-  const reg = await navigator.serviceWorker.ready;
+  const reg = await step(navigator.serviceWorker.ready, "The app isn't fully loaded yet. Reload the page and try again.");
   // Always a fresh subscription: an old one may be what the push service refused. Other servers joined here pick up
   // the new one the next time they're opened (syncPush).
   await (await reg.pushManager.getSubscription())?.unsubscribe().catch(() => {});
-  const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToBytes(publicKey) as BufferSource });
+  let sub: PushSubscription;
+  try {
+    sub = await step(
+      reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToBytes(publicKey) as BufferSource }),
+      "This browser's push service didn't answer. Try again, or use another browser."
+    );
+  } catch (e) {
+    // e.g. Opera's push service refuses web apps' subscriptions ("push service error").
+    if (e instanceof DOMException) throw new Error("This browser can't receive notifications from web apps. Chrome, Edge, Firefox and Safari can.");
+    throw e;
+  }
   const json = sub.toJSON();
-  const r = await sessionFetch("/api/push/subscribe", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ endpoint: json.endpoint, keys: json.keys }),
-  });
+  const r = await step(
+    sessionFetch("/api/push/subscribe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ endpoint: json.endpoint, keys: json.keys }),
+    }),
+    "The server didn't answer. Try again."
+  );
   if (!r.ok) throw new Error(`Couldn't turn on notifications (${r.status})`);
-  setOffHere(false);
   pushable = null;
   return "on";
 }
@@ -228,15 +263,18 @@ export function sameKey(sub: PushSubscription, publicKey: string): boolean {
 export async function syncPush(): Promise<void> {
   if (!pushSupported() || Notification.permission !== "granted" || isOffHere()) return;
   const reg = await navigator.serviceWorker.getRegistration();
-  let sub = await reg?.pushManager.getSubscription();
-  if (!reg || !sub) return;
+  if (!reg) return;
+  let sub = await reg.pushManager.getSubscription();
   const res = await fetch(`${getServerUrl()}/api/push/vapid`, { cache: "no-store" });
   if (!res.ok) return;
   const { publicKey } = (await res.json()) as { publicKey: string };
-  if (!sameKey(sub, publicKey)) {
+  // iPhone sometimes drops a subscription without saying so (and never fires pushsubscriptionchange): with permission
+  // still granted, make a new one. Likewise if it was made with another server key.
+  if (sub && !sameKey(sub, publicKey)) {
     await sub.unsubscribe().catch(() => {});
-    sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToBytes(publicKey) as BufferSource });
+    sub = null;
   }
+  sub ??= await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToBytes(publicKey) as BufferSource });
   const json = sub.toJSON();
   await sessionFetch("/api/push/subscribe", {
     method: "POST",

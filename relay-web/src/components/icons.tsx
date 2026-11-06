@@ -139,6 +139,9 @@ const PATHS = {
   ),
   callHangUp: <path d="M3 15.5v-2C3 11 7 9 12 9s9 2 9 4.5v2l-4.5 1-1-3c-2.3-.7-4.7-.7-7 0l-1 3z" />,
   callChat: <path d="M4 5h16v11H9l-5 4z" />,
+  callBell: <path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15zM10 20.5a2 2 0 0 0 4 0" />,
+  callSpeaker: <path d="M4 9.5h3.5L12 6v12l-4.5-3.5H4zM15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11" />,
+  callEarpiece: <path d="M8 3h8a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM10.5 5.5h3" />,
   callStart: <path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2z" />,
   chatSend: <path d="M4 12l16-8-6 16-2.5-6.5zM11.5 13.5L20 4" />,
   // Onboarding

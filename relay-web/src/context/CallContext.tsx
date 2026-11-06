@@ -1,5 +1,6 @@
 "use client";
 
+import { applyAudioRoute, resetAudioRoute } from "@/lib/audioRoute";
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { Socket } from "socket.io-client";
 import { useSpeakingDetection } from "@/lib/useSpeakingDetection";
@@ -456,6 +457,8 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
       const fetched = await getIceServers().catch(() => []);
       iceServersRef.current = fetched.length > 0 ? fetched : FALLBACK_ICE_SERVERS;
       // Audio only at join; video is requested only when user turns camera on
+      // Earpiece or loudspeaker, as chosen (audioRoute.ts): set before the microphone opens.
+      applyAudioRoute();
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
       setLocalStream(stream);
       localStreamRef.current = stream;
@@ -465,7 +468,8 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
       setInCall(true);
       setRoomIdState(rid.trim());
       roomIdRef.current = rid.trim();
-      setCallExpanded(false);
+      // A new call opens on the call screen; back to the chat from there.
+      setCallExpanded(true);
       setFocusedPeerId(null);
 
       // Register for "members" before emitting join_room so we never miss the list (avoids race where
@@ -500,6 +504,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
         setCallExpanded(false);
         setFocusedPeerId(null);
         setCurrentCallConversation(null);
+        resetAudioRoute();
       };
 
       clearCallState();

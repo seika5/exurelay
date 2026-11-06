@@ -4,7 +4,7 @@ import { useRef, useEffect, useMemo, useState, useCallback } from "react";
 import { useCall } from "@/context/CallContext";
 import { useIdentity } from "@/context/IdentityContext";
 import { getParticipantSources, type ParticipantSource } from "@/lib/callUtils";
-import { AbsentMembers } from "@/components/AbsentMembers";
+import { AbsentTile, useAbsentMembers } from "@/components/AbsentMembers";
 import { CallControls } from "@/components/CallControls";
 
 const VOLUME_MIN = 0;
@@ -159,6 +159,7 @@ export function InlineCallView({ onHangUp, top }: { onHangUp: () => void; /** Ba
     setCallExpanded,
   } = useCall();
   const { getDisplayName, getMyDisplayName, getContactVolume, setContactVolume } = useIdentity();
+  const absent = useAbsentMembers();
   const [volumeMenu, setVolumeMenu] = useState<{ keyHash: string; x: number; y: number } | null>(null);
   const volumeMenuRef = useRef<HTMLDivElement>(null);
 
@@ -263,10 +264,7 @@ export function InlineCallView({ onHangUp, top }: { onHangUp: () => void; /** Ba
   };
 
   return (
-    <div
-      className="flex-1 flex flex-col min-h-0 px-2 overflow-auto relative"
-      style={{ paddingTop: "max(0.5rem, env(safe-area-inset-top, 0px))" }}
-    >
+    <div className="flex-1 flex flex-col min-h-0 relative" style={{ paddingTop: "max(0.5rem, env(safe-area-inset-top, 0px))" }}>
       {top}
       {volumeMenu && (
         <div
@@ -294,7 +292,7 @@ export function InlineCallView({ onHangUp, top }: { onHangUp: () => void; /** Ba
         </div>
       )}
       {focusedId && focusedTiles.length > 0 ? (
-        <>
+        <div className="flex-1 min-h-0 flex flex-col px-2">
           <div className="flex-1 min-h-0 rounded overflow-hidden mb-2 flex gap-2">
             {focusedTiles.map((t) => (
               <div key={t.key} className="flex-1 min-h-0 min-w-0">
@@ -308,25 +306,37 @@ export function InlineCallView({ onHangUp, top }: { onHangUp: () => void; /** Ba
                 {renderTile(tile)}
               </div>
             ))}
+            {absent.map((k) => (
+              <div key={k} className="flex-shrink-0 w-32 h-24">
+                <AbsentTile keyHash={k} />
+              </div>
+            ))}
           </div>
-        </>
+        </div>
       ) : (
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 content-start">
-          {tiles.map((tile) => (
-            <div
-              key={tile.key}
-              className="rounded overflow-hidden bg-[var(--surface)] border border-[var(--border)] aspect-video flex flex-col min-h-0"
-            >
-              {renderTile(tile)}
-            </div>
-          ))}
+        // However many people: the tiles scroll, the controls below stay put.
+        <div className="flex-1 min-h-0 overflow-auto px-2 pb-2">
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 content-start">
+            {tiles.map((tile) => (
+              <div
+                key={tile.key}
+                className="rounded overflow-hidden bg-[var(--surface)] border border-[var(--border)] aspect-video flex flex-col min-h-0"
+              >
+                {renderTile(tile)}
+              </div>
+            ))}
+            {absent.map((k) => (
+              <div key={k} className="aspect-video min-h-0" aria-label="Not in the call">
+                <AbsentTile keyHash={k} />
+              </div>
+            ))}
+          </div>
         </div>
       )}
-      <AbsentMembers />
 
-      {/* Call controls: always visible, so a phone isn't left without them */}
+      {/* Phones: the controls at the bottom of the screen. Desktop has them in the sidebar, and the chat is a click away there. */}
       <div
-        className="flex-shrink-0 pt-2 mt-2 border-t border-[var(--border)]"
+        className="md:hidden flex-shrink-0 px-2 pt-2 border-t border-[var(--border)] bg-[var(--bg)]"
         style={{ paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 0.5rem)" }}
       >
         <CallControls onHangUp={onHangUp} onChat={() => setCallExpanded(false)} />
