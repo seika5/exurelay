@@ -153,7 +153,7 @@ export function ServerStatusPanel() {
         </div>
         {refresh}
       </div>
-      <details className="text-xs">
+      <details className="text-xs text-[var(--muted)]">
         <summary className="cursor-pointer py-1 touch:py-2 select-none">Technical details</summary>
         <div className="flex flex-col gap-1 pt-1">
           <div>Stored items: {status.blobs}</div>
@@ -162,7 +162,7 @@ export function ServerStatusPanel() {
             Tokens issued today (all members): {status.tokens.issuedToday} · limit {status.tokens.ratePerMinute}/min per member after a burst of{" "}
             {status.tokens.burst}
           </div>
-          <div className="mt-1 font-medium">Token keys</div>
+          <div className="mt-1 font-medium text-[var(--text)]">Token keys</div>
           <ul className="flex flex-col gap-0.5">
             {status.issuerKeys.map((k) => (
               <li key={k.id} className={k.notAfter <= now ? "opacity-60" : ""}>
