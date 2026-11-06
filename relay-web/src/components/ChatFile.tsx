@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Icon, IconButton } from "@/components/icons";
 
 type Kind = "image" | "video" | "audio" | null;
@@ -44,6 +45,7 @@ export function ChatFile({
   const [url, setUrl] = useState<string | null>(null);
   const [shown, setShown] = useState(false);
   const [failed, setFailed] = useState(false);
+  const [expanded, setExpanded] = useState(false);
 
   useEffect(() => () => {
     if (url) URL.revokeObjectURL(url);
@@ -64,12 +66,32 @@ export function ChatFile({
 
   return (
     <span className="inline-flex flex-col gap-1 max-w-full">
-      {open && kind === "image" && (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img src={url} alt={name} onError={() => setFailed(true)} className="max-w-full max-h-80 self-start rounded border border-[var(--border)]" />
+      {/* Photos and videos open full screen when tapped (videos play there). */}
+      {open && (kind === "image" || kind === "video") && (
+        <button
+          type="button"
+          aria-label={`Open ${name}`}
+          onClick={() => setExpanded(true)}
+          className="relative self-start max-w-full rounded border border-[var(--border)] overflow-hidden cursor-zoom-in"
+        >
+          {kind === "image" ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={url} alt={name} onError={() => setFailed(true)} className="block max-w-full max-h-80" />
+          ) : (
+            <>
+              {/* #t=0.1: iPhone shows the first frame instead of a blank box. */}
+              <video src={`${url}#t=0.1`} muted playsInline preload="metadata" onError={() => setFailed(true)} className="block max-w-full max-h-80 pointer-events-none" />
+              <span className="absolute inset-0 flex items-center justify-center" aria-hidden>
+                <span className="flex h-12 w-12 items-center justify-center rounded-full bg-black/60 text-white">
+                  <svg viewBox="0 0 24 24" width={22} height={22} fill="currentColor"><path d="M8 5.5v13l10.5-6.5z" /></svg>
+                </span>
+              </span>
+            </>
+          )}
+        </button>
       )}
-      {open && kind === "video" && (
-        <video src={url} controls playsInline onError={() => setFailed(true)} className="max-w-full max-h-80 self-start rounded border border-[var(--border)]" />
+      {open && expanded && url && (kind === "image" || kind === "video") && (
+        <MediaViewer kind={kind} url={url} name={name} onDownload={onDownload} onClose={() => setExpanded(false)} />
       )}
       {open && kind === "audio" && <audio src={url} controls onError={() => setFailed(true)} className="max-w-full" />}
       <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1 max-w-full">
@@ -89,5 +111,139 @@ export function ChatFile({
         {failed && <span className="text-xs text-red-500">Failed to load</span>}
       </span>
     </span>
+  );
+}
+
+/** A photo or video full screen, with Download and Close at the top. Escape or a tap outside the media closes it. */
+function MediaViewer({
+  kind,
+  url,
+  name,
+  onDownload,
+  onClose,
+}: {
+  kind: "image" | "video";
+  url: string;
+  name: string;
+  onDownload: () => void;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    document.addEventListener("keydown", key);
+    return () => document.removeEventListener("keydown", key);
+  }, [onClose]);
+
+  // On the page itself, not inside the chat: the chat moves with the keyboard, which would carry this with it.
+  return createPortal(
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={name}
+      className="fixed inset-0 z-50 flex flex-col bg-black"
+      style={{
+        paddingTop: "env(safe-area-inset-top, 0px)",
+        paddingBottom: "env(safe-area-inset-bottom, 0px)",
+        paddingLeft: "env(safe-area-inset-left, 0px)",
+        paddingRight: "env(safe-area-inset-right, 0px)",
+      }}
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div className="relative z-10 flex items-center gap-2 p-2">
+        <span className="flex-1 min-w-0 truncate text-sm text-white/80 pl-1">{name}</span>
+        <IconButton icon="chatDownload" label={`Download ${name}`} onClick={onDownload} />
+        <IconButton icon="close" label="Close" onClick={onClose} />
+      </div>
+      <div className="flex-1 min-h-0 flex items-center justify-center p-2 overflow-hidden" onClick={(e) => e.target === e.currentTarget && onClose()}>
+        {kind === "image" ? (
+          <ZoomableImage url={url} name={name} />
+        ) : (
+          <video src={url} controls playsInline className="w-full h-full object-contain" />
+        )}
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+type View = { s: number; x: number; y: number };
+const MAX_ZOOM = 5;
+
+/**
+ * A photo scaled to fit the screen. On a touch screen, pinch to zoom (up to 5x) and drag to move around while zoomed
+ * in; letting go below 1x snaps back to fit. A mouse can't zoom it (for now).
+ */
+function ZoomableImage({ url, name }: { url: string; name: string }) {
+  const img = useRef<HTMLImageElement>(null);
+  const [view, setView] = useState<View>({ s: 1, x: 0, y: 0 });
+  const live = useRef(view);
+  live.current = view;
+  const touches = useRef(new Map<number, { x: number; y: number }>());
+  const gesture = useRef<{ dist: number; mid: { x: number; y: number }; start: View } | null>(null);
+
+  // Keep the photo covering the screen as far as it can: no dragging it off into empty space.
+  const clamp = (v: View): View => {
+    const el = img.current;
+    if (!el) return v;
+    const maxX = Math.max(0, (el.clientWidth * v.s - el.clientWidth) / 2);
+    const maxY = Math.max(0, (el.clientHeight * v.s - el.clientHeight) / 2);
+    return { s: v.s, x: Math.max(-maxX, Math.min(maxX, v.x)), y: Math.max(-maxY, Math.min(maxY, v.y)) };
+  };
+  const pair = () => {
+    const [a, b] = [...touches.current.values()];
+    return { dist: Math.hypot(a.x - b.x, a.y - b.y), mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } };
+  };
+  const begin = () => {
+    if (touches.current.size === 2) {
+      const p = pair();
+      gesture.current = { ...p, start: live.current };
+    } else if (touches.current.size === 1) {
+      const [t] = [...touches.current.values()];
+      gesture.current = { dist: 0, mid: t, start: live.current };
+    } else gesture.current = null;
+  };
+
+  const onPointerDown = (e: React.PointerEvent<HTMLImageElement>) => {
+    if (e.pointerType !== "touch") return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    touches.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    begin();
+  };
+  const onPointerMove = (e: React.PointerEvent<HTMLImageElement>) => {
+    if (!touches.current.has(e.pointerId) || !gesture.current) return;
+    touches.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const g = gesture.current;
+    if (touches.current.size === 2) {
+      const p = pair();
+      const s = Math.max(0.5, Math.min(MAX_ZOOM, (g.start.s * p.dist) / g.dist));
+      setView(clamp({ s, x: g.start.x + (p.mid.x - g.mid.x), y: g.start.y + (p.mid.y - g.mid.y) }));
+    } else if (touches.current.size === 1 && g.start.s > 1) {
+      const [t] = [...touches.current.values()];
+      setView(clamp({ s: g.start.s, x: g.start.x + (t.x - g.mid.x), y: g.start.y + (t.y - g.mid.y) }));
+    }
+  };
+  const onPointerUp = (e: React.PointerEvent<HTMLImageElement>) => {
+    if (!touches.current.delete(e.pointerId)) return;
+    if (touches.current.size === 0 && live.current.s <= 1) setView({ s: 1, x: 0, y: 0 });
+    begin();
+  };
+
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      ref={img}
+      src={url}
+      alt={name}
+      draggable={false}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerUp}
+      className="w-full h-full object-contain touch-none select-none"
+      style={{
+        transform: `translate(${view.x}px, ${view.y}px) scale(${view.s})`,
+        transition: touches.current.size ? "none" : "transform 150ms ease-out",
+      }}
+    />
   );
 }
