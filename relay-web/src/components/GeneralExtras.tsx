@@ -52,6 +52,12 @@ export function NotificationsSection() {
             <Switch on={on} onChange={toggle} label="Notifications" disabled={busy} />
           </span>
         )}
+        {/* Still checking: hold the switch's place (so nothing below moves when it appears), with a spinner. */}
+        {state === null && (
+          <span className="flex h-6 w-11 touch:my-2 items-center justify-end" role="status" aria-label="Checking notifications">
+            <span className="inline-block h-4 w-4 rounded-full border-2 border-[var(--muted)] border-t-transparent animate-spin" />
+          </span>
+        )}
       </div>
       {state && blocked[state] && <p className="text-xs text-[var(--muted)]">{blocked[state]}</p>}
       {error && <p className="text-xs text-red-500">{error}</p>}
@@ -61,16 +67,18 @@ export function NotificationsSection() {
 
 /** Settings → General, at the bottom: which build this is, to compare with the published one (DESIGN.md §9). */
 export function BuildInfo() {
-  const [build, setBuild] = useState<{ commit: string; hash: string } | null>(null);
+  // undefined while loading, null if it couldn't be read.
+  const [build, setBuild] = useState<{ commit: string; hash: string } | null | undefined>(undefined);
   useEffect(() => {
     fetch(appPath("/build.json"), { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : null))
       .then(setBuild, () => setBuild(null));
   }, []);
-  if (!build) return null;
+  // Until it loads, an invisible line of the same size holds its place, so the lines above don't jump when it appears.
+  if (build === null) return null;
   return (
-    <p className="flex items-center gap-1.5 flex-wrap">
-      Build <code>{build.hash.slice(0, 16)}</code> · commit <code>{build.commit.slice(0, 12)}</code>
+    <p className={`flex items-center gap-1.5 flex-wrap ${build ? "" : "invisible"}`} aria-hidden={!build}>
+      Build <code>{build ? build.hash.slice(0, 16) : "0000000000000000"}</code> · commit <code>{build ? build.commit.slice(0, 12) : "000000000000"}</code>
       <InfoTip>The deploy publishes both, so you can check this is the code you expect.</InfoTip>
     </p>
   );
