@@ -65,3 +65,9 @@ html.page-locked body {
 .no-scrollbar::-webkit-scrollbar {
   display: none;
 }
+
+/* The matched text in the chat search's current result (ChatSearch.tsx). */
+::highlight(relay-search) {
+  background-color: #facc15;
+  color: #0f0f12;
+}

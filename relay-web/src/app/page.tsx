@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useEffect, useRef, useCallback } from "react";
+import { useState, useMemo, useEffect, useLayoutEffect, useRef, useCallback } from "react";
 import { useIdentity } from "@/context/IdentityContext";
 import { useCall } from "@/context/CallContext";
 import { CompactCallTile } from "@/components/CallTile";
@@ -34,6 +34,10 @@ import { ChatFile } from "@/components/ChatFile";
 import { MessageSheet, ReactionChips, ReactionPopover } from "@/components/Reactions";
 import { getQuickEmoji } from "@/lib/emoji";
 import { ScrollList } from "@/components/ScrollList";
+import { ChatSearch } from "@/components/ChatSearch";
+import { MuteMenu } from "@/components/MuteMenu";
+import { muteLabel, useMutes } from "@/lib/mute";
+import { firstUnreadIndex } from "@/lib/chatView";
 
 const GROUP_BREAK_MS = 10 * 60 * 1000;
 
@@ -330,6 +334,52 @@ function Chat() {
     return () => document.removeEventListener("visibilitychange", mark);
   }, [selected, chatOnScreen, filteredMessages, markRead]);
 
+  // The "New" line: above the first message from someone else after the read mark as it was when the chat came on
+  // screen. Decided once per opening (once its messages are in), so it stays put as the mark moves on and doesn't
+  // show up for messages that arrive while you watch. Worked out here, in render, so the line is already in place
+  // when the opening scroll below measures it.
+  const newLine = useRef<{ for: Conversation | null; at: string | null; mark: number }>({ for: null, at: null, mark: 0 });
+  if (!selected || !chatOnScreen || !identity) newLine.current = { for: null, at: null, mark: 0 };
+  else if (newLine.current.for !== selected && filteredMessages.length > 0) {
+    const mark = readMarks[conversationId(selected, identity.keyHash)] ?? 0;
+    const i = firstUnreadIndex(filteredMessages, mark, identity.keyHash);
+    newLine.current = { for: selected, at: i < 0 ? null : filteredMessages[i].messageId, mark };
+  }
+  const newLineAt = newLine.current.for === selected ? newLine.current.at : null;
+
+  // Muted chats (this device only): no white dot. Mentions, calls and rings still show yellow and still notify.
+  const { mutedUntil, setMute } = useMutes();
+  const isMutedConv = useCallback(
+    (c: Conversation) => !!identity && mutedUntil(conversationId(c, identity.keyHash)) !== undefined,
+    [identity, mutedUntil]
+  );
+  // The header's mute menu (on phones the "more" menu, with Search in it too), and the search bar.
+  const [chatMenu, setChatMenu] = useState<{ anchor: DOMRect; more: boolean } | null>(null);
+  const closeChatMenu = useCallback(() => setChatMenu(null), []);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const closeSearch = useCallback(() => setSearchOpen(false), []);
+  useEffect(() => {
+    setSearchOpen(false);
+    setChatMenu(null);
+  }, [selected]);
+  // What search looks through: text messages as you read them (mentions as @names).
+  const searchItems = useMemo(
+    () =>
+      !searchOpen
+        ? []
+        : filteredMessages.flatMap((m) =>
+            m.type !== "text"
+              ? []
+              : [{
+                  id: m.messageId,
+                  text: splitMentions(m.body)
+                    .map((seg) => ("text" in seg ? seg.text : `@${seg.mention === EVERYONE ? "everyone" : nameFor(seg.mention)}`))
+                    .join(""),
+                }]
+          ),
+    [searchOpen, filteredMessages, nameFor]
+  );
+
   // A ring for the chat that's on screen has been seen.
   useEffect(() => {
     if (!selected || !chatOnScreen || !identity) return;
@@ -430,12 +480,20 @@ function Chat() {
     prevFilteredLengthRef.current = filteredMessages.length;
   }, [filteredMessages.length, filteredMessages]);
 
+  // More than a screen up from the bottom: the jump-to-bottom button. Away from the bottom: since when (a sentAt),
+  // so the button can count what came in since.
+  const [far, setFar] = useState(false);
+  const [awaySince, setAwaySince] = useState<number | null>(null);
+  const newBelow = awaySince === null ? 0 : filteredMessages.filter((m) => m.sentAt > awaySince && m.senderKeyHash !== identity?.keyHash).length;
+
   const handleMessagesScroll = () => {
     const list = messagesListRef.current;
     if (!list) return;
     wasAtBottomRef.current = list.scrollHeight - list.clientHeight <= list.scrollTop + 80;
     fromBottomRef.current = list.scrollHeight - list.clientHeight - list.scrollTop;
     lastTopRef.current = list.scrollTop;
+    setFar(fromBottomRef.current > list.clientHeight);
+    setAwaySince((a) => (wasAtBottomRef.current ? null : a ?? filteredMessages.reduce((n, m) => Math.max(n, m.sentAt), 0)));
   };
 
   // Keep things in place when sizes change, so nothing slides off the bottom:
@@ -503,12 +561,34 @@ function Chat() {
     };
   }, [selected]);
 
-  useEffect(() => { wasAtBottomRef.current = true; }, [selected]);
-
-  useEffect(() => {
+  // A chat coming on screen opens at the bottom, or with the "New" line near the top when there's more unread than
+  // fits. Once per opening, when its messages are in (until then, at the bottom). Before paint, and before the
+  // new-messages effect above reads wasAtBottomRef.
+  const openedFor = useRef<Conversation | null>(null);
+  useLayoutEffect(() => {
     const list = messagesListRef.current;
-    if (list && selected) requestAnimationFrame(() => { list.scrollTop = list.scrollHeight; });
-  }, [selected]);
+    if (!selected || !chatOnScreen || !list) {
+      openedFor.current = null;
+      return;
+    }
+    if (openedFor.current === selected) return;
+    if (newLine.current.for === selected) openedFor.current = selected;
+    const place = () => {
+      const bottom = list.scrollHeight - list.clientHeight;
+      const line = newLineAt ? list.querySelector<HTMLElement>("[data-new-line]") : null;
+      const top = line ? line.getBoundingClientRect().top - list.getBoundingClientRect().top + list.scrollTop - 8 : bottom;
+      list.scrollTop = Math.min(top, bottom);
+      wasAtBottomRef.current = list.scrollTop >= bottom - 80;
+      fromBottomRef.current = list.scrollHeight - list.clientHeight - list.scrollTop;
+      lastTopRef.current = list.scrollTop;
+      setFar(fromBottomRef.current > list.clientHeight);
+      // Opened at the line: the button counts the unread below it.
+      setAwaySince(wasAtBottomRef.current ? null : newLine.current.mark);
+    };
+    place();
+    // Again once the browser has laid it all out (the bottom scroll always waited a frame).
+    requestAnimationFrame(place);
+  }, [selected, chatOnScreen, newLineAt, filteredMessages.length]);
 
   const keyHashesWithDm = useMemo(() => {
     const set = new Set<string>();
@@ -958,6 +1038,10 @@ function Chat() {
                     <span className="truncate">{conversationLabel(conv, me, getDisplayName, groupNamesFromMessages, stillHere)}</span>
                     {unreadMentions(conv) > 0 ? (
                       <span className="ml-auto shrink-0 h-2.5 w-2.5 rounded-full bg-amber-400" role="img" aria-label="Unread mention" />
+                    ) : isMutedConv(conv) ? (
+                      <span className="ml-auto shrink-0 text-[var(--muted)]" role="img" aria-label="Muted">
+                        <Icon name="chatMuted" size={14} />
+                      </span>
                     ) : (
                       hasUnread(conv) && <span className="ml-auto shrink-0 h-2.5 w-2.5 rounded-full bg-white" role="img" aria-label="Unread" />
                     )}
@@ -1045,11 +1129,11 @@ function Chat() {
             >
               <span className="md:hidden -ml-1 flex relative">
                 <IconButton icon="chatBack" label="Back to chat list" onClick={() => setSidebarVisible(true)} />
-                {/* Something new in another chat: white, or yellow if it mentions you. */}
+                {/* Something new in another chat: white (not from a muted one), or yellow if it mentions you. */}
                 {(() => {
                   const others = listed.filter((c) => !selected || conversationId(c, identity?.keyHash ?? "") !== conversationId(selected, identity?.keyHash ?? ""));
                   const mention = others.some((c) => unreadMentions(c) > 0);
-                  if (!mention && !others.some(hasUnread)) return null;
+                  if (!mention && !others.some((c) => !isMutedConv(c) && hasUnread(c))) return null;
                   return (
                     <span
                       className={`pointer-events-none absolute -top-0.5 -right-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-[var(--bg)] ${mention ? "bg-amber-400" : "bg-white"}`}
@@ -1072,6 +1156,31 @@ function Chat() {
                   </span>
                 </button>
               </div>
+              {/* Search and mute: their own icons on larger screens; on phones, behind "more" (no room for both). */}
+              {(() => {
+                const until = mutedUntil(conversationId(selected, me));
+                const toggle = (more: boolean) => (e: React.MouseEvent<HTMLButtonElement>) => {
+                  const anchor = e.currentTarget.getBoundingClientRect();
+                  setChatMenu((m) => (m ? null : { anchor, more }));
+                };
+                return (
+                  <>
+                    <span className="hidden md:flex items-center gap-2">
+                      <IconButton icon="chatSearch" label="Search" onClick={() => setSearchOpen((o) => !o)} />
+                      <span className="flex" data-menu-anchor>
+                        <IconButton
+                          icon={until !== undefined ? "chatMuted" : "callBell"}
+                          label={until !== undefined ? muteLabel(until, Date.now()) : "Mute"}
+                          onClick={toggle(false)}
+                        />
+                      </span>
+                    </span>
+                    <span className="md:hidden flex" data-menu-anchor>
+                      <IconButton icon="chatMore" label="More" onClick={toggle(true)} />
+                    </span>
+                  </>
+                );
+              })()}
               {selected.type === "group" && (
                 <IconButton icon="chatMembers" label="Members" onClick={() => setMembersOpen(true)} />
               )}
@@ -1087,6 +1196,8 @@ function Chat() {
                 </button>
               )}
             </div>
+
+            {searchOpen && <ChatSearch items={searchItems} listRef={messagesListRef} onClose={closeSearch} />}
 
             {banners}
 
@@ -1106,7 +1217,8 @@ function Chat() {
               {filteredMessages.length === 0 && (
                 <li className="py-8 text-sm text-center text-[var(--muted)]">No messages yet.</li>
               )}
-              {filteredMessages.map((m, i) => {
+              {/* Each message, after the "New" line if it's the first unread one. */}
+              {filteredMessages.map((m, i) => [m.messageId === newLineAt && <NewLine key="new-line" />, (() => {
                 const prev = i > 0 ? filteredMessages[i - 1] : undefined;
 
                 // System messages: call events and group renames
@@ -1136,6 +1248,7 @@ function Chat() {
                 return (
                   <li
                     key={i}
+                    data-mid={m.messageId}
                     className={`group relative ${grouped ? "mt-0.5" : "mt-3"} ${forMe ? "border-l-2 border-amber-400 bg-amber-500/5 pl-2 -ml-2" : ""}`}
                     // Phones: press and hold for reactions and Copy (no text selection).
                     onPointerDown={(e) => {
@@ -1238,8 +1351,34 @@ function Chat() {
                     )}
                   </li>
                 );
-              })}
+              })()])}
             </ul>
+
+            {/* Scrolled up: back to the newest, with how many came in since. Pinned just above the message box. */}
+            {(far || newBelow > 0) && (
+              <div className="relative h-0">
+                <button
+                  type="button"
+                  aria-label="Jump to newest"
+                  title="Jump to newest"
+                  onClick={() => {
+                    const list = messagesListRef.current;
+                    list?.scrollTo({ top: list.scrollHeight, behavior: "smooth" });
+                  }}
+                  className="absolute right-3 bottom-3 z-10 h-10 w-10 rounded-full border border-[var(--border)] bg-[var(--surface)] text-[var(--text)] shadow-lg flex items-center justify-center"
+                >
+                  <Icon name="chatToBottom" size={18} />
+                  {newBelow > 0 && (
+                    <span
+                      className="absolute -top-1.5 -right-1.5 min-w-5 h-5 px-1 rounded-full bg-[var(--accent)] text-on-accent text-[11px] font-semibold leading-5 text-center"
+                      aria-label={`${newBelow} new`}
+                    >
+                      {newBelow > 99 ? "99+" : newBelow}
+                    </span>
+                  )}
+                </button>
+              </div>
+            )}
 
             {/* Compose bar — bottom padding respects iOS home indicator unless keyboard is up */}
             <div
@@ -1441,6 +1580,15 @@ function Chat() {
         </Modal>
       )}
 
+      {chatMenu && selected && (
+        <MuteMenu
+          anchor={chatMenu.anchor}
+          until={mutedUntil(conversationId(selected, me))}
+          onMute={(until) => setMute(conversationId(selected, me), until)}
+          onSearch={chatMenu.more ? () => setSearchOpen(true) : undefined}
+          onClose={closeChatMenu}
+        />
+      )}
       {reactPicker && (
         <ReactionPopover anchor={reactPicker.anchor} onPick={(e) => toggleReaction(reactPicker.id, e)} onClose={closePicker} />
       )}
@@ -1529,6 +1677,16 @@ function Chat() {
         </Modal>
       )}
     </main>
+  );
+}
+
+/** Where the unread messages start, as of opening the chat. */
+function NewLine() {
+  return (
+    <li data-new-line role="separator" aria-label="New messages" className="mt-3 flex items-center gap-2 text-[11px] font-semibold uppercase text-red-400">
+      <span className="h-px flex-1 bg-red-400/60" />
+      New
+    </li>
   );
 }
 
