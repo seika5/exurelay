@@ -9,7 +9,8 @@ export type DecryptedMessageBody =
   | { senderKeyHash: string; sentAt: number; recipientKeyHash?: string; type: "text"; body: string; groupMemberKeyHashes?: string[]; mentions?: string[]; replyTo?: string }
   | { senderKeyHash: string; sentAt: number; recipientKeyHash?: string; type: "file"; body: string; filename?: string; fileSize?: number; groupMemberKeyHashes?: string[]; removed?: boolean; replyTo?: string }
   | { senderKeyHash: string; sentAt: number; recipientKeyHash?: string; type: "contact"; keyHash: string; publicKey: string; name?: string; groupMemberKeyHashes?: string[] }
-  | { senderKeyHash: string; sentAt: number; type: "call_event"; event: "started" | "ended"; recipientKeyHash?: string; groupMemberKeyHashes?: string[]; roomId?: string }
+  /** roomKey: the call's secret (callIntro.ts), "started" only; missing when an older app started it. */
+  | { senderKeyHash: string; sentAt: number; type: "call_event"; event: "started" | "ended"; recipientKeyHash?: string; groupMemberKeyHashes?: string[]; roomId?: string; roomKey?: string }
   | { senderKeyHash: string; sentAt: number; type: "group_rename"; newName: string; groupMemberKeyHashes: string[]; recipientKeyHash?: string }
   /** People added to or removed from a group (groups.ts); `groupMemberKeyHashes` is the list after the change. */
   | { senderKeyHash: string; sentAt: number; type: "group_members"; groupId: string; add?: string[]; remove?: string[]; groupMemberKeyHashes: string[]; recipientKeyHash?: string; /** The group's name as the sender knows it, so people added after it was named get it too. */ name?: string }

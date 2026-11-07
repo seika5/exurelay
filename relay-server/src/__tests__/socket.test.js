@@ -4,7 +4,62 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert";
-import { registerSocketHandlers } from "../socket.js";
+import { registerCallHandlers, registerSocketHandlers } from "../socket.js";
+
+/** A "/call" namespace with real room bookkeeping, and sockets that record what they're sent. */
+function callNamespace() {
+  const rooms = new Map();
+  const sockets = new Map();
+  let onConnection;
+  const nsp = { on: (_, cb) => { onConnection = cb; }, sockets, adapter: { rooms } };
+  const spent = new Set();
+  const valid = new Set(["t1", "t2", "t3", "t4"]);
+  const spend = async (t) => {
+    if (!valid.has(t) || spent.has(t)) return false;
+    spent.add(t);
+    return true;
+  };
+  registerCallHandlers(nsp, spend, { joinWithinMs: 60_000 });
+  const connect = (id) => {
+    const handlers = {};
+    const got = [];
+    const s = {
+      id,
+      connected: true,
+      rooms: new Set([id]),
+      on: (event, h) => { handlers[event] = h; },
+      emit: (event, payload) => got.push({ event, payload }),
+      join: (r) => {
+        s.rooms.add(r);
+        if (!rooms.has(r)) rooms.set(r, new Set());
+        rooms.get(r).add(id);
+      },
+      leave: (r) => {
+        s.rooms.delete(r);
+        rooms.get(r)?.delete(id);
+        if (rooms.get(r)?.size === 0) rooms.delete(r);
+      },
+      to: (r) => ({
+        emit: (event, payload) => {
+          for (const other of rooms.get(r) ?? []) if (other !== id) sockets.get(other).emit(event, payload);
+        },
+      }),
+      disconnect: () => {
+        handlers.disconnecting?.();
+        for (const r of [...s.rooms]) s.leave(r);
+        sockets.delete(id);
+        s.connected = false;
+      },
+    };
+    sockets.set(id, s);
+    onConnection(s);
+    // Emit with an acknowledgement, as socket.io-client's emit(..., cb) does.
+    const ask = (event, ...args) => new Promise((resolve) => handlers[event](...args, resolve));
+    const send = (event, payload) => handlers[event](payload);
+    return { s, got, ask, send, handlers };
+  };
+  return { connect, rooms };
+}
 
 describe("registerSocketHandlers (voice)", () => {
   it("registers connection and expected event handlers on socket", () => {
@@ -144,5 +199,94 @@ describe("registerSocketHandlers (voice)", () => {
     });
     disconnecting();
     assert.deepStrictEqual(told, [{ room: "call-room-1", event: "peer_left", payload: "phone-id" }]);
+  });
+});
+
+describe("registerCallHandlers (anonymous calls)", () => {
+  const ROOM = "room-AAAAAAAAAAAAAAAAAAAAAA";
+  const OTHER_ROOM = "room-BBBBBBBBBBBBBBBBBBBBBB";
+
+  it("has no logged-in join and no identity checks", () => {
+    const { connect } = callNamespace();
+    const { handlers } = connect("a");
+    assert.ok(handlers.join && handlers.intro && handlers.signal && handlers.leave);
+    assert.ok(!handlers.join_room, "legacy join stays on the logged-in namespace");
+    assert.ok(!handlers.call_state, "mute state goes sealed, inside signals");
+  });
+
+  it("joins with a valid token; members and joins name socket ids only", async () => {
+    const { connect } = callNamespace();
+    const a = connect("a");
+    const b = connect("b");
+    assert.deepStrictEqual(await a.ask("join", ROOM, "t1"), { ok: true, members: [] });
+    assert.deepStrictEqual(await b.ask("join", ROOM, "t2"), { ok: true, members: ["a"] });
+    assert.deepStrictEqual(a.got, [{ event: "peer_joined", payload: "b" }]);
+  });
+
+  it("refuses a join without a token, with a spent token, or for a malformed room", async () => {
+    const { connect, rooms } = callNamespace();
+    const a = connect("a");
+    const b = connect("b");
+    assert.deepStrictEqual(await a.ask("join", ROOM, undefined), { ok: false, error: "token" });
+    assert.deepStrictEqual(await a.ask("join", ROOM, "forged"), { ok: false, error: "token" });
+    assert.deepStrictEqual(await a.ask("join", ROOM, "t1"), { ok: true, members: [] });
+    assert.deepStrictEqual(await b.ask("join", ROOM, "t1"), { ok: false, error: "token" });
+    assert.deepStrictEqual(await b.ask("join", "not-a-room", "t2"), { ok: false, error: "room" });
+    assert.deepStrictEqual([...rooms.get(ROOM)], ["a"]);
+    assert.deepStrictEqual(a.got, [], "nobody joined");
+  });
+
+  it("drops a socket after repeated bad tokens", async () => {
+    const { connect } = callNamespace();
+    const a = connect("a");
+    for (let i = 0; i < 5; i++) await a.ask("join", ROOM, "forged");
+    assert.strictEqual(a.s.connected, false);
+  });
+
+  it("relays intros and signals only between sockets in the same room, as from and sealed only", async () => {
+    const { connect } = callNamespace();
+    const a = connect("a");
+    const b = connect("b");
+    const c = connect("c");
+    const d = connect("d"); // never joins
+    await a.ask("join", ROOM, "t1");
+    await b.ask("join", ROOM, "t2");
+    await c.ask("join", OTHER_ROOM, "t3");
+    a.got.length = 0;
+
+    a.send("intro", { to: "b", sealed: "aW50cm8=", member: "spoofed" });
+    a.send("signal", { to: "b", sealed: "c2lnbmFs" });
+    a.send("signal", { to: "c", sealed: "c2lnbmFs" });
+    a.send("signal", { to: "b", type: "offer" });
+    d.send("signal", { to: "a", sealed: "c2lnbmFs" });
+    c.send("intro", { to: "a", sealed: "aW50cm8=" });
+
+    assert.deepStrictEqual(b.got, [
+      { event: "intro", payload: { from: "a", sealed: "aW50cm8=" } },
+      { event: "signal", payload: { from: "a", sealed: "c2lnbmFs" } },
+    ]);
+    assert.deepStrictEqual(c.got, []);
+    assert.deepStrictEqual(a.got, []);
+  });
+
+  it("leaving tells the others and says who was last; a dropped socket leaves too", async () => {
+    const { connect } = callNamespace();
+    const a = connect("a");
+    const b = connect("b");
+    await a.ask("join", ROOM, "t1");
+    await b.ask("join", ROOM, "t2");
+    assert.deepStrictEqual(await b.ask("leave", ROOM), { last: false });
+    assert.deepStrictEqual(a.got.at(-1), { event: "peer_left", payload: "b" });
+    // After leaving, b can't reach a.
+    b.send("signal", { to: "a", sealed: "c2lnbmFs" });
+    assert.strictEqual(a.got.at(-1).event, "peer_left");
+    assert.deepStrictEqual(await a.ask("leave", ROOM), { last: true });
+
+    const c = connect("c");
+    const e = connect("e");
+    await c.ask("join", ROOM, "t3");
+    await e.ask("join", ROOM, "t4");
+    e.s.disconnect();
+    assert.deepStrictEqual(c.got.at(-1), { event: "peer_left", payload: "e" });
   });
 });

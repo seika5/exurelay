@@ -12,7 +12,7 @@ import { authRouter } from "./routes/auth.js";
 import { tokensRouter } from "./routes/tokens.js";
 import { adminRouter } from "./routes/admin.js";
 import { pushRouter } from "./routes/push.js";
-import { registerSocketHandlers, disconnectKeyHashes } from "./socket.js";
+import { registerCallHandlers, registerSocketHandlers, disconnectKeyHashes } from "./socket.js";
 import { createAuth } from "./lib/auth.js";
 import { createIssuer, requireToken } from "./lib/tokens.js";
 
@@ -64,6 +64,8 @@ app.use("/api/admin", adminRouter(prisma, auth, issuer));
 app.use("/api/push", pushRouter(prisma, auth, spend));
 
 registerSocketHandlers(io, prisma, auth);
+// Calls don't log in: io.use above guards "/" only. Joining a call room costs one anonymous token instead.
+registerCallHandlers(io.of("/call"), (token) => issuer.spend(token));
 
 // Create each day's issuer key shortly after UTC midnight even if nobody asks for tokens.
 const ensureKey = () => issuer.ensureDailyKey().catch((e) => console.error("issuer key:", e?.message));

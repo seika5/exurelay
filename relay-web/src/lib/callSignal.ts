@@ -1,9 +1,10 @@
 /**
  * End-to-end sealed call signaling (DESIGN.md §7). Every offer, answer and ICE candidate is encrypted to the one
  * peer it's for, with a key from the static ECDH secret between the two members, bound to the room and the
- * direction, and timestamped. The server only routes opaque envelopes and says which logged-in member sent each; if
- * it lies, decryption fails. Since the SDP (with its DTLS fingerprint) is sealed, only the real member can complete
- * the connection, so the server can't sit in the middle of a call, and media only flows to verified peers.
+ * direction, and timestamped. The server only routes opaque envelopes; who sent each comes from the sender's intro
+ * (callSocket.ts), or, for legacy calls, from the server's login sessions. If either lies, decryption fails. Since
+ * the SDP (with its DTLS fingerprint) is sealed, only the real member can complete the connection, so the server can't
+ * sit in the middle of a call, and media only flows to verified peers.
  */
 
 import type { Socket } from "socket.io-client";
@@ -66,7 +67,8 @@ type Handler = (...args: any[]) => void;
 /**
  * Wrap a call socket so `emit("signal", { to, ...data })` seals `data` for that peer and `on("signal", h)` hands `h`
  * only signals that open, as `{ from, ...data }`. Peers' keyHashes come from the server's "members"/"peer_joined"
- * (the logged-in member behind each socket). Signals to and from each peer stay in order.
+ * (the logged-in member behind each socket). Signals to and from each peer stay in order. LEGACY: only for calls an
+ * older app started; callSocket.ts does the same over the anonymous call socket.
  */
 export function secureSignalSocket(raw: Socket, opts: SecureSignalOptions): Socket {
   // Socket id -> the member and the device behind it (from the server's login sessions).
