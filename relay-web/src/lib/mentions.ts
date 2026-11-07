@@ -7,7 +7,9 @@
 import type { DecryptedMessage } from "./blobPayload";
 
 export const EVERYONE = "everyone";
-const TOKEN = /<@([0-9a-f]{64}|everyone)>/g;
+/** A mention token in a body; the one group is the keyHash or "everyone". */
+export const MENTION_TOKEN = "<@([0-9a-f]{64}|everyone)>";
+const TOKEN = new RegExp(MENTION_TOKEN, "g");
 
 export type Segment = { text: string } | { mention: string };
 

@@ -56,6 +56,12 @@ html.page-locked body {
     user-select: text;
     -webkit-touch-callout: default;
   }
+  /* Except code in a message, which would start selecting instead of the message's press and hold. */
+  .selectable code {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+  }
 }
 
 /* Hides the browser's own scrollbar (ScrollList.tsx draws one that stays visible). */
