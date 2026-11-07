@@ -91,21 +91,26 @@ async function postJson(path: string, body: unknown, headers: Record<string, str
 export const publishDirectory = (envelope: SignedEnvelope, setupCode?: string) =>
   postJson("/api/directory", envelope, setupCode ? { "X-Relay-Setup": setupCode.trim() } : {});
 
-/** Sealed profile copies addressed to this device (logged in). */
-export async function getProfileCopies(): Promise<ReceivedCopy[]> {
-  const res = await sessionFetch("/api/directory/profiles", { cache: "no-store" });
+/**
+ * Sealed profile copies addressed to this device (logged in). With the `tag` of the last answer, "unchanged" if none
+ * changed since, so the poll doesn't download every copy (pictures make them 22 KB each) each time. Servers from
+ * before tags always send the copies.
+ */
+export async function getProfileCopies(tag?: string): Promise<{ copies: ReceivedCopy[]; tag?: string } | "unchanged"> {
+  const res = await sessionFetch(`/api/directory/profiles${tag ? `?tag=${encodeURIComponent(tag)}` : ""}`, { cache: "no-store" });
   if (!res.ok) throw await errorFrom(res);
   const data = await res.json();
-  return Array.isArray(data?.copies) ? data.copies : [];
+  if (data?.unchanged === true && tag) return "unchanged";
+  return { copies: Array.isArray(data?.copies) ? data.copies : [], tag: typeof data?.tag === "string" ? data.tag : undefined };
 }
 
-/** Post this device's sealed copies of my profile, at most 500 per request. */
+/** Post this device's sealed copies of my profile, 20 per request (each up to 22 KB; the server takes 512 KB). */
 export async function postProfileCopies(copies: SealedCopy[]): Promise<void> {
-  for (let i = 0; i < copies.length; i += 500) {
+  for (let i = 0; i < copies.length; i += 20) {
     const res = await sessionFetch("/api/directory/profiles", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ copies: copies.slice(i, i + 500) }),
+      body: JSON.stringify({ copies: copies.slice(i, i + 20) }),
     });
     if (!res.ok) throw await errorFrom(res);
   }

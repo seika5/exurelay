@@ -10,6 +10,7 @@ import { DevicesPanel } from "@/components/DevicesPanel";
 import { PluginsPanel } from "@/components/PluginsPanel";
 import { BuildInfo, NotificationsSection } from "@/components/GeneralExtras";
 import { QuickReactionsSection } from "@/components/Reactions";
+import { AvatarPicker } from "@/components/Avatar";
 import { Collapsible, InfoTip, SectionTitle } from "@/components/InfoTip";
 import { Icon } from "@/components/icons";
 import { confirmDialog, Modal } from "@/components/Modal";
@@ -154,6 +155,13 @@ export function SettingsModal({
               </button>
             </div>
             {message && <p className="text-xs text-[var(--muted)]">{message}</p>}
+          </section>
+
+          <section className="flex flex-col gap-2">
+            <SectionTitle tip="Everyone on this server sees it. It's encrypted, so the server can't. Without one, you show as your initial.">
+              Your picture
+            </SectionTitle>
+            <AvatarPicker />
           </section>
 
           <section className="flex flex-col gap-1">

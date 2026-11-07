@@ -6,6 +6,7 @@ import { useIdentity } from "@/context/IdentityContext";
 import { getParticipantSources, type ParticipantSource } from "@/lib/callUtils";
 import { AbsentTile, useAbsentMembers } from "@/components/AbsentMembers";
 import { CallControls } from "@/components/CallControls";
+import { Avatar } from "@/components/Avatar";
 
 const VOLUME_MIN = 0;
 const VOLUME_MAX = 100;
@@ -22,6 +23,7 @@ function ParticipantTile({
   onClick,
   deafened,
   keyHash,
+  avatarKey,
   volume,
   onVolume,
 }: {
@@ -36,6 +38,8 @@ function ParticipantTile({
   onClick: () => void;
   deafened?: boolean;
   keyHash?: string;
+  /** Whose picture to show with the camera off (me included); without one, the big letter. */
+  avatarKey?: string;
   volume?: number;
   /** Opens this person's volume: right-click, or a long press on a touch screen. */
   onVolume?: (x: number, y: number) => void;
@@ -127,7 +131,11 @@ function ParticipantTile({
           />
         </div>
       ) : (
-        <span className="text-4xl font-bold text-[var(--muted)]">{displayLetter}</span>
+        avatarKey ? (
+          <Avatar keyHash={avatarKey} name={displayLetter} className="h-14 w-14 text-2xl md:h-20 md:w-20 md:text-3xl" />
+        ) : (
+          <span className="text-4xl font-bold text-[var(--muted)]">{displayLetter}</span>
+        )
       )}
       <span className="absolute bottom-0 left-0 text-xs text-white bg-black/60 px-1.5 py-0.5 truncate max-w-full">
         {displayName}
@@ -158,7 +166,7 @@ export function InlineCallView({ onHangUp, top }: { onHangUp: () => void; /** Ba
     setFocusedPeerId,
     setCallExpanded,
   } = useCall();
-  const { getDisplayName, getMyDisplayName, getContactVolume, setContactVolume } = useIdentity();
+  const { identity, getDisplayName, getMyDisplayName, getContactVolume, setContactVolume } = useIdentity();
   const absent = useAbsentMembers();
   const [volumeMenu, setVolumeMenu] = useState<{ keyHash: string; x: number; y: number } | null>(null);
   const volumeMenuRef = useRef<HTMLDivElement>(null);
@@ -257,6 +265,7 @@ export function InlineCallView({ onHangUp, top }: { onHangUp: () => void; /** Ba
         onClick={() => setFocusedPeerId(tile.participantId === focusedId ? null : tile.participantId)}
         deafened={deafened}
         keyHash={keyHash}
+        avatarKey={tile.isLocal ? identity?.keyHash : keyHash}
         volume={volume}
         onVolume={keyHash ? (x, y) => setVolumeMenu({ keyHash, x, y }) : undefined}
       />

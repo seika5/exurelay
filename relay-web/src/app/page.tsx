@@ -34,6 +34,7 @@ import { ChatFile } from "@/components/ChatFile";
 import { MessageSheet, ReactionChips, ReactionPopover } from "@/components/Reactions";
 import { getQuickEmoji } from "@/lib/emoji";
 import { ScrollList } from "@/components/ScrollList";
+import { Avatar } from "@/components/Avatar";
 
 const GROUP_BREAK_MS = 10 * 60 * 1000;
 
@@ -955,6 +956,13 @@ function Chat() {
                   className={`w-full text-left px-3 py-2.5 text-sm truncate transition-colors ${isSelected ? "bg-[var(--accent)]/30" : "hover:bg-[var(--border)] active:bg-[var(--border)]"} ${isInactive(conv) ? "opacity-50" : ""}`}
                 >
                   <span className="flex items-center gap-2">
+                    {conv.type === "dm" ? (
+                      <Avatar keyHash={conv.otherKeyHash} name={getDisplayName(conv.otherKeyHash)} className="-my-0.5 h-6 w-6 text-xs" />
+                    ) : (
+                      <span aria-hidden="true" className="-my-0.5 h-6 w-6 shrink-0 rounded-full bg-[var(--border)] inline-flex items-center justify-center text-[var(--muted)]">
+                        <Icon name="chatMembers" size={14} />
+                      </span>
+                    )}
                     <span className="truncate">{conversationLabel(conv, me, getDisplayName, groupNamesFromMessages, stillHere)}</span>
                     {unreadMentions(conv) > 0 ? (
                       <span className="ml-auto shrink-0 h-2.5 w-2.5 rounded-full bg-amber-400" role="img" aria-label="Unread mention" />
@@ -999,7 +1007,10 @@ function Chat() {
                   onTouchEnd={(e) => longPressActivated.current && e.preventDefault()}
                   className={`w-full text-left px-3 py-2.5 text-sm truncate transition-colors ${isSelected ? "bg-[var(--accent)]/30" : "hover:bg-[var(--border)] active:bg-[var(--border)]"}`}
                 >
-                  {getDisplayName(c.keyHash) || c.keyHash.slice(0, 8)}
+                  <span className="flex items-center gap-2">
+                    <Avatar keyHash={c.keyHash} name={getDisplayName(c.keyHash)} className="-my-0.5 h-6 w-6 text-xs" />
+                    <span className="truncate">{getDisplayName(c.keyHash) || c.keyHash.slice(0, 8)}</span>
+                  </span>
                 </button>
               </li>
             );
@@ -1136,7 +1147,8 @@ function Chat() {
                 return (
                   <li
                     key={i}
-                    className={`group relative ${grouped ? "mt-0.5" : "mt-3"} ${forMe ? "border-l-2 border-amber-400 bg-amber-500/5 pl-2 -ml-2" : ""}`}
+                    // Room on the left for the sender's picture (on the group's first message), so a group's lines align.
+                    className={`group relative ${grouped ? "mt-0.5" : "mt-3"} ${forMe ? "border-l-2 border-amber-400 bg-amber-500/5 pl-12 md:pl-11 -ml-2" : "pl-10 md:pl-9"}`}
                     // Phones: press and hold for reactions and Copy (no text selection).
                     onPointerDown={(e) => {
                       // Only one finger on the message itself: not a pinch in the photo viewer (it's drawn elsewhere on the
@@ -1180,6 +1192,13 @@ function Chat() {
                       >
                         <Icon name="chatReact" />
                       </button>
+                    )}
+                    {!grouped && (
+                      <Avatar
+                        keyHash={m.senderKeyHash}
+                        name={getDisplayName(m.senderKeyHash)}
+                        className={`absolute top-0.5 ${forMe ? "left-1.5" : "left-0"} h-8 w-8 md:h-7 md:w-7 text-sm`}
+                      />
                     )}
                     {!grouped && (
                       <div className="flex items-baseline gap-2 mb-0.5">
@@ -1463,6 +1482,7 @@ function Chat() {
               .sort((x, y) => (x === identity.keyHash ? -1 : y === identity.keyHash ? 1 : 0))
               .map((k) => (
                 <li key={k} className="flex items-center gap-2 py-1 text-sm">
+                  <Avatar keyHash={k} name={getDisplayName(k)} className="h-7 w-7 text-xs" />
                   <span className="truncate">{k === identity.keyHash ? "You" : getDisplayName(k) || k.slice(0, 8)}</span>
                 </li>
               ))}

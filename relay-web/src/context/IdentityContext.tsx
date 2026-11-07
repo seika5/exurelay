@@ -6,7 +6,8 @@ import { confirmDialog } from "@/components/Modal";
 import { createIdentityFile, openIdentityFile, rewriteSettings, type FileSession } from "@/lib/identityFile";
 import { getKeyHashFromKeyPair } from "@/lib/e2ee";
 import { ApiError, getDirectory, getProfileCopies, postDeviceCert, postDeviceRevoke, postLeave, postProfileCopies, publishDirectory } from "@/lib/api";
-import { openProfile, sealProfile, type ProfilePayload, type ReceivedCopy } from "@/lib/profileSeal";
+import { COMPACT_BUDGET, COPY_BUDGET, openProfile, sealProfile, type ProfilePayload, type ReceivedCopy } from "@/lib/profileSeal";
+import { isAvatarData } from "@/lib/avatar";
 import {
   deleteFolderRef,
   deleteIdentity,
@@ -150,6 +151,10 @@ type IdentityContextValue = {
   /** For others: a local nickname. For me: my display name, signed and published to the directory. */
   setDisplayName: (keyHash: string, displayName: string) => Promise<void>;
   getDisplayName: (keyHash: string) => string | undefined;
+  /** A member's profile picture (a data URL), mine included; undefined for none (components/Avatar.tsx draws their initial). */
+  avatarOf: (keyHash: string) => string | undefined;
+  /** Set my profile picture (from avatar.ts encodeAvatar) or remove it (null). */
+  setMyAvatar: (data: string | null) => void;
   getContactVolume: (keyHash: string) => number;
   setContactVolume: (keyHash: string, volume: number) => void;
   /** Label shown in parentheses for "Me (...)". */
@@ -222,8 +227,12 @@ const INTROS_KEY = "relay.intros";
 const MAX_INTROS = 6;
 /** Signed names of others passed along in each copy (each about 300 bytes). */
 const MAX_RELAY = 10;
-/** A copy's padded plaintext must stay within 4096 bytes (the server takes ciphertexts up to 8192 base64 characters). */
-const COPY_BUDGET = 4000;
+/**
+ * My profile picture (avatar.ts) as a data URL, "" for none, and when it last changed. It goes in my sealed copies to
+ * everyone; my other devices take it from theirs, like device names.
+ */
+type MyAvatar = { at: number; data: string };
+const AVATAR_KEY = "relay.avatar";
 
 function readJson<T>(key: string, fallback: T): T {
   try {
@@ -255,8 +264,11 @@ async function openProfiles(
   ownDevices: Map<string, { at: number; names: Record<string, string> }>;
   /** Each member's newest verified signed name (JSON), to pass along to others. */
   signed: Map<string, { json: string; updatedAt: number }>;
+  /** Each member's picture ("" for none), from their newest copy to this device. Pictures aren't passed along. */
+  avatars: Map<string, { at: number; data: string }>;
 }> {
   const profiles = new Map<string, Profile>();
+  const avatars = new Map<string, { at: number; data: string }>();
   const ownDevices = new Map<string, { at: number; names: Record<string, string> }>();
   const intros = [...localIntros];
   const signedJson: string[] = [];
@@ -268,6 +280,7 @@ async function openProfiles(
     if (p.intros) intros.push(...p.intros.slice(0, MAX_INTROS));
     if (p.signed) signedJson.push(p.signed);
     if (p.relay) signedJson.push(...p.relay.slice(0, MAX_RELAY));
+    if ((avatars.get(c.author)?.at ?? -1) < p.updatedAt) avatars.set(c.author, { at: p.updatedAt, data: isAvatarData(p.avatar) ? p.avatar : "" });
     if (!p.name.trim()) continue;
     const prev = profiles.get(c.author);
     if (!prev || p.updatedAt > prev.updatedAt) {
@@ -303,7 +316,7 @@ async function openProfiles(
       profiles.set(intro.keyHash, { type: "relay-profile", keyHash: intro.keyHash, name: intro.name, updatedAt: 0 });
     }
   }
-  return { profiles, ownDevices, signed };
+  return { profiles, ownDevices, signed, avatars };
 }
 
 export function IdentityProvider({ children }: { children: React.ReactNode }) {
@@ -329,6 +342,14 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
   baseRef.current = base;
   const deviceNamesRef = useRef(deviceNames);
   deviceNamesRef.current = deviceNames;
+  const [avatars, setAvatars] = useState<Map<string, { at: number; data: string }>>(new Map());
+  const [myAvatar, setMyAvatarState] = useState<MyAvatar>({ at: 0, data: "" });
+  const myAvatarRef = useRef(myAvatar);
+  myAvatarRef.current = myAvatar;
+  // The copies last downloaded and the server's tag for them, so a poll with nothing new downloads nothing.
+  const copiesCache = useRef<{ key: string; tag: string; copies: ReceivedCopy[] } | null>(null);
+  // The server takes only copies from before pictures (it refused a full-size one): send those until the app restarts.
+  const compactCopies = useRef<string | null>(null);
   const publishingProfile = useRef(false);
   const [justLinked, setJustLinked] = useState<string | null>(null);
   const [intros, setIntros] = useState<Record<string, string>>({});
@@ -377,6 +398,8 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
   const resetServerState = useCallback(() => {
     setDirectory(null);
     setProfiles(new Map());
+    setAvatars(new Map());
+    copiesCache.current = null;
     setDeparted(new Set());
     setDirectoryLoaded(false);
     setDirectoryError(null);
@@ -592,6 +615,7 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
       if (!res.directory) {
         setDirectory(null);
         setProfiles(new Map());
+        setAvatars(new Map());
         setDeparted(new Set());
         setDirectoryError(null);
         return;
@@ -630,8 +654,13 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
           : [...verifiedDevices].find(([, list]) => list.some((d) => d.keyHash === me.keyHash))?.[0]);
       if (me && meMember) {
         try {
+          const cacheKey = `${server.url}|${me.keyHash}`;
+          const cached = copiesCache.current?.key === cacheKey ? copiesCache.current : null;
+          const got = await getProfileCopies(cached?.tag);
+          const copies = got === "unchanged" ? cached!.copies : got.copies;
+          if (got !== "unchanged") copiesCache.current = got.tag ? { key: cacheKey, tag: got.tag, copies } : null;
           const opened = await openProfiles(
-            await getProfileCopies(),
+            copies,
             me.keyPair.privateKey,
             me.keyHash,
             verifiedDevices,
@@ -645,11 +674,19 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
             setDeviceNames(own);
             writeJson(`${DEVICE_NAMES_KEY}:${me.keyHash}`, own);
           }
+          setAvatars(opened.avatars);
+          // My picture, set or removed on another of my devices.
+          const ownAvatar = opened.avatars.get(meMember);
+          if (ownAvatar && ownAvatar.at > myAvatarRef.current.at) {
+            setMyAvatarState(ownAvatar);
+            writeJson(`${AVATAR_KEY}:${me.keyHash}`, ownAvatar);
+          }
         } catch {
           // Keep the names we have; the next refresh tries again.
         }
       } else {
         setProfiles(new Map());
+        setAvatars(new Map());
       }
       setDeparted(await verifyDepartures(res.departures ?? [], result.directory.members));
       setDirectoryError(null);
@@ -750,6 +787,8 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     setDeviceNames(base ? readJson<DeviceNames>(`${DEVICE_NAMES_KEY}:${base.keyHash}`, { at: 0, names: {} }) : { at: 0, names: {} });
     setIntros(base ? readJson<Record<string, string>>(`${INTROS_KEY}:${base.keyHash}`, {}) : {});
+    const avatar = base ? readJson<MyAvatar>(`${AVATAR_KEY}:${base.keyHash}`, { at: 0, data: "" }) : { at: 0, data: "" };
+    setMyAvatarState(Number.isSafeInteger(avatar.at) && (avatar.data === "" || isAvatarData(avatar.data)) ? avatar : { at: 0, data: "" });
   }, [server, base?.keyHash]); // eslint-disable-line react-hooks/exhaustive-deps -- only when the identity changes
 
   // Seal my name to every other current device (mine included), and my device names to my own devices only. Re-sends
@@ -759,7 +798,7 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
     if (!base || !enrolled || !myMember || !directory || publishingProfile.current) return;
     const name = base.myName.trim();
     if (!name) return;
-    const updatedAt = Math.max(base.settingsAt ?? 0, deviceNames.at, 1);
+    const updatedAt = Math.max(base.settingsAt ?? 0, deviceNames.at, myAvatar.at, 1);
     const mine = devices.get(myMember) ?? [];
     const ownNames = Object.fromEntries(
       Object.entries(deviceNames.names)
@@ -783,11 +822,13 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
       .filter(([k]) => k !== myMember && !departed.has(k) && directory.members.some((m) => m.keyHash === k) && !profiles.get(k)?.updatedAt)
       .map(([, code]) => code)
       .slice(0, MAX_INTROS);
-    const digest = (t: { own: boolean; member: string }) => JSON.stringify(["v2", updatedAt, name, t.own ? ownNames : null, shared, relayFor(t.member)]);
+    const serverUrl = server?.url ?? "";
+    const digest = (t: { own: boolean; member: string }, compact: boolean) =>
+      JSON.stringify([compact ? "v2" : "v3", updatedAt, name, t.own ? ownNames : null, shared, relayFor(t.member), compact ? 0 : myAvatar.at]);
     const sentKey = `${PROFILE_SENT_KEY}:${base.keyHash}`;
     const sent = readJson<Record<string, string>>(sentKey, {});
-    const todo = targets.filter((t) => sent[t.keyHash] !== digest(t));
-    if (todo.length === 0) return;
+    const todoFor = (compact: boolean) => targets.filter((t) => sent[t.keyHash] !== digest(t, compact));
+    if (todoFor(compactCopies.current === serverUrl).length === 0) return;
     publishingProfile.current = true;
     (async () => {
       // My name, signed, so others can pass it along (re-signed only when it changes).
@@ -797,37 +838,53 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
         ownSigned.current = { key: signKey, json: JSON.stringify(env) };
       }
       const signedJson = ownSigned.current.json;
-      // Fit each copy in the budget: drop passed-along names first, then introductions.
-      const fit = (p: ProfilePayload): ProfilePayload => {
+      // Fit each copy in the budget: drop passed-along names first, then introductions. The picture always fits.
+      const fit = (p: ProfilePayload, budget: number): ProfilePayload => {
         const next = { ...p, relay: [...(p.relay ?? [])], intros: [...(p.intros ?? [])] };
         const size = () => new TextEncoder().encode(JSON.stringify(next)).length;
-        while (size() > COPY_BUDGET && next.relay.length) next.relay.pop();
-        while (size() > COPY_BUDGET && next.intros.length) next.intros.pop();
+        while (size() > budget && next.relay.length) next.relay.pop();
+        while (size() > budget && next.intros.length) next.intros.pop();
         if (!next.relay.length) delete (next as { relay?: string[] }).relay;
         if (!next.intros.length) delete (next as { intros?: string[] }).intros;
         return next;
       };
-      const copies = await Promise.all(
-        todo.map(async (t) =>
-          sealProfile(
-            base.keyPair.privateKey,
-            await importPublicKey(t.ecdh),
-            { author: myMember, sender: base.keyHash, recipient: t.keyHash },
-            fit({
-              name,
-              updatedAt,
-              signed: signedJson,
-              ...(t.own ? { devices: ownNames } : {}),
-              ...(shared.length ? { intros: shared } : {}),
-              ...(relayFor(t.member).length ? { relay: relayFor(t.member) } : {}),
-            })
+      const send = async (compact: boolean) => {
+        const todo = todoFor(compact);
+        const copies = await Promise.all(
+          todo.map(async (t) =>
+            sealProfile(
+              base.keyPair.privateKey,
+              await importPublicKey(t.ecdh),
+              { author: myMember, sender: base.keyHash, recipient: t.keyHash },
+              fit(
+                {
+                  name,
+                  updatedAt,
+                  signed: signedJson,
+                  ...(t.own ? { devices: ownNames } : {}),
+                  ...(shared.length ? { intros: shared } : {}),
+                  ...(relayFor(t.member).length ? { relay: relayFor(t.member) } : {}),
+                  ...(!compact && myAvatar.data ? { avatar: myAvatar.data } : {}),
+                },
+                compact ? COMPACT_BUDGET : COPY_BUDGET
+              ),
+              compact
+            )
           )
-        )
-      );
-      await postProfileCopies(copies);
-      const next = Object.fromEntries(targets.filter((t) => sent[t.keyHash] !== undefined).map((t) => [t.keyHash, sent[t.keyHash]]));
-      for (const t of todo) next[t.keyHash] = digest(t);
-      writeJson(sentKey, next);
+        );
+        if (copies.length) await postProfileCopies(copies);
+        const next = Object.fromEntries(targets.filter((t) => sent[t.keyHash] !== undefined).map((t) => [t.keyHash, sent[t.keyHash]]));
+        for (const t of todo) next[t.keyHash] = digest(t, compact);
+        writeJson(sentKey, next);
+      };
+      try {
+        await send(compactCopies.current === serverUrl);
+      } catch (e) {
+        // A server from before pictures refuses full-size copies: send it copies without the picture instead.
+        if (!(e instanceof ApiError && e.message === "bad ciphertext") || compactCopies.current === serverUrl) throw e;
+        compactCopies.current = serverUrl;
+        await send(true);
+      }
     })()
       .catch(() => {
         // Not sent: the next directory refresh tries again.
@@ -835,7 +892,7 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
       .finally(() => {
         publishingProfile.current = false;
       });
-  }, [base, enrolled, myMember, directory, devices, departed, deviceNames, intros, profiles, signedNames]);
+  }, [base, enrolled, myMember, directory, devices, departed, deviceNames, intros, profiles, signedNames, myAvatar, server]);
 
   // Forget introductions once the member's own name has arrived, or they're no longer a member.
   useEffect(() => {
@@ -953,6 +1010,24 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
     const next = updateSettings(keyHash, { nickname: trimmed || undefined });
     if (next) await persist(next);
   }, [base, myMember, updateSettings, persist]);
+
+  /** Set my picture (an encoded data URL from avatar.ts) or remove it (null). It goes out with my sealed copies. */
+  const setMyAvatar = useCallback(
+    (data: string | null) => {
+      if (!base) return;
+      if (data !== null && !isAvatarData(data)) throw new Error("Couldn't use that image");
+      const next = { at: Math.max(Date.now(), myAvatarRef.current.at + 1), data: data ?? "" };
+      setMyAvatarState(next);
+      writeJson(`${AVATAR_KEY}:${base.keyHash}`, next);
+    },
+    [base]
+  );
+
+  const avatarOf = useCallback(
+    (keyHash: string): string | undefined =>
+      (base && keyHash === (myMember ?? base.keyHash) ? myAvatar.data : avatars.get(keyHash)?.data) || undefined,
+    [base, myMember, myAvatar, avatars]
+  );
 
   const getDisplayName = useCallback(
     (keyHash: string): string | undefined =>
@@ -1110,6 +1185,8 @@ export function IdentityProvider({ children }: { children: React.ReactNode }) {
         isRemoved,
         setDisplayName,
         getDisplayName,
+        avatarOf,
+        setMyAvatar,
         getContactVolume,
         setContactVolume,
         getMyDisplayName,
