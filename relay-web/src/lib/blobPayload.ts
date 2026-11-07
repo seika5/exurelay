@@ -11,9 +11,9 @@ export type DecryptedMessageBody =
   | { senderKeyHash: string; sentAt: number; recipientKeyHash?: string; type: "contact"; keyHash: string; publicKey: string; name?: string; groupMemberKeyHashes?: string[] }
   /** roomKey: the call's secret (callIntro.ts), "started" only; missing when an older app started it. */
   | { senderKeyHash: string; sentAt: number; type: "call_event"; event: "started" | "ended"; recipientKeyHash?: string; groupMemberKeyHashes?: string[]; roomId?: string; roomKey?: string }
-  | { senderKeyHash: string; sentAt: number; type: "group_rename"; newName: string; groupMemberKeyHashes: string[]; recipientKeyHash?: string }
+  | { senderKeyHash: string; sentAt: number; type: "group_rename"; newName: string; groupMemberKeyHashes: string[]; recipientKeyHash?: string; /** A new group picture (an avatar data URL), or "" to remove it; absent when it didn't change. */ icon?: string }
   /** People added to or removed from a group (groups.ts); `groupMemberKeyHashes` is the list after the change. */
-  | { senderKeyHash: string; sentAt: number; type: "group_members"; groupId: string; add?: string[]; remove?: string[]; groupMemberKeyHashes: string[]; recipientKeyHash?: string; /** The group's name as the sender knows it, so people added after it was named get it too. */ name?: string }
+  | { senderKeyHash: string; sentAt: number; type: "group_members"; groupId: string; add?: string[]; remove?: string[]; groupMemberKeyHashes: string[]; recipientKeyHash?: string; /** The group's name as the sender knows it, so people added after it was named get it too. */ name?: string; /** Likewise its picture. */ icon?: string }
   /** A plugin's message type (`x-<name>/<type>`, plugins.ts); everyone without that plugin sees the fallback. */
   | { senderKeyHash: string; sentAt: number; type: "plugin"; pluginType: string; data: unknown; fallback: string; recipientKeyHash?: string; groupMemberKeyHashes?: string[] }
   /** An emoji on a message (`target` is its messageId), or taken back (`on: false`). Tallied, never shown (reactions.ts). */
