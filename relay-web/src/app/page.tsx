@@ -440,13 +440,25 @@ function Chat() {
   }, [cacheReady, identity?.keyHash]);
 
   /** Something from someone else after the read mark: the chat list shows a dot. */
+  /** Mentions you as it reads now: not once deleted, and by its latest edit's mentions if edited. */
+  const mentionsMeNow = useCallback(
+    (m: (typeof messages)[number]) => {
+      if (!identity || actions.deleted.has(m.messageId)) return false;
+      const edit = actions.edits.get(m.messageId);
+      return mentionsMe(edit && m.type === "text" ? { ...m, body: edit.body, mentions: edit.mentions } : m, identity.keyHash);
+    },
+    [identity, actions]
+  );
+
   const hasUnread = useCallback(
     (conv: Conversation) => {
       if (!identity) return false;
       const seen = readMarks[conversationId(conv, identity.keyHash)] ?? 0;
-      return messages.some((m) => m.sentAt > seen && m.senderKeyHash !== identity.keyHash && messageBelongsToConversation(m, conv, identity.keyHash));
+      return messages.some(
+        (m) => m.sentAt > seen && m.senderKeyHash !== identity.keyHash && !actions.deleted.has(m.messageId) && messageBelongsToConversation(m, conv, identity.keyHash)
+      );
     },
-    [identity, readMarks, messages]
+    [identity, readMarks, messages, actions]
   );
 
   /** Unread mentions of me per conversation, for the sidebar badge. */
@@ -461,11 +473,11 @@ function Chat() {
       const seen = readMarks[id] ?? 0;
       const calls = (m: (typeof messages)[number]) => m.type === "call_event" && m.event === "started" && m.senderKeyHash !== identity.keyHash;
       return (
-        messages.filter((m) => m.sentAt > seen && (mentionsMe(m, identity.keyHash) || calls(m)) && messageBelongsToConversation(m, conv, identity.keyHash)).length +
+        messages.filter((m) => m.sentAt > seen && (mentionsMeNow(m) || calls(m)) && messageBelongsToConversation(m, conv, identity.keyHash)).length +
         ((rings[id] ?? 0) > seen ? 1 : 0)
       );
     },
-    [identity, readMarks, messages, rings]
+    [identity, readMarks, messages, rings, mentionsMeNow]
   );
 
   const groupNamesFromMessages = useMemo(() => {
@@ -1420,7 +1432,7 @@ function Chat() {
                     </li>
                   );
                 }
-                const forMe = mentionsMe(m, me);
+                const forMe = mentionsMeNow(m);
                 const canReact = !m.outbox;
                 const mine = m.senderKeyHash === me;
                 const edit = actions.edits.get(m.messageId);
