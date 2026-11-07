@@ -66,7 +66,8 @@ export function ChatSearch({
   /** The chat's searchable messages, oldest first, as read (mentions as @names). */
   items: { id: string; text: string }[];
   listRef: React.RefObject<HTMLElement | null>;
-  onClose: () => void;
+  /** `at`: the match being shown when it closed, if any. */
+  onClose: (at: string | null) => void;
 }) {
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
@@ -85,8 +86,14 @@ export function ChatSearch({
     <div className="px-3 py-1.5 border-b border-[var(--border)] flex items-center gap-1.5" role="search">
       <input
         type="text"
-        autoFocus
+        id="chat-search"
         value={query}
+        // Focus without scrolling the page to it (as the message box does): iOS's own scroll on focus moved the chat.
+        onTouchEnd={(e) => {
+          if (document.activeElement === e.currentTarget) return;
+          e.preventDefault();
+          e.currentTarget.focus({ preventScroll: true });
+        }}
         onChange={(e) => {
           setQuery(e.target.value);
           setIndex(0);
@@ -100,7 +107,7 @@ export function ChatSearch({
             step(e.key === "ArrowUp" ? 1 : -1);
           } else if (e.key === "Escape") {
             e.preventDefault();
-            onClose();
+            onClose(current ?? null);
           }
         }}
         enterKeyHint="search"
@@ -115,7 +122,7 @@ export function ChatSearch({
       )}
       <IconButton icon="chatUp" label="Older match" disabled={matches.length < 2} onClick={() => step(1)} />
       <IconButton icon="chatDown" label="Newer match" disabled={matches.length < 2} onClick={() => step(-1)} />
-      <IconButton icon="close" label="Close search" onClick={onClose} />
+      <IconButton icon="close" label="Close search" onClick={() => onClose(current ?? null)} />
     </div>
   );
 }
