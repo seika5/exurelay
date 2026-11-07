@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
-import { MAX_COPIES_PER_POST, validateProfileCopies } from "../profiles.js";
+import { MAX_CIPHERTEXT_LENGTH, MAX_COPIES_PER_POST, profilesTag, validateProfileCopies } from "../profiles.js";
 
 const hex = (c) => c.repeat(64);
 const session = { keyHash: hex("a"), member: hex("m") };
@@ -22,11 +22,34 @@ describe("validateProfileCopies", () => {
   });
 
   it("refuses malformed fields and oversized batches", () => {
-    for (const bad of [{ nonce: "short" }, { ciphertext: "not base64!" }, { ciphertext: "A".repeat(9000) }, { updatedAt: 0 }, { updatedAt: 1.5 }, { recipient: "B".repeat(64) }]) {
+    for (const bad of [{ nonce: "short" }, { ciphertext: "not base64!" }, { ciphertext: "A".repeat(MAX_CIPHERTEXT_LENGTH + 4) }, { updatedAt: 0 }, { updatedAt: 1.5 }, { recipient: "B".repeat(64) }]) {
       assert.strictEqual(validateProfileCopies({ copies: [copy(bad)] }, session, isRecipient).ok, false, JSON.stringify(bad).slice(0, 40));
     }
     assert.strictEqual(validateProfileCopies({ copies: [] }, session, isRecipient).ok, false);
     const many = Array.from({ length: MAX_COPIES_PER_POST + 1 }, () => copy());
     assert.strictEqual(validateProfileCopies({ copies: many }, session, isRecipient).ok, false);
+  });
+
+  it("accepts copies padded to fit a profile picture (about 21.9K base64 characters)", () => {
+    assert.ok(validateProfileCopies({ copies: [copy({ ciphertext: "A".repeat(21884) })] }, session, isRecipient).ok);
+  });
+});
+
+describe("profilesTag", () => {
+  const row = (over = {}) => ({ author: hex("m"), sender: hex("a"), nonce: "AAAAAAAAAAAAAAAAAAAAAA==", updatedAt: 10, ...over });
+
+  it("is the same for the same copies in any order, with BigInt or number dates", () => {
+    const a = [row(), row({ author: hex("n") })];
+    assert.strictEqual(profilesTag(a), profilesTag([...a].reverse()));
+    assert.strictEqual(profilesTag([row()]), profilesTag([row({ updatedAt: 10n })]));
+    assert.match(profilesTag([]), /^[0-9a-f]{32}$/);
+  });
+
+  it("changes when a copy is replaced, added or removed", () => {
+    const base = profilesTag([row()]);
+    assert.notStrictEqual(profilesTag([row({ nonce: "BBBBBBBBBBBBBBBBBBBBBB==" })]), base);
+    assert.notStrictEqual(profilesTag([row({ updatedAt: 11 })]), base);
+    assert.notStrictEqual(profilesTag([row(), row({ author: hex("n") })]), base);
+    assert.notStrictEqual(profilesTag([]), base);
   });
 });

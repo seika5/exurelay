@@ -1,5 +1,6 @@
 "use client";
 
+import { Avatar } from "@/components/Avatar";
 import { useCallback, useState } from "react";
 import { Modal, confirmDialog } from "@/components/Modal";
 import { Icon, IconButton } from "@/components/icons";
@@ -110,6 +111,7 @@ export function GroupMembers({
       <ul className="flex flex-col gap-1">
         {members.map((k) => (
           <li key={k} className="flex items-center gap-2 min-h-8 text-sm">
+            <Avatar keyHash={k} name={nameFor(k)} className="h-7 w-7 text-xs" />
             <span className="truncate">{k === me ? "You" : nameFor(k)}</span>
             {k === g.creator && <span className="shrink-0 text-xs text-[var(--muted)]">owner</span>}
             {k !== me && canRemove(g, me, k) && (
