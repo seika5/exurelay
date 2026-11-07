@@ -97,7 +97,7 @@ export function ReactionChips({
             aria-label={`${r.emoji} ${r.by.length}: ${who}`}
             title={who}
             className={`inline-flex items-center gap-1 h-7 touch:h-8 px-2 rounded-full border text-sm ${
-              mine ? "border-[var(--accent)] bg-[var(--accent)]/20" : "border-[var(--border)] bg-[var(--surface)] hover:bg-white/5"
+              mine ? "border-[var(--accent)] [background-color:color-mix(in_srgb,var(--accent)_20%,transparent)]" : "border-[var(--border)] bg-[var(--surface)] hover:bg-white/5"
             }`}
           >
             <span className="text-base leading-none">{r.emoji}</span>
@@ -168,7 +168,46 @@ export function MessageSheet({
   const [all, setAll] = useState(false);
   const [quick] = useState(getQuickEmoji);
   const visible = useVisibleViewport();
-  const armed = useRef(false);
+  const [ready, setReady] = useState(false);
+  const sheet = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    let t: ReturnType<typeof setTimeout> | undefined;
+    let liftedAt = 0;
+    // The lift's own tap comes hundreds of ms after the finger is up: swallow it if it lands on the sheet.
+    const swallow = (e: MouseEvent) => {
+      // Generous: a real tap always starts with a new touch, which ends this (stopSwallowing).
+      if (liftedAt && Date.now() - liftedAt < 1500 && sheet.current?.contains(e.target as Node)) {
+        e.preventDefault();
+        e.stopPropagation();
+        window.removeEventListener("click", swallow, true);
+      }
+    };
+    const lift = () => {
+      liftedAt = Date.now();
+      t = setTimeout(() => setReady(true), 50);
+      // A real tap starts with a new touch: from then on, nothing is swallowed.
+      window.addEventListener("pointerdown", stopSwallowing, true);
+    };
+    // Touch only: the lift itself can be followed by emulated mouse events.
+    const stopSwallowing = (e: PointerEvent) => {
+      if (e.pointerType === "mouse") return;
+      window.removeEventListener("click", swallow, true);
+      window.removeEventListener("pointerdown", stopSwallowing, true);
+    };
+    window.addEventListener("pointerup", lift, { once: true });
+    window.addEventListener("pointercancel", lift, { once: true });
+    window.addEventListener("click", swallow, true);
+    // Opened without a finger down (or the lift was missed): ready shortly anyway.
+    const fallback = setTimeout(() => setReady(true), 1500);
+    return () => {
+      window.removeEventListener("pointerup", lift);
+      window.removeEventListener("pointercancel", lift);
+      window.removeEventListener("click", swallow, true);
+      window.removeEventListener("pointerdown", stopSwallowing, true);
+      clearTimeout(t);
+      clearTimeout(fallback);
+    };
+  }, []);
   useEffect(() => {
     const key = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     document.addEventListener("keydown", key);
@@ -187,19 +226,18 @@ export function MessageSheet({
       onPointerDown={(e) => e.target === e.currentTarget && onClose()}
     >
       <div
+        ref={sheet}
         role="dialog"
         aria-label="Message"
-        // The finger that held the message lifts over the sheet, and that lift taps whatever is under it: ignore taps
-        // until a new touch starts on the sheet.
-        onPointerDown={() => (armed.current = true)}
-        onClickCapture={(e) => {
-          if (armed.current) return;
-          e.preventDefault();
-          e.stopPropagation();
-        }}
+        // The finger that held the message is still down over the sheet: until it lifts, the sheet takes no touches,
+        // so the button under it neither lights up nor gets the lift's tap (which lands on the backdrop instead).
         className="rounded-t-2xl border-t border-[var(--border)] bg-[var(--surface)] px-3 pt-3 flex flex-col gap-3 shadow-[0_-8px_24px_rgba(0,0,0,0.4)]"
         // At least a third of the screen tall, however little is in it.
-        style={{ paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 0.75rem)", minHeight: visible.height ? visible.height / 3 : "33vh" }}
+        style={{
+          paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 0.75rem)",
+          minHeight: visible.height ? visible.height / 3 : "33vh",
+          pointerEvents: ready ? undefined : "none",
+        }}
       >
         <div className="flex items-center justify-between gap-1">
           {quick.map((e) => (
@@ -277,7 +315,7 @@ export function QuickReactionsSection() {
             aria-label={`Quick reaction ${i + 1}: ${e}`}
             aria-pressed={editing === i}
             onClick={() => setEditing(editing === i ? null : i)}
-            className={`h-11 w-11 rounded-lg border text-2xl ${editing === i ? "border-[var(--accent)] bg-[var(--accent)]/20" : "border-[var(--border)]"}`}
+            className={`h-11 w-11 rounded-lg border text-2xl ${editing === i ? "border-[var(--accent)] [background-color:color-mix(in_srgb,var(--accent)_20%,transparent)]" : "border-[var(--border)]"}`}
           >
             {e}
           </button>
