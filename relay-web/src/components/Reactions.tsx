@@ -168,6 +168,7 @@ export function MessageSheet({
   const [all, setAll] = useState(false);
   const [quick] = useState(getQuickEmoji);
   const visible = useVisibleViewport();
+  const armed = useRef(false);
   useEffect(() => {
     const key = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     document.addEventListener("keydown", key);
@@ -188,6 +189,14 @@ export function MessageSheet({
       <div
         role="dialog"
         aria-label="Message"
+        // The finger that held the message lifts over the sheet, and that lift taps whatever is under it: ignore taps
+        // until a new touch starts on the sheet.
+        onPointerDown={() => (armed.current = true)}
+        onClickCapture={(e) => {
+          if (armed.current) return;
+          e.preventDefault();
+          e.stopPropagation();
+        }}
         className="rounded-t-2xl border-t border-[var(--border)] bg-[var(--surface)] px-3 pt-3 flex flex-col gap-3 shadow-[0_-8px_24px_rgba(0,0,0,0.4)]"
         // At least a third of the screen tall, however little is in it.
         style={{ paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 0.75rem)", minHeight: visible.height ? visible.height / 3 : "33vh" }}

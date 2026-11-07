@@ -126,7 +126,7 @@ export function ChatFile({
       {open && expanded && url && (kind === "image" || kind === "video") && (
         <MediaViewer kind={kind} url={url} name={name} onDownload={onDownload} onDoubleTap={onDoubleTap} onClose={() => setExpanded(false)} />
       )}
-      {open && kind === "audio" && <audio src={url} controls onError={() => setFailed(true)} className="max-w-full" />}
+      {open && kind === "audio" && <AudioPlayer url={url} name={name} onError={() => setFailed(true)} />}
       <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1 max-w-full">
         <span className="inline-flex items-center gap-2 min-w-0 max-w-full rounded border border-[var(--border)] bg-[var(--surface)] pl-2 pr-1 py-1">
           <Icon name="chatFile" />
@@ -299,5 +299,64 @@ function ZoomableImage({ url, name, onDoubleTap }: { url: string; name: string; 
         transition: touches.current.size ? "none" : "transform 150ms ease-out",
       }}
     />
+  );
+}
+
+const clock = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+
+/**
+ * Audio and voice messages: play/pause, a seek bar and the time, in the app's own colors (the browser's player is a
+ * bright white pill). Recordings from some browsers don't say how long they are until played through; then only the
+ * time played shows.
+ */
+function AudioPlayer({ url, name, onError }: { url: string; name: string; onError: () => void }) {
+  const audio = useRef<HTMLAudioElement>(null);
+  const [playing, setPlaying] = useState(false);
+  const [at, setAt] = useState(0);
+  const [length, setLength] = useState<number | null>(null);
+  const known = length !== null && Number.isFinite(length) && length > 0;
+  return (
+    <span className="inline-flex items-center gap-2 max-w-full w-72 rounded-md border border-[var(--border)] bg-[var(--surface)] p-1.5 pr-3">
+      <audio
+        ref={audio}
+        src={url}
+        preload="metadata"
+        onError={onError}
+        onLoadedMetadata={(e) => setLength(e.currentTarget.duration)}
+        onDurationChange={(e) => setLength(e.currentTarget.duration)}
+        onTimeUpdate={(e) => setAt(e.currentTarget.currentTime)}
+        onPlay={() => setPlaying(true)}
+        onPause={() => setPlaying(false)}
+        onEnded={() => {
+          setPlaying(false);
+          setAt(0);
+        }}
+        className="hidden"
+      />
+      <button
+        type="button"
+        aria-label={playing ? `Pause ${name}` : `Play ${name}`}
+        onClick={() => (playing ? audio.current?.pause() : audio.current?.play().catch(() => {}))}
+        className="inline-flex h-8 w-8 touch:h-10 touch:w-10 shrink-0 items-center justify-center rounded bg-[var(--bg)] text-[var(--text)] hover:bg-white/10"
+      >
+        <svg viewBox="0 0 24 24" width={16} height={16} fill="currentColor" aria-hidden>
+          {playing ? <path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z" /> : <path d="M8 5.5v13l10.5-6.5z" />}
+        </svg>
+      </button>
+      <input
+        type="range"
+        min={0}
+        max={known ? length! : 1}
+        step="any"
+        value={known ? at : 0}
+        disabled={!known}
+        aria-label={`Position in ${name}`}
+        onChange={(e) => {
+          if (audio.current) audio.current.currentTime = Number(e.target.value);
+        }}
+        className="flex-1 min-w-0 h-1 accent-[var(--muted)]"
+      />
+      <span className="shrink-0 text-xs tabular-nums text-[var(--muted)]">{known ? `${clock(at)} / ${clock(length!)}` : clock(at)}</span>
+    </span>
   );
 }

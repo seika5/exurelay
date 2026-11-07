@@ -244,6 +244,8 @@ function Chat() {
   // Reactions: the desktop picker (which message, where its button is) and the phone's press-and-hold sheet.
   const [reactPicker, setReactPicker] = useState<{ id: string; anchor: DOMRect } | null>(null);
   const [sheetFor, setSheetFor] = useState<string | null>(null);
+  // The message a finger is on (shaded, like a pressed chat in the list), until it lifts or the menu closes.
+  const [pressing, setPressing] = useState<string | null>(null);
   const holdTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const holdStart = useRef({ x: 0, y: 0 });
   // Phones: a double tap reacts with your first quick reaction.
@@ -372,14 +374,16 @@ function Chat() {
   // screen. Decided once per opening (once its messages are in), so it stays put as the mark moves on and doesn't
   // show up for messages that arrive while you watch. Worked out here, in render, so the line is already in place
   // when the opening scroll below measures it.
-  const newLine = useRef<{ for: Conversation | null; at: string | null; mark: number }>({ for: null, at: null, mark: 0 });
-  if (!selected || !chatOnScreen || !identity) newLine.current = { for: null, at: null, mark: 0 };
-  else if (newLine.current.for !== selected && filteredMessages.length > 0) {
-    const mark = readMarks[conversationId(selected, identity.keyHash)] ?? 0;
+  // Keyed by the chat's id, not the object: the open chat is swapped for a fresh copy whenever its members change.
+  const newLine = useRef<{ for: string | null; at: string | null; mark: number }>({ for: null, at: null, mark: 0 });
+  const openId = selected && identity ? conversationId(selected, identity.keyHash) : null;
+  if (!openId || !chatOnScreen || !identity) newLine.current = { for: null, at: null, mark: 0 };
+  else if (newLine.current.for !== openId && filteredMessages.length > 0) {
+    const mark = readMarks[openId] ?? 0;
     const i = firstUnreadIndex(filteredMessages, mark, identity.keyHash);
-    newLine.current = { for: selected, at: i < 0 ? null : filteredMessages[i].messageId, mark };
+    newLine.current = { for: openId, at: i < 0 ? null : filteredMessages[i].messageId, mark };
   }
-  const newLineAt = newLine.current.for === selected ? newLine.current.at : null;
+  const newLineAt = newLine.current.for === openId ? newLine.current.at : null;
 
   // Muted chats (this device only): no white dot. Mentions, calls and rings still show yellow and still notify.
   const { mutedUntil, setMute } = useMutes();
@@ -487,11 +491,15 @@ function Chat() {
     for (const conv of conversations) {
       if (conv.type !== "group") continue;
       const cid = conversationId(conv, identity.keyHash);
-      const renames = messages.filter(
-        (m) => m.type === "group_rename" && messageBelongsToConversation(m, conv, identity.keyHash)
+      // Renames, and the name a membership change carries (how someone added later learns it).
+      const named = messages.filter(
+        (m) =>
+          (m.type === "group_rename" || (m.type === "group_members" && typeof m.name === "string" && m.name.trim())) &&
+          messageBelongsToConversation(m, conv, identity.keyHash)
       );
-      const last = [...renames].sort((a, b) => b.sentAt - a.sentAt)[0];
-      if (last && last.type === "group_rename") map.set(cid, last.newName);
+      const last = [...named].sort((a, b) => b.sentAt - a.sentAt)[0];
+      if (last?.type === "group_rename") map.set(cid, last.newName);
+      else if (last?.type === "group_members" && last.name) map.set(cid, last.name.slice(0, 100));
     }
     return map;
   }, [conversations, messages, identity?.keyHash]);
@@ -610,15 +618,15 @@ function Chat() {
   // A chat coming on screen opens at the bottom, or with the "New" line near the top when there's more unread than
   // fits. Once per opening, when its messages are in (until then, at the bottom). Before paint, and before the
   // new-messages effect above reads wasAtBottomRef.
-  const openedFor = useRef<Conversation | null>(null);
+  const openedFor = useRef<string | null>(null);
   useLayoutEffect(() => {
     const list = messagesListRef.current;
-    if (!selected || !chatOnScreen || !list) {
+    if (!openId || !chatOnScreen || !list) {
       openedFor.current = null;
       return;
     }
-    if (openedFor.current === selected) return;
-    if (newLine.current.for === selected) openedFor.current = selected;
+    if (openedFor.current === openId) return;
+    if (newLine.current.for === openId) openedFor.current = openId;
     const place = () => {
       const bottom = list.scrollHeight - list.clientHeight;
       const line = newLineAt ? list.querySelector<HTMLElement>("[data-new-line]") : null;
@@ -634,7 +642,7 @@ function Chat() {
     place();
     // Again once the browser has laid it all out (the bottom scroll always waited a frame).
     requestAnimationFrame(place);
-  }, [selected, chatOnScreen, newLineAt, filteredMessages.length]);
+  }, [openId, chatOnScreen, newLineAt, filteredMessages.length]);
 
   const keyHashesWithDm = useMemo(() => {
     const set = new Set<string>();
@@ -716,6 +724,8 @@ function Chat() {
   /** Add your reaction, or take it back if it's already yours. Sent to the conversation like a message. */
   const toggleReaction = (messageId: string, emoji: string) => {
     if (!identity || !selected) return;
+    // Its row is about to change height: note the scroll position first, as for a photo (iPhone Safari moves it).
+    messagesListRef.current?.dispatchEvent(new Event("relay:resize-soon"));
     const mine = reactions.get(messageId)?.find((r) => r.emoji === emoji)?.by.includes(identity.keyHash) ?? false;
     const base = { type: "reaction", target: messageId, emoji, on: !mine };
     if (selected.type === "dm") {
@@ -972,8 +982,9 @@ function Chat() {
   const changeMembers = (change: { add?: string[]; remove?: string[] }) => {
     if (!identity || selected?.type !== "group") return;
     const { message, recipients } = membershipChange(selected, change);
+    const name = groupNamesFromMessages.get(conversationId(selected, identity.keyHash));
     sendMessage(
-      message as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
+      { ...message, ...(name ? { name } : {}) } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
       recipients.filter((k) => k !== identity.keyHash && stillHere(k))
     ).catch(() => {});
   };
@@ -1448,14 +1459,17 @@ function Chat() {
                 const mine = m.senderKeyHash === me;
                 const edit = actions.edits.get(m.messageId);
                 const quote = replyTarget(m, messagesById, me);
-                const endHold = () => holdTimer.current && clearTimeout(holdTimer.current);
+                const endHold = () => {
+                  if (holdTimer.current) clearTimeout(holdTimer.current);
+                  setPressing(null);
+                };
                 const tool = "h-7 w-7 flex items-center justify-center rounded hover:bg-white/10";
                 return (
                   <li
                     key={i}
                     data-mid={m.messageId}
                     // Room on the left for the sender's picture (on the group's first message), so a group's lines align.
-                    className={`group relative rounded transition-colors duration-500 ${grouped ? "mt-0.5" : "mt-3"} ${forMe ? "border-l-2 border-amber-400 bg-amber-500/5 pl-12 md:pl-11 -ml-2" : "pl-10 md:pl-9"} ${flash === m.messageId ? "!bg-[var(--accent)]/20" : ""}`}
+                    className={`group relative rounded transition-colors duration-500 ${grouped ? "mt-0.5" : "mt-3"} ${forMe ? "border-l-2 border-amber-400 bg-amber-500/5 pl-12 md:pl-11 -ml-2" : "pl-10 md:pl-9"} ${flash === m.messageId ? "!bg-[var(--accent)]/20" : ""} ${pressing === m.messageId || sheetFor === m.messageId ? "!bg-[var(--border)] !duration-100" : ""}`}
                     // Phones: press and hold for reactions and Copy (no text selection).
                     onPointerDown={(e) => {
                       // Only one finger on the message itself: not a pinch in the photo viewer (it's drawn elsewhere on the
@@ -1463,6 +1477,7 @@ function Chat() {
                       if (!canReact || e.pointerType === "mouse" || !e.isPrimary || !e.currentTarget.contains(e.target as Node)) return;
                       if ((e.target as HTMLElement).closest("button, a, video, audio")) return;
                       endHold();
+                      setPressing(m.messageId);
                       holdStart.current = { x: e.clientX, y: e.clientY };
                       holdTimer.current = setTimeout(() => {
                         // The keyboard goes down for the sheet.
