@@ -34,6 +34,19 @@ Every request reaches the server from an IP address. A typical member's IP is st
 | **Data at rest** | Database dump, seized disk, a curious admin browsing tables | Content, senders, recipients, who was notified (§5, §9). It does see the member list: public keys, devices, who is an admin (below). |
 | **Actively malicious operator** | Logs IPs and timing for every request | Content only. Senders, recipients, notification targets and online times can be inferred from IPs and timing unless members hide their IP (VPN/Tor-style relay). |
 
+### Known gaps, and what helps
+
+| Gap | Mitigation |
+| --- | --- |
+| The server sees each request's IP address and time, which can tie anonymous requests (uploads, downloads, call joins) to a member | A VPN or Tor |
+| The server can tell which members have the app open: the background connection and the minute-by-minute name check carry the login | None yet (a VPN doesn't help: the login itself says who) |
+| Activity and rough size: when uploads happen, and how many blobs each takes (a long message or file takes several) | Decoys (admin setting); more decoys blur it more, at a data cost |
+| Calls: the server sees an anonymous room, when it starts and ends, and each connection's IP; people in a call see each other's IPs (direct WebRTC); the TURN relay sees IPs | A VPN or Tor; relaying every call through TURN would hide IPs from peers (not built) |
+| Notifications: the server learns, live, which device is being mentioned or rung; Apple or Google sees each wake-up | Turn notifications off |
+| Name and picture updates: the server sees when someone changes theirs | None |
+| No forward secrecy, not post-quantum (§3) | Open |
+| Deleted and edited messages stay on the server, encrypted, until they expire, and older app versions still show the original | Keep the app updated |
+
 Any measure that only hides something from the second kind of adversary *without* IP hiding gives a false sense of security, so it's marked as such or not built. The server code must not log IPs or request details, and the operator must keep it that way.
 
 ### What the server stores in plain text
@@ -235,7 +248,7 @@ Every send (message, file, call event, group rename) is encrypted **once** and s
 - **Fetching:** every member downloads every blob once with `GET /api/blobs?since=<seq>` (binary pages), and the server pings all members' sockets after each upload. Uploads take turns (a Postgres advisory lock around each batch's insert), so blobs become visible in `seq` order and a cursor never skips a batch that committed late.
 - **Attachments** travel the same way as messages, so they're indistinguishable from text and every member downloads them (a 5 MB photo costs every member 5 MB once). There's no size limit.
 - **Limits:** a send can have at most ⌊(S − 32) / 104⌋ recipients including yourself (629 at 64 KB). Trial decryption costs one small hash per member per blob: nothing at tens of members, seconds when catching up days of traffic at many hundreds.
-- **What the server still sees:** when uploads happen and how big each batch is, and (from IPs) roughly who uploads and downloads. Not who sent what to whom, or text vs. files.
+- **What the server still sees:** when uploads happen and how big each batch is, and (from IPs) roughly who uploads and downloads. Not who sent what to whom, or text vs. files. Reactions, edits, deletes, replies, voice messages and group membership changes are ordinary blobs too. (§1 "Known gaps".)
 - Hard cutover: older blobs aren't readable.
 
 ### Decided: encrypted local cache
@@ -370,7 +383,7 @@ IP hiding is optional per member; members who want the strong guarantee should u
 ### Decided: call tiles for everyone in the conversation
 
 - During a group call, every conversation member gets a tile. Members not in the call show as a dimmed "not in call" rectangle with a **Notify** button that sends them a ring push (§9).
-- It says "not in call", not "offline". The app only knows who has joined the room. Real online/offline presence would need the server to track who is connected, which is the kind of metadata Exurelay avoids.
+- It says "not in call", not "offline". The app only knows who has joined the room, and doesn't share online/offline presence between members. (The server itself can tell who has the app open: §1 "Known gaps".)
 - Starting or joining a call never notifies anyone by itself. Only **Notify** sends a ring. Rings are rate-limited per person (e.g. one per 30 s), and the receiver can mute rings per conversation.
 
 Recommended fix: authenticate signaling end to end. Seal each offer/answer/ICE message with the pairwise key (the same ECDH as messages) so the server routes only opaque envelopes, and attach media only to a verified peer. Rooms use random ids shared inside encrypted messages instead of deterministic ones.
