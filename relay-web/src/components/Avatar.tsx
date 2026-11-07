@@ -10,7 +10,7 @@ import { Icon, IconButton } from "@/components/icons";
  * `className` (e.g. "h-8 w-8 text-sm"). Decorative: the name is always shown or read out next to it.
  */
 export function Avatar({ keyHash, name, className = "h-8 w-8 text-sm" }: { keyHash: string; name?: string; className?: string }) {
-  const { avatarOf } = useIdentity();
+  const { avatarOf, directory } = useIdentity();
   const src = avatarOf(keyHash);
   return src ? (
     // eslint-disable-next-line @next/next/no-img-element -- a data URL, nothing for next/image to optimize
@@ -19,7 +19,7 @@ export function Avatar({ keyHash, name, className = "h-8 w-8 text-sm" }: { keyHa
     <span
       aria-hidden="true"
       className={`shrink-0 rounded-full inline-flex items-center justify-center font-semibold text-white select-none leading-none ${className}`}
-      style={{ backgroundColor: avatarColor(keyHash) }}
+      style={{ backgroundColor: avatarColor(keyHash, directory?.members.findIndex((m) => m.keyHash === keyHash)) }}
     >
       {initialOf(name)}
     </span>

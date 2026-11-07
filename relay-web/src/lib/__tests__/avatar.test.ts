@@ -74,3 +74,16 @@ describe("avatar helpers", () => {
     expect(pickEncoding([20000, MAX_AVATAR_BYTES + 1])).toBeNull();
   });
 });
+
+describe("avatar colors by place on the member list", () => {
+  it("gives members next to each other clearly different hues", () => {
+    const hue = (i: number) => Number(/hsl\((\d+)/.exec(avatarColor("ab".repeat(32), i))![1]);
+    for (let i = 0; i < 12; i++) {
+      const d = Math.abs(hue(i) - hue(i + 1));
+      expect(Math.min(d, 360 - d)).toBeGreaterThan(100);
+    }
+    // The first 6 are all at least 25 degrees apart from each other.
+    const first = Array.from({ length: 6 }, (_, i) => hue(i));
+    for (const a of first) for (const b of first) if (a !== b) expect(Math.min(Math.abs(a - b), 360 - Math.abs(a - b))).toBeGreaterThanOrEqual(25);
+  });
+});
