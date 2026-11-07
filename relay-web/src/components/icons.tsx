@@ -92,6 +92,17 @@ const PATHS = {
   ),
   chatCopy: <path d="M9 9h10v11H9zM5 15H4V4h11v1" />,
   chatReply: <path d="M10 5L4 11l6 6M4 11h10a6 6 0 0 1 6 6v2" />,
+  chatSearch: (
+    <>
+      <circle cx="10.5" cy="10.5" r="6.5" />
+      <path d="M15.5 15.5L20 20" />
+    </>
+  ),
+  chatUp: <path d="M6 15l6-6 6 6" />,
+  chatDown: <path d="M6 9l6 6 6-6" />,
+  chatToBottom: <path d="M12 4v15M6 13l6 6 6-6" />,
+  chatMore: <path d="M5 12h.01M12 12h.01M19 12h.01" strokeWidth="3" />,
+  chatMuted: <path d="M6 16V11a6 6 0 0 1 9.5-4.9M18 10.5V16l1.5 2H7M10 20.5a2 2 0 0 0 4 0M3 3l18 18" />,
   chatShow: (
     <>
       <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z" />
