@@ -17,7 +17,7 @@ export function validEmoji(e: unknown): e is string {
 
 /** The conversation a message belongs to, as seen by `me`. */
 export function conversationOf(m: DecryptedMessage, me: string): Conversation | null {
-  if (m.groupMemberKeyHashes) return { type: "group", memberKeyHashes: m.groupMemberKeyHashes };
+  if (m.groupMemberKeyHashes) return { type: "group", memberKeyHashes: m.groupMemberKeyHashes, groupId: m.groupId };
   const other = m.senderKeyHash === me ? m.recipientKeyHash : m.senderKeyHash;
   return other ? { type: "dm", otherKeyHash: other } : null;
 }
