@@ -6,7 +6,7 @@ import type { Socket } from "socket.io-client";
 import { useSpeakingDetection } from "@/lib/useSpeakingDetection";
 import { getIceServers } from "@/lib/api";
 import { createSocket } from "@/lib/socket";
-import { secureSignalSocket } from "@/lib/callSignal";
+import { callSocket } from "@/lib/callSocket";
 import { useIdentity } from "@/context/IdentityContext";
 
 /** Fallback when the relay has no TURN configured (or the request fails). STUN only works on friendly NATs. */
@@ -15,7 +15,7 @@ const FALLBACK_ICE_SERVERS: RTCIceServer[] = [
   { urls: "stun:stun1.l.google.com:19302" },
 ];
 
-export type ConversationForCall = { type: "dm"; otherKeyHash: string } | { type: "group"; memberKeyHashes: string[] };
+export type ConversationForCall = { type: "dm"; otherKeyHash: string } | { type: "group"; memberKeyHashes: string[]; groupId?: string };
 
 type CallState = {
   socket: Socket | null;
@@ -53,10 +53,11 @@ type CallState = {
 type CallContextValue = CallState & {
   setRoomId: (id: string) => void;
   setCurrentCallConversation: (c: ConversationForCall | null) => void;
+  /** roomKey: the call's secret (callRoom.ts); without one (a call an older app started) it's joined the legacy way. */
   startOrJoinCall: (
     roomId: string,
-    keyHash?: string,
-    allowedKeyHashes?: string[],
+    roomKey: string | undefined,
+    allowedKeyHashes: string[],
     onFirstInRoom?: () => void | Promise<void>
   ) => Promise<void>;
   dismissRoomJoinError: () => void;
@@ -236,15 +237,16 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
    * it to the PC (same pattern as camera on: add track then offer after connection exists).
    */
   const offerToMembers = useCallback(
-    (sock: Socket, members: Array<{ id: string; keyHash: string | null }> | string[]) => {
+    (sock: Socket, members: Array<{ id: string; keyHash: string | null }> | string[], alone?: boolean) => {
       const list =
         Array.isArray(members) && members.length > 0 && typeof members[0] === "object" && "id" in members[0]
           ? (members as Array<{ id: string }>)
           : (members as string[]).map((id) => ({ id }));
       // Only the first list after joining decides whether we started the call; a later rejoin never announces one.
+      // alone: the room was empty (callSocket.ts lists only peers whose intros verified, so an empty list isn't enough).
       const cb = onFirstInRoomRef.current;
       onFirstInRoomRef.current = null;
-      if (list.length === 0 && cb) Promise.resolve(cb()).catch(() => {});
+      if ((alone ?? list.length === 0) && cb) Promise.resolve(cb()).catch(() => {});
       const offer = async (toId: string) => {
         const stream = localStreamRef.current;
         if (pcRef.current.has(toId) || !stream) return;
@@ -264,38 +266,52 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
 
   const setRoomId = useCallback((id: string) => setRoomIdState(id), []);
 
-  // The socket logs in as us, so it only exists once we're an enrolled member of a chosen server.
-  const { enrolled, server, identity, refreshDirectory } = useIdentity();
+  // The main socket logs in as us, so it only exists once we're an enrolled member of a chosen server. Calls go over
+  // their own anonymous connection (callSocket.ts); the main one carries directory pings and legacy calls.
+  const { enrolled, server, identity, refreshDirectory, memberDevices } = useIdentity();
   const myKeyHash = identity?.keyHash;
   // Signals are sealed per peer (callSignal.ts); these refs give the wrapper the latest identity and call members.
   const identityRef = useRef(identity);
   identityRef.current = identity;
+  const memberDevicesRef = useRef(memberDevices);
+  memberDevicesRef.current = memberDevices;
   const allowedRef = useRef<Set<string> | null>(null);
   useEffect(() => {
     if (!enrolled || !server || !myKeyHash) return;
     const s = createSocket();
-    setSocket(
-      secureSignalSocket(s, {
-        me: () => {
-          const id = identityRef.current;
-          return id ? { keyPair: id.keyPair, keyHash: id.deviceKeyHash } : null;
-        },
-        // Any current device of a current member (mine included, for a call between my own devices).
-        publicKeyFor: (device) => {
-          const id = identityRef.current;
-          if (!id) return undefined;
-          if (device === id.deviceKeyHash) return id.publicKeyBase64;
-          return (
-            id.myDevices.find((d) => d.keyHash === device)?.ecdh ??
-            id.contacts.flatMap((c) => c.devices).find((d) => d.keyHash === device)?.publicKey
-          );
-        },
-        allowed: () => allowedRef.current,
-        room: () => roomIdRef.current,
-      })
-    );
+    const call = callSocket(s, {
+      me: () => {
+        const id = identityRef.current;
+        return id ? { keyPair: id.keyPair, keyHash: id.deviceKeyHash } : null;
+      },
+      // Any current device of a current member (mine included, for a call between my own devices).
+      publicKeyFor: (device) => {
+        const id = identityRef.current;
+        if (!id) return undefined;
+        if (device === id.deviceKeyHash) return id.publicKeyBase64;
+        return (
+          id.myDevices.find((d) => d.keyHash === device)?.ecdh ??
+          id.contacts.flatMap((c) => c.devices).find((d) => d.keyHash === device)?.publicKey
+        );
+      },
+      allowed: () => allowedRef.current,
+      room: () => roomIdRef.current,
+      intro: () => {
+        const id = identityRef.current;
+        return id ? { member: id.keyHash, device: id.deviceKeyHash, signingKey: id.signingKeyPair.privateKey } : null;
+      },
+      // Who may introduce themselves: a current device (memberDevices) of a member of this call's conversation who is
+      // still a member (me, or a contact; contacts leave out removed and departed members).
+      signerFor: (member, device) => {
+        const id = identityRef.current;
+        if (!id || device === id.deviceKeyHash || !allowedRef.current?.has(member)) return undefined;
+        if (member !== id.keyHash && !id.contacts.some((c) => c.keyHash === member)) return undefined;
+        return memberDevicesRef.current.get(member)?.find((d) => d.keyHash === device)?.sig;
+      },
+    });
+    setSocket(call);
     return () => {
-      s.close();
+      call.close();
       setSocket(null);
     };
   }, [enrolled, server, myKeyHash]);
@@ -427,7 +443,9 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
       dropAllPeers();
       onFirstInRoomRef.current = null;
       joinedAsRef.current = socket.id ?? null;
-      socket.once("members", (members: Array<{ id: string; keyHash: string | null }> | string[]) => offerToMembers(socket, members));
+      socket.once("members", (members: Array<{ id: string; keyHash: string | null }> | string[], alone?: boolean) =>
+        offerToMembers(socket, members, alone)
+      );
       socket.emit("join_room", rid, null, [...allowed]);
       socket.emit("call_state", rid, { muted: mutedRef.current, deafened: deafenedRef.current });
     };
@@ -440,8 +458,8 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
   const startOrJoinCall = useCallback(
     async (
       rid: string,
-      keyHash?: string,
-      allowedKeyHashes?: string[],
+      roomKey: string | undefined,
+      allowedKeyHashes: string[],
       onFirstInRoom?: () => void | Promise<void>
     ) => {
       if (!socket || !rid.trim()) return;
@@ -476,10 +494,13 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
 
       // Register for "members" before emitting join_room so we never miss the list (avoids race where
       // server sends "members" before the effect that subscribes runs, which could break audio-only setup).
-      const onMembers = (members: Array<{ id: string; keyHash: string | null }> | string[]) => offerToMembers(socket, members);
+      const onMembers = (members: Array<{ id: string; keyHash: string | null }> | string[], alone?: boolean) =>
+        offerToMembers(socket, members, alone);
       socket.once("members", onMembers);
       joinedAsRef.current = socket.id ?? null;
-      socket.emit("join_room", rid.trim(), keyHash ?? null, allowed);
+      // With a room secret: the anonymous call socket. Without (an older app's call): the legacy logged-in join,
+      // where the server checks the member against the allowed list.
+      socket.emit("join_room", rid.trim(), null, allowed, roomKey);
     },
     [socket, offerToMembers]
   );

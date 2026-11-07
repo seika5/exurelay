@@ -1,6 +1,6 @@
 import express, { Router } from "express";
 import { setupCodeMatches, trustedAdmins, validateDirectory, validateLeave } from "../lib/directory.js";
-import { validateProfileCopies } from "../lib/profiles.js";
+import { profilesTag, validateProfileCopies } from "../lib/profiles.js";
 import { requireSession } from "./auth.js";
 import { parseBody } from "../lib/signed.js";
 import { memberSigners, validateDeviceCert, validateDeviceRevoke } from "../lib/devices.js";
@@ -202,12 +202,21 @@ export function directoryRouter(
   if (auth) {
     router.get("/profiles", requireSession(auth), async (req, res) => {
       try {
-        const copies = await prisma.profileCopy.findMany({
-          where: { recipient: req.session.keyHash },
-          select: { author: true, sender: true, nonce: true, ciphertext: true, updatedAt: true },
-        });
         res.set("Cache-Control", "no-store");
-        return res.json({ copies: copies.map((c) => ({ ...c, updatedAt: Number(c.updatedAt) })) });
+        const where = { recipient: req.session.keyHash };
+        // ?tag= from the last answer: if nothing changed, say so instead of sending every copy again.
+        if (typeof req.query.tag === "string") {
+          const heads = await prisma.profileCopy.findMany({ where, select: { author: true, sender: true, nonce: true, updatedAt: true } });
+          const tag = profilesTag(heads);
+          if (tag === req.query.tag) return res.json({ unchanged: true, tag });
+        }
+        const copies = (
+          await prisma.profileCopy.findMany({
+            where,
+            select: { author: true, sender: true, nonce: true, ciphertext: true, updatedAt: true },
+          })
+        ).map((c) => ({ ...c, updatedAt: Number(c.updatedAt) }));
+        return res.json({ copies, tag: profilesTag(copies) });
       } catch (e) {
         console.error(e);
         return res.status(500).json({ error: "Failed to load profiles" });

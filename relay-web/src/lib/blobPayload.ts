@@ -6,15 +6,22 @@
 import type { ContactSettings } from "./keystore";
 
 export type DecryptedMessageBody =
-  | { senderKeyHash: string; sentAt: number; recipientKeyHash?: string; type: "text"; body: string; groupMemberKeyHashes?: string[]; mentions?: string[] }
-  | { senderKeyHash: string; sentAt: number; recipientKeyHash?: string; type: "file"; body: string; filename?: string; fileSize?: number; groupMemberKeyHashes?: string[]; removed?: boolean }
+  | { senderKeyHash: string; sentAt: number; recipientKeyHash?: string; type: "text"; body: string; groupMemberKeyHashes?: string[]; mentions?: string[]; replyTo?: string }
+  | { senderKeyHash: string; sentAt: number; recipientKeyHash?: string; type: "file"; body: string; filename?: string; fileSize?: number; groupMemberKeyHashes?: string[]; removed?: boolean; replyTo?: string }
   | { senderKeyHash: string; sentAt: number; recipientKeyHash?: string; type: "contact"; keyHash: string; publicKey: string; name?: string; groupMemberKeyHashes?: string[] }
-  | { senderKeyHash: string; sentAt: number; type: "call_event"; event: "started" | "ended"; recipientKeyHash?: string; groupMemberKeyHashes?: string[]; roomId?: string }
+  /** roomKey: the call's secret (callIntro.ts), "started" only; missing when an older app started it. */
+  | { senderKeyHash: string; sentAt: number; type: "call_event"; event: "started" | "ended"; recipientKeyHash?: string; groupMemberKeyHashes?: string[]; roomId?: string; roomKey?: string }
   | { senderKeyHash: string; sentAt: number; type: "group_rename"; newName: string; groupMemberKeyHashes: string[]; recipientKeyHash?: string }
+  /** People added to or removed from a group (groups.ts); `groupMemberKeyHashes` is the list after the change. */
+  | { senderKeyHash: string; sentAt: number; type: "group_members"; groupId: string; add?: string[]; remove?: string[]; groupMemberKeyHashes: string[]; recipientKeyHash?: string; /** The group's name as the sender knows it, so people added after it was named get it too. */ name?: string }
   /** A plugin's message type (`x-<name>/<type>`, plugins.ts); everyone without that plugin sees the fallback. */
   | { senderKeyHash: string; sentAt: number; type: "plugin"; pluginType: string; data: unknown; fallback: string; recipientKeyHash?: string; groupMemberKeyHashes?: string[] }
   /** An emoji on a message (`target` is its messageId), or taken back (`on: false`). Tallied, never shown (reactions.ts). */
   | { senderKeyHash: string; sentAt: number; type: "reaction"; target: string; emoji: string; on: boolean; recipientKeyHash?: string; groupMemberKeyHashes?: string[] }
+  /** New text for my own text message `target`; the newest from its sender wins (messageActions.ts). Never shown. */
+  | { senderKeyHash: string; sentAt: number; type: "edit"; target: string; body: string; mentions?: string[]; recipientKeyHash?: string; groupMemberKeyHashes?: string[] }
+  /** My own message `target`, deleted for everyone (messageActions.ts). Never shown. */
+  | { senderKeyHash: string; sentAt: number; type: "delete"; target: string; recipientKeyHash?: string; groupMemberKeyHashes?: string[] }
   /** To my own other devices only: my name and contact settings (linked devices, DESIGN.md §4). Never shown. */
   | { senderKeyHash: string; sentAt: number; type: "device_sync"; myName: string; contactSettings: ContactSettings[]; settingsAt: number; recipientKeyHash?: string; groupMemberKeyHashes?: undefined }
   /** To my own other devices only: messages saved on the sending device, each with its blob's expiry. Never shown. */
@@ -22,9 +29,10 @@ export type DecryptedMessageBody =
 
 /**
  * messageId: random UUID chosen by the sender, the same for every recipient (protocol v2). Every message may also
- * carry the sender's token issuer key id, for the cross-check in tokens.ts.
+ * carry the sender's token issuer key id, for the cross-check in tokens.ts. A group message carries its group's
+ * `groupId`, except in a legacy group no one has added or removed anyone from yet (groups.ts).
  */
-export type DecryptedMessage = DecryptedMessageBody & { messageId: string; issuer?: string };
+export type DecryptedMessage = DecryptedMessageBody & { messageId: string; issuer?: string; groupId?: string };
 
 export function encodeMessage(m: DecryptedMessage): string {
   return JSON.stringify(m);

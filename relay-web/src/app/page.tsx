@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useEffect, useRef, useCallback } from "react";
+import { useState, useMemo, useEffect, useLayoutEffect, useRef, useCallback } from "react";
 import { useIdentity } from "@/context/IdentityContext";
 import { useCall } from "@/context/CallContext";
 import { CompactCallTile } from "@/components/CallTile";
@@ -17,7 +17,8 @@ import {
   conversationId,
   messageBelongsToConversation,
 } from "@/lib/useMessages";
-import { activeCallRoom, newRoomId } from "@/lib/callRoom";
+import { activeCall, newRoomId } from "@/lib/callRoom";
+import { newRoomKey } from "@/lib/callIntro";
 import type { DecryptedMessage } from "@/lib/blobPayload";
 import { blobSettings } from "@/lib/signed";
 import { activeMentionQuery, encodeDraft, mentionsMe, splitMentions, EVERYONE, type PickedMention } from "@/lib/mentions";
@@ -31,9 +32,19 @@ import { Modal, confirmDialog } from "@/components/Modal";
 import { btn, btnPrimary, field } from "@/components/ui";
 import { PageLock, useVisibleViewport } from "@/lib/useVisibleViewport";
 import { ChatFile } from "@/components/ChatFile";
-import { MessageSheet, ReactionChips, ReactionPopover } from "@/components/Reactions";
+import { AttachButton, DropOverlay, prepareFiles, useFileDrop } from "@/components/AttachMenu";
+import { MicButton, RecordingBar, useVoiceRecorder } from "@/components/VoiceRecorder";
+import { MessageSheet, ReactionChips, ReactionPopover, type SheetAction } from "@/components/Reactions";
+import { draftFromBody, replyTarget } from "@/lib/messageActions";
 import { getQuickEmoji } from "@/lib/emoji";
 import { ScrollList } from "@/components/ScrollList";
+import { ChatSearch } from "@/components/ChatSearch";
+import { MuteMenu } from "@/components/MuteMenu";
+import { muteLabel, useMutes } from "@/lib/mute";
+import { firstUnreadIndex } from "@/lib/chatView";
+import { GroupMembers } from "@/components/GroupMembers";
+import { groupFields, membershipChange, newGroupId } from "@/lib/groups";
+import { Avatar } from "@/components/Avatar";
 
 const GROUP_BREAK_MS = 10 * 60 * 1000;
 
@@ -46,8 +57,8 @@ function isGroupedWithPrev(
   prev: DecryptedMessage | undefined
 ): boolean {
   if (!prev) return false;
-  if (msg.type === "call_event" || msg.type === "group_rename") return false;
-  if (prev.type === "call_event" || prev.type === "group_rename") return false;
+  if (msg.type === "call_event" || msg.type === "group_rename" || msg.type === "group_members") return false;
+  if (prev.type === "call_event" || prev.type === "group_rename" || prev.type === "group_members") return false;
   if (msg.senderKeyHash !== prev.senderKeyHash) return false;
   return msg.sentAt - prev.sentAt < GROUP_BREAK_MS;
 }
@@ -150,7 +161,7 @@ function Chat() {
   } = useCall();
   // Messages need a login, which needs membership: nothing is fetched until we're enrolled on a server.
   // Wait for the cache key too, so the first sync resumes from the cached cursor instead of starting over.
-  const { messages, reactions, conversations, sendMessage, sendHistory, retrySend, cancelSend, storage, readMarks, markRead, cacheReady, loading: messagesLoading, error } = useMessages(
+  const { messages, reactions, actions, conversations, sendMessage, sendHistory, retrySend, cancelSend, storage, readMarks, markRead, cacheReady, loading: messagesLoading, error } = useMessages(
     enrolled && server && cacheKey !== undefined ? identity : null,
     useMemo(() => blobSettings(directory), [directory]),
     cacheKey ?? null,
@@ -234,20 +245,36 @@ function Chat() {
   // Reactions: the desktop picker (which message, where its button is) and the phone's press-and-hold sheet.
   const [reactPicker, setReactPicker] = useState<{ id: string; anchor: DOMRect } | null>(null);
   const [sheetFor, setSheetFor] = useState<string | null>(null);
+  // The message a finger is on (shaded, like a pressed chat in the list), until it lifts or the menu closes.
+  const [pressing, setPressing] = useState<string | null>(null);
   const holdTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const holdStart = useRef({ x: 0, y: 0 });
   // Phones: a double tap reacts with your first quick reaction.
   const lastTap = useRef<{ id: string; at: number } | null>(null);
   const closePicker = useCallback(() => setReactPicker(null), []);
   const closeSheet = useCallback(() => setSheetFor(null), []);
+  // The composer's reply or edit (a messageId; one at a time), and the message a quote just jumped to.
+  const [replyingTo, setReplyingTo] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [flash, setFlash] = useState<string | null>(null);
 
-  // The chats the list shows: not a DM with a removed member, nor a group that's down to just you.
+  // The chats the list shows: not a DM with a removed member, nor a group you're not in or that's down to just you.
   const listed = useMemo(
-    () => conversations.filter((c) => (c.type === "dm" ? stillHere(c.otherKeyHash) : c.memberKeyHashes.filter(stillHere).length >= 2)),
-    [conversations, stillHere]
+    () =>
+      conversations.filter((c) =>
+        c.type === "dm" ? stillHere(c.otherKeyHash) : c.memberKeyHashes.includes(identity?.keyHash ?? "") && c.memberKeyHashes.filter(stillHere).length >= 2
+      ),
+    [conversations, stillHere, identity?.keyHash]
   );
+
+  // The open group's members change as people are added or leave: keep it current, so sends and calls go to them.
+  useEffect(() => {
+    if (selected?.type !== "group" || !identity) return;
+    const id = conversationId(selected, identity.keyHash);
+    const fresh = conversations.find((c) => c.type === "group" && conversationId(c, identity.keyHash) === id);
+    if (fresh?.type === "group" && (fresh.groupId !== selected.groupId || fresh.memberKeyHashes.join() !== selected.memberKeyHashes.join())) setSelected(fresh);
+  }, [conversations, selected, identity]);
   const keyboardVisible = visible.keyboard;
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesListRef = useRef<HTMLUListElement>(null);
   const wasAtBottomRef = useRef(true);
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -273,8 +300,22 @@ function Chat() {
     return messages.filter((m) => messageBelongsToConversation(m, selected, identity.keyHash));
   }, [messages, selected, identity?.keyHash]);
 
+  // Every shown message by id, for reply quotes (replyTarget checks they're from the same conversation).
+  const messagesById = useMemo(() => new Map(messages.map((m) => [m.messageId, m as DecryptedMessage])), [messages]);
+  // A reply or edit belongs to the chat it was started in (and an edit's text isn't a draft for the next one).
+  const editingRef = useRef(editingId);
+  editingRef.current = editingId;
+  useEffect(() => {
+    if (editingRef.current) {
+      setInput("");
+      setPicked([]);
+    }
+    setReplyingTo(null);
+    setEditingId(null);
+  }, [selected]);
+
   /** The room of this conversation's ongoing call, if any (random, announced in the encrypted "started" message). */
-  const ongoingRoom = useMemo(() => activeCallRoom(filteredMessages), [filteredMessages]);
+  const ongoingCall = useMemo(() => activeCall(filteredMessages), [filteredMessages]);
 
   /** Display name for a member as this viewer knows them. */
   const nameFor = useCallback(
@@ -330,6 +371,54 @@ function Chat() {
     return () => document.removeEventListener("visibilitychange", mark);
   }, [selected, chatOnScreen, filteredMessages, markRead]);
 
+  // The "New" line: above the first message from someone else after the read mark as it was when the chat came on
+  // screen. Decided once per opening (once its messages are in), so it stays put as the mark moves on and doesn't
+  // show up for messages that arrive while you watch. Worked out here, in render, so the line is already in place
+  // when the opening scroll below measures it.
+  // Keyed by the chat's id, not the object: the open chat is swapped for a fresh copy whenever its members change.
+  const newLine = useRef<{ for: string | null; at: string | null; mark: number }>({ for: null, at: null, mark: 0 });
+  const openId = selected && identity ? conversationId(selected, identity.keyHash) : null;
+  if (!openId || !chatOnScreen || !identity) newLine.current = { for: null, at: null, mark: 0 };
+  else if (newLine.current.for !== openId && filteredMessages.length > 0) {
+    const mark = readMarks[openId] ?? 0;
+    const i = firstUnreadIndex(filteredMessages, mark, identity.keyHash);
+    newLine.current = { for: openId, at: i < 0 ? null : filteredMessages[i].messageId, mark };
+  }
+  const newLineAt = newLine.current.for === openId ? newLine.current.at : null;
+
+  // Muted chats (this device only): no white dot. Mentions, calls and rings still show yellow and still notify.
+  const { mutedUntil, setMute } = useMutes();
+  const isMutedConv = useCallback(
+    (c: Conversation) => !!identity && mutedUntil(conversationId(c, identity.keyHash)) !== undefined,
+    [identity, mutedUntil]
+  );
+  // The header's mute menu (on phones the "more" menu, with Search in it too), and the search bar.
+  const [chatMenu, setChatMenu] = useState<{ anchor: DOMRect; more: boolean } | null>(null);
+  const closeChatMenu = useCallback(() => setChatMenu(null), []);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const closeSearch = useCallback(() => setSearchOpen(false), []);
+  useEffect(() => {
+    setSearchOpen(false);
+    setChatMenu(null);
+  }, [selected]);
+  // What search looks through: text messages as you read them (mentions as @names).
+  const searchItems = useMemo(
+    () =>
+      !searchOpen
+        ? []
+        : filteredMessages.flatMap((m) =>
+            m.type !== "text"
+              ? []
+              : [{
+                  id: m.messageId,
+                  text: splitMentions(m.body)
+                    .map((seg) => ("text" in seg ? seg.text : `@${seg.mention === EVERYONE ? "everyone" : nameFor(seg.mention)}`))
+                    .join(""),
+                }]
+          ),
+    [searchOpen, filteredMessages, nameFor]
+  );
+
   // A ring for the chat that's on screen has been seen.
   useEffect(() => {
     if (!selected || !chatOnScreen || !identity) return;
@@ -357,13 +446,25 @@ function Chat() {
   }, [cacheReady, identity?.keyHash]);
 
   /** Something from someone else after the read mark: the chat list shows a dot. */
+  /** Mentions you as it reads now: not once deleted, and by its latest edit's mentions if edited. */
+  const mentionsMeNow = useCallback(
+    (m: (typeof messages)[number]) => {
+      if (!identity || actions.deleted.has(m.messageId)) return false;
+      const edit = actions.edits.get(m.messageId);
+      return mentionsMe(edit && m.type === "text" ? { ...m, body: edit.body, mentions: edit.mentions } : m, identity.keyHash);
+    },
+    [identity, actions]
+  );
+
   const hasUnread = useCallback(
     (conv: Conversation) => {
       if (!identity) return false;
       const seen = readMarks[conversationId(conv, identity.keyHash)] ?? 0;
-      return messages.some((m) => m.sentAt > seen && m.senderKeyHash !== identity.keyHash && messageBelongsToConversation(m, conv, identity.keyHash));
+      return messages.some(
+        (m) => m.sentAt > seen && m.senderKeyHash !== identity.keyHash && !actions.deleted.has(m.messageId) && messageBelongsToConversation(m, conv, identity.keyHash)
+      );
     },
-    [identity, readMarks, messages]
+    [identity, readMarks, messages, actions]
   );
 
   /** Unread mentions of me per conversation, for the sidebar badge. */
@@ -378,11 +479,11 @@ function Chat() {
       const seen = readMarks[id] ?? 0;
       const calls = (m: (typeof messages)[number]) => m.type === "call_event" && m.event === "started" && m.senderKeyHash !== identity.keyHash;
       return (
-        messages.filter((m) => m.sentAt > seen && (mentionsMe(m, identity.keyHash) || calls(m)) && messageBelongsToConversation(m, conv, identity.keyHash)).length +
+        messages.filter((m) => m.sentAt > seen && (mentionsMeNow(m) || calls(m)) && messageBelongsToConversation(m, conv, identity.keyHash)).length +
         ((rings[id] ?? 0) > seen ? 1 : 0)
       );
     },
-    [identity, readMarks, messages, rings]
+    [identity, readMarks, messages, rings, mentionsMeNow]
   );
 
   const groupNamesFromMessages = useMemo(() => {
@@ -391,11 +492,15 @@ function Chat() {
     for (const conv of conversations) {
       if (conv.type !== "group") continue;
       const cid = conversationId(conv, identity.keyHash);
-      const renames = messages.filter(
-        (m) => m.type === "group_rename" && messageBelongsToConversation(m, conv, identity.keyHash)
+      // Renames, and the name a membership change carries (how someone added later learns it).
+      const named = messages.filter(
+        (m) =>
+          (m.type === "group_rename" || (m.type === "group_members" && typeof m.name === "string" && m.name.trim())) &&
+          messageBelongsToConversation(m, conv, identity.keyHash)
       );
-      const last = [...renames].sort((a, b) => b.sentAt - a.sentAt)[0];
-      if (last && last.type === "group_rename") map.set(cid, last.newName);
+      const last = [...named].sort((a, b) => b.sentAt - a.sentAt)[0];
+      if (last?.type === "group_rename") map.set(cid, last.newName);
+      else if (last?.type === "group_members" && last.name) map.set(cid, last.name.slice(0, 100));
     }
     return map;
   }, [conversations, messages, identity?.keyHash]);
@@ -430,12 +535,20 @@ function Chat() {
     prevFilteredLengthRef.current = filteredMessages.length;
   }, [filteredMessages.length, filteredMessages]);
 
+  // More than a screen up from the bottom: the jump-to-bottom button. Away from the bottom: since when (a sentAt),
+  // so the button can count what came in since.
+  const [far, setFar] = useState(false);
+  const [awaySince, setAwaySince] = useState<number | null>(null);
+  const newBelow = awaySince === null ? 0 : filteredMessages.filter((m) => m.sentAt > awaySince && m.senderKeyHash !== identity?.keyHash).length;
+
   const handleMessagesScroll = () => {
     const list = messagesListRef.current;
     if (!list) return;
     wasAtBottomRef.current = list.scrollHeight - list.clientHeight <= list.scrollTop + 80;
     fromBottomRef.current = list.scrollHeight - list.clientHeight - list.scrollTop;
     lastTopRef.current = list.scrollTop;
+    setFar(fromBottomRef.current > list.clientHeight);
+    setAwaySince((a) => (wasAtBottomRef.current ? null : a ?? filteredMessages.reduce((n, m) => Math.max(n, m.sentAt), 0)));
   };
 
   // Keep things in place when sizes change, so nothing slides off the bottom:
@@ -503,12 +616,34 @@ function Chat() {
     };
   }, [selected]);
 
-  useEffect(() => { wasAtBottomRef.current = true; }, [selected]);
-
-  useEffect(() => {
+  // A chat coming on screen opens at the bottom, or with the "New" line near the top when there's more unread than
+  // fits. Once per opening, when its messages are in (until then, at the bottom). Before paint, and before the
+  // new-messages effect above reads wasAtBottomRef.
+  const openedFor = useRef<string | null>(null);
+  useLayoutEffect(() => {
     const list = messagesListRef.current;
-    if (list && selected) requestAnimationFrame(() => { list.scrollTop = list.scrollHeight; });
-  }, [selected]);
+    if (!openId || !chatOnScreen || !list) {
+      openedFor.current = null;
+      return;
+    }
+    if (openedFor.current === openId) return;
+    if (newLine.current.for === openId) openedFor.current = openId;
+    const place = () => {
+      const bottom = list.scrollHeight - list.clientHeight;
+      const line = newLineAt ? list.querySelector<HTMLElement>("[data-new-line]") : null;
+      const top = line ? line.getBoundingClientRect().top - list.getBoundingClientRect().top + list.scrollTop - 8 : bottom;
+      list.scrollTop = Math.min(top, bottom);
+      wasAtBottomRef.current = list.scrollTop >= bottom - 80;
+      fromBottomRef.current = list.scrollHeight - list.clientHeight - list.scrollTop;
+      lastTopRef.current = list.scrollTop;
+      setFar(fromBottomRef.current > list.clientHeight);
+      // Opened at the line: the button counts the unread below it.
+      setAwaySince(wasAtBottomRef.current ? null : newLine.current.mark);
+    };
+    place();
+    // Again once the browser has laid it all out (the bottom scroll always waited a frame).
+    requestAnimationFrame(place);
+  }, [openId, chatOnScreen, newLineAt, filteredMessages.length]);
 
   const keyHashesWithDm = useMemo(() => {
     const set = new Set<string>();
@@ -564,7 +699,7 @@ function Chat() {
         });
       } else {
         sendMessage(
-          { ...base, groupMemberKeyHashes: selected.memberKeyHashes } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
+          { ...base, ...groupFields(selected) } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
           selected.memberKeyHashes.filter((k) => k !== identity.keyHash && stillHere(k))
         );
       }
@@ -590,6 +725,8 @@ function Chat() {
   /** Add your reaction, or take it back if it's already yours. Sent to the conversation like a message. */
   const toggleReaction = (messageId: string, emoji: string) => {
     if (!identity || !selected) return;
+    // Its row is about to change height: note the scroll position first, as for a photo (iPhone Safari moves it).
+    messagesListRef.current?.dispatchEvent(new Event("relay:resize-soon"));
     const mine = reactions.get(messageId)?.find((r) => r.emoji === emoji)?.by.includes(identity.keyHash) ?? false;
     const base = { type: "reaction", target: messageId, emoji, on: !mine };
     if (selected.type === "dm") {
@@ -598,7 +735,7 @@ function Chat() {
       });
     } else {
       sendMessage(
-        { ...base, groupMemberKeyHashes: selected.memberKeyHashes } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
+        { ...base, ...groupFields(selected) } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
         selected.memberKeyHashes.filter((k) => k !== identity.keyHash && stillHere(k))
       );
     }
@@ -616,8 +753,85 @@ function Chat() {
       .map((seg) => ("text" in seg ? seg.text : `@${seg.mention === EVERYONE ? "everyone" : nameFor(seg.mention)}`))
       .join("");
 
-  const handleSend = async () => {
-    if (!identity || (!input.trim() && pendingFiles.length === 0)) return;
+  /** A text message's body as shown: its latest edit. */
+  const shownBody = (m: DecryptedMessage) => (m.type === "text" ? actions.edits.get(m.messageId)?.body ?? m.body : "");
+
+  /** One line about a message, for reply quotes and the composer's reply bar. */
+  const snippet = (m: DecryptedMessage) => {
+    if (m.type === "text") return plainText(shownBody(m)).replace(/\s+/g, " ");
+    if (m.type === "file") return safeFilename(m.filename || "file");
+    if (m.type === "contact") return m.name || "Contact";
+    if (m.type === "plugin") return m.fallback;
+    return "";
+  };
+
+  /** Send an edit or delete to the open conversation, like a reaction. */
+  const sendAction = (base: { type: "edit"; target: string; body: string; mentions?: string[] } | { type: "delete"; target: string }) => {
+    if (!identity || !selected) return;
+    if (selected.type === "dm") {
+      sendMessage(base as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">, [selected.otherKeyHash], { recipientKeyHash: selected.otherKeyHash });
+    } else {
+      sendMessage(
+        { ...base, ...groupFields(selected) } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
+        selected.memberKeyHashes.filter((k) => k !== identity.keyHash && stillHere(k))
+      );
+    }
+  };
+
+  // Focused right away, still inside the tap, or iPhone won't bring the keyboard up; the caret once the text is in.
+  const focusComposer = (caret?: number) => {
+    composerRef.current?.focus({ preventScroll: true });
+    if (caret !== undefined) requestAnimationFrame(() => composerRef.current?.setSelectionRange(caret, caret));
+  };
+
+  /** Leave reply or edit mode. An edit's text goes with it. */
+  const cancelCompose = () => {
+    if (editingId) {
+      setInput("");
+      setPicked([]);
+      setMentionQuery(null);
+    }
+    setEditingId(null);
+    setReplyingTo(null);
+  };
+
+  const startReply = (m: DecryptedMessage) => {
+    if (editingId) cancelCompose();
+    setReplyingTo(m.messageId);
+    focusComposer();
+  };
+
+  /** Your text message's current text into the composer, mentions and all; Send saves it. */
+  const startEdit = (m: DecryptedMessage) => {
+    if (m.type !== "text") return;
+    const { text, picked: was } = draftFromBody(shownBody(m), nameFor);
+    setReplyingTo(null);
+    setEditingId(m.messageId);
+    setInput(text);
+    setPicked(was);
+    setMentionQuery(null);
+    focusComposer(text.length);
+  };
+
+  const deleteMessage = async (m: DecryptedMessage) => {
+    if (!(await confirmDialog("Delete this message for everyone?", { ok: "Delete", danger: true }))) return;
+    if (editingId === m.messageId) cancelCompose();
+    if (replyingTo === m.messageId) setReplyingTo(null);
+    sendAction({ type: "delete", target: m.messageId });
+  };
+
+  /** A reply's quote was tapped: bring the original into view and light it up for a moment. */
+  const jumpTo = (id: string) => {
+    const el = messagesListRef.current?.querySelector(`[data-mid="${CSS.escape(id)}"]`);
+    if (!el) return;
+    el.scrollIntoView({ block: "center", behavior: "smooth" });
+    setFlash(id);
+    setTimeout(() => setFlash((f) => (f === id ? null : f)), 1500);
+  };
+
+  /** `extra`: files sent along without being attached first (a voice message). */
+  const handleSend = async (extra: File[] = []) => {
+    if (!identity || (!input.trim() && pendingFiles.length === 0 && extra.length === 0)) return;
     const recipients =
       selected?.type === "dm"
         ? [selected.otherKeyHash]
@@ -629,7 +843,23 @@ function Chat() {
     // Plugins that asked may change the text first (sandboxed; at most 0.5 s each).
     const draft = plugins && input.trim() ? await plugins.beforeSend(input.trim()) : input.trim();
     const { body: text, mentions } = encodeDraft(draft, picked);
-    const files = pendingFiles;
+    // A voice message sent while editing is just sent: the edit stays open.
+    if (editingId && extra.length === 0) {
+      // Saving an edit changes only the text: files picked meanwhile stay for the next message.
+      const target = messages.find((x) => x.messageId === editingId);
+      setInput("");
+      setPicked([]);
+      setMentionQuery(null);
+      setEditingId(null);
+      if (text && target?.type === "text" && text !== shownBody(target)) {
+        sendAction({ type: "edit", target: target.messageId, body: text, mentions: mentions.length ? mentions : undefined });
+      }
+      return;
+    }
+    // A reply goes on the text, or on the first file if there's no text.
+    let replyTo = replyingTo ?? undefined;
+    setReplyingTo(null);
+    const files = [...pendingFiles, ...extra];
     setInput("");
     setPicked([]);
     setMentionQuery(null);
@@ -639,17 +869,18 @@ function Chat() {
     if (text) {
       if (selected?.type === "dm") {
         await sendMessage(
-          { type: "text", body: text, mentions: sentMentions } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
+          { type: "text", body: text, mentions: sentMentions, replyTo } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
           recipients,
           { recipientKeyHash: selected.otherKeyHash }
         );
       } else if (selected?.type === "group") {
         await sendMessage(
-          { type: "text", body: text, groupMemberKeyHashes: selected.memberKeyHashes, mentions: sentMentions } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
+          { type: "text", body: text, ...groupFields(selected), mentions: sentMentions, replyTo } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
           recipients
         );
       }
       if (sentMentions) notifyMentions(sentMentions, recipients).catch(() => {});
+      replyTo = undefined;
     }
 
     for (const file of files) {
@@ -659,8 +890,10 @@ function Chat() {
         body,
         filename: file.name,
         fileSize: file.size,
-        ...(selected?.type === "group" ? { groupMemberKeyHashes: selected.memberKeyHashes } : {}),
+        replyTo,
+        ...(selected?.type === "group" ? groupFields(selected) : {}),
       };
+      replyTo = undefined;
       if (selected?.type === "dm") {
         await sendMessage(
           fileMsg as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
@@ -683,13 +916,14 @@ function Chat() {
   const handleCreateGroup = () => {
     if (newGroupSelected.size === 0 || !identity) return;
     const memberKeyHashes = [identity.keyHash, ...Array.from(newGroupSelected)];
-    setSelected({ type: "group", memberKeyHashes });
+    const groupId = newGroupId(identity.keyHash);
+    setSelected({ type: "group", memberKeyHashes, groupId });
     setSidebarVisible(false);
     const name = newGroupName.trim();
     // A group's name is its latest rename message; sending one now also shows the group to its members.
     if (name) {
       sendMessage(
-        { type: "group_rename", newName: name, groupMemberKeyHashes: memberKeyHashes } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
+        { type: "group_rename", newName: name, groupMemberKeyHashes: memberKeyHashes, groupId } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
         memberKeyHashes.filter((k) => k !== identity.keyHash)
       ).catch(() => {});
     }
@@ -739,17 +973,30 @@ function Chat() {
     if (!identity || groupRenameModal?.type !== "group") return;
     const newName = groupRenameValue.trim() || "Group Chat";
     await sendMessage(
-      { type: "group_rename", newName, groupMemberKeyHashes: groupRenameModal.memberKeyHashes } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
+      { type: "group_rename", newName, ...groupFields(groupRenameModal) } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
       groupRenameModal.memberKeyHashes.filter((k) => k !== identity.keyHash)
     );
     closeGroupRename();
   };
 
+  /** Add people to the open group or remove them (groups.ts): told to everyone in it before and after. */
+  const changeMembers = (change: { add?: string[]; remove?: string[] }) => {
+    if (!identity || selected?.type !== "group") return;
+    const { message, recipients } = membershipChange(selected, change);
+    const name = groupNamesFromMessages.get(conversationId(selected, identity.keyHash));
+    sendMessage(
+      { ...message, ...(name ? { name } : {}) } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
+      recipients.filter((k) => k !== identity.keyHash && stillHere(k))
+    ).catch(() => {});
+  };
+
   const handleStartCall = async () => {
     if (!identity || !selected) return;
     setCurrentCallConversation(selected);
-    // Join the ongoing call, or start one in a fresh random room.
-    const callRoomId = ongoingRoom ?? newRoomId();
+    // Join the ongoing call, or start one in a fresh random room with a fresh secret. An ongoing call without a secret
+    // (an older app started it) is joined the legacy way.
+    const call = ongoingCall ?? { roomId: newRoomId(), roomKey: newRoomKey() };
+    const callRoomId = call.roomId;
     const allowedKeyHashes =
       selected.type === "dm"
         ? [identity.keyHash, selected.otherKeyHash].sort()
@@ -758,18 +1005,18 @@ function Chat() {
       if (!selected || !identity) return;
       if (selected.type === "dm") {
         await sendMessage(
-          { type: "call_event", event: "started", recipientKeyHash: selected.otherKeyHash, roomId: callRoomId } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
+          { type: "call_event", event: "started", recipientKeyHash: selected.otherKeyHash, roomId: callRoomId, roomKey: call.roomKey } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
           [selected.otherKeyHash],
           { recipientKeyHash: selected.otherKeyHash }
         );
       } else {
         await sendMessage(
-          { type: "call_event", event: "started", groupMemberKeyHashes: selected.memberKeyHashes, roomId: callRoomId } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
+          { type: "call_event", event: "started", ...groupFields(selected), roomId: callRoomId, roomKey: call.roomKey } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
           selected.memberKeyHashes.filter((k) => k !== identity.keyHash && stillHere(k))
         );
       }
     };
-    await startOrJoinCall(callRoomId, identity.keyHash, allowedKeyHashes, sendStartedIfFirst);
+    await startOrJoinCall(callRoomId, call.roomKey, allowedKeyHashes, sendStartedIfFirst);
   };
 
   const handleHangUp = async () => {
@@ -784,7 +1031,7 @@ function Chat() {
         );
       } else {
         await sendMessage(
-          { type: "call_event", event: "ended", groupMemberKeyHashes: conv.memberKeyHashes } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
+          { type: "call_event", event: "ended", ...groupFields(conv) } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
           conv.memberKeyHashes.filter((k) => k !== identity.keyHash)
         );
       }
@@ -792,8 +1039,17 @@ function Chat() {
   };
 
   /** A DM partner who is no longer in the member directory (removed, or re-enrolled with a new key). */
-  const isInactive = (conv: Conversation | null) => conv?.type === "dm" && directoryLoaded && !getMember(conv.otherKeyHash);
+  const isInactive = (conv: Conversation | null) =>
+    conv?.type === "dm" ? directoryLoaded && !getMember(conv.otherKeyHash) : conv?.type === "group" && !conv.memberKeyHashes.includes(identity?.keyHash ?? "");
   const selectedInactive = isInactive(selected);
+
+  // Attaching (picker, camera, paste, drop): big photos may be swapped for a smaller copy first (AttachMenu.tsx).
+  const addFiles = useCallback(async (files: File[]) => {
+    const ready = await prepareFiles(files);
+    if (ready.length) setPendingFiles((prev) => [...prev, ...ready]);
+  }, []);
+  const drop = useFileDrop(!!selected && !selectedInactive && !(inCall && callExpanded), addFiles);
+  const voice = useVoiceRecorder((file) => handleSend([file]));
 
   // On a phone, set up only inside the installed app (its storage is separate from the browser tab's).
   if (installFirst && !loading && (!server || needsSetup)) return <InstallFirst />;
@@ -914,16 +1170,8 @@ function Chat() {
           )}
 
           {listed.map((conv) => {
-            const key = conv.type === "dm"
-              ? `dm:${conv.otherKeyHash}`
-              : `g:${[...conv.memberKeyHashes].sort().join(",")}`;
-            const isSelected =
-              selected?.type === conv.type &&
-              (conv.type === "dm"
-                ? selected.type === "dm" && selected.otherKeyHash === conv.otherKeyHash
-                : selected.type === "group" &&
-                  selected.memberKeyHashes.length === conv.memberKeyHashes.length &&
-                  [...selected.memberKeyHashes].sort().join() === [...conv.memberKeyHashes].sort().join());
+            const key = conversationId(conv, me);
+            const isSelected = !!selected && conversationId(selected, me) === key;
 
             const openContextFor = () => openRename(conv);
 
@@ -955,9 +1203,20 @@ function Chat() {
                   className={`w-full text-left px-3 py-2.5 text-sm truncate transition-colors ${isSelected ? "bg-[var(--accent)]/30" : "hover:bg-[var(--border)] active:bg-[var(--border)]"} ${isInactive(conv) ? "opacity-50" : ""}`}
                 >
                   <span className="flex items-center gap-2">
+                    {conv.type === "dm" ? (
+                      <Avatar keyHash={conv.otherKeyHash} name={getDisplayName(conv.otherKeyHash)} className="-my-0.5 h-6 w-6 text-xs" />
+                    ) : (
+                      <span aria-hidden="true" className="-my-0.5 h-6 w-6 shrink-0 rounded-full bg-[var(--border)] inline-flex items-center justify-center text-[var(--muted)]">
+                        <Icon name="chatMembers" size={14} />
+                      </span>
+                    )}
                     <span className="truncate">{conversationLabel(conv, me, getDisplayName, groupNamesFromMessages, stillHere)}</span>
                     {unreadMentions(conv) > 0 ? (
                       <span className="ml-auto shrink-0 h-2.5 w-2.5 rounded-full bg-amber-400" role="img" aria-label="Unread mention" />
+                    ) : isMutedConv(conv) ? (
+                      <span className="ml-auto shrink-0 text-[var(--muted)]" role="img" aria-label="Muted">
+                        <Icon name="chatMuted" size={14} />
+                      </span>
                     ) : (
                       hasUnread(conv) && <span className="ml-auto shrink-0 h-2.5 w-2.5 rounded-full bg-white" role="img" aria-label="Unread" />
                     )}
@@ -999,7 +1258,10 @@ function Chat() {
                   onTouchEnd={(e) => longPressActivated.current && e.preventDefault()}
                   className={`w-full text-left px-3 py-2.5 text-sm truncate transition-colors ${isSelected ? "bg-[var(--accent)]/30" : "hover:bg-[var(--border)] active:bg-[var(--border)]"}`}
                 >
-                  {getDisplayName(c.keyHash) || c.keyHash.slice(0, 8)}
+                  <span className="flex items-center gap-2">
+                    <Avatar keyHash={c.keyHash} name={getDisplayName(c.keyHash)} className="-my-0.5 h-6 w-6 text-xs" />
+                    <span className="truncate">{getDisplayName(c.keyHash) || c.keyHash.slice(0, 8)}</span>
+                  </span>
                 </button>
               </li>
             );
@@ -1019,7 +1281,8 @@ function Chat() {
 
       {/* ── Main chat panel ────────────────────────────────────────────────── */}
       {/* Mobile: full-screen when sidebar is hidden. Desktop: always visible flex-1. */}
-      <div className={`flex-col min-w-0 flex-1 relative ${!sidebarVisible ? "flex" : "hidden md:flex"}`}>
+      <div className={`flex-col min-w-0 flex-1 relative ${!sidebarVisible ? "flex" : "hidden md:flex"}`} {...drop.handlers}>
+        {drop.over && <DropOverlay />}
 
         {/* Minimised call tile — positioned below the header, respecting safe area */}
         {inCall && !callExpanded && (
@@ -1045,11 +1308,11 @@ function Chat() {
             >
               <span className="md:hidden -ml-1 flex relative">
                 <IconButton icon="chatBack" label="Back to chat list" onClick={() => setSidebarVisible(true)} />
-                {/* Something new in another chat: white, or yellow if it mentions you. */}
+                {/* Something new in another chat: white (not from a muted one), or yellow if it mentions you. */}
                 {(() => {
                   const others = listed.filter((c) => !selected || conversationId(c, identity?.keyHash ?? "") !== conversationId(selected, identity?.keyHash ?? ""));
                   const mention = others.some((c) => unreadMentions(c) > 0);
-                  if (!mention && !others.some(hasUnread)) return null;
+                  if (!mention && !others.some((c) => !isMutedConv(c) && hasUnread(c))) return null;
                   return (
                     <span
                       className={`pointer-events-none absolute -top-0.5 -right-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-[var(--bg)] ${mention ? "bg-amber-400" : "bg-white"}`}
@@ -1072,21 +1335,48 @@ function Chat() {
                   </span>
                 </button>
               </div>
-              {selected.type === "group" && (
+              {/* Search and mute: their own icons on larger screens; on phones, behind "more" (no room for both). */}
+              {(() => {
+                const until = mutedUntil(conversationId(selected, me));
+                const toggle = (more: boolean) => (e: React.MouseEvent<HTMLButtonElement>) => {
+                  const anchor = e.currentTarget.getBoundingClientRect();
+                  setChatMenu((m) => (m ? null : { anchor, more }));
+                };
+                return (
+                  <>
+                    <span className="hidden md:flex items-center gap-2">
+                      <IconButton icon="chatSearch" label="Search" onClick={() => setSearchOpen((o) => !o)} />
+                      <span className="flex" data-menu-anchor>
+                        <IconButton
+                          icon={until !== undefined ? "chatMuted" : "callBell"}
+                          label={until !== undefined ? muteLabel(until, Date.now()) : "Mute"}
+                          onClick={toggle(false)}
+                        />
+                      </span>
+                    </span>
+                    <span className="md:hidden flex" data-menu-anchor>
+                      <IconButton icon="chatMore" label="More" onClick={toggle(true)} />
+                    </span>
+                  </>
+                );
+              })()}
+              {selected.type === "group" && !selectedInactive && (
                 <IconButton icon="chatMembers" label="Members" onClick={() => setMembersOpen(true)} />
               )}
               {!inCall && !selectedInactive && (
                 <button
                   type="button"
                   onClick={handleStartCall}
-                  aria-label={ongoingRoom ? "Join call" : "Call"}
-                  title={ongoingRoom ? "Join call" : "Call"}
+                  aria-label={ongoingCall ? "Join call" : "Call"}
+                  title={ongoingCall ? "Join call" : "Call"}
                   className={`${btnPrimary} flex-shrink-0 h-9 w-9 p-0 touch:h-10 touch:w-10`}
                 >
-                  <span className={ongoingRoom ? "animate-pulse" : ""}><Icon name="callStart" size={18} /></span>
+                  <span className={ongoingCall ? "animate-pulse" : ""}><Icon name="callStart" size={18} /></span>
                 </button>
               )}
             </div>
+
+            {searchOpen && <ChatSearch items={searchItems} listRef={messagesListRef} onClose={closeSearch} />}
 
             {banners}
 
@@ -1106,7 +1396,8 @@ function Chat() {
               {filteredMessages.length === 0 && (
                 <li className="py-8 text-sm text-center text-[var(--muted)]">No messages yet.</li>
               )}
-              {filteredMessages.map((m, i) => {
+              {/* Each message, after the "New" line if it's the first unread one. */}
+              {filteredMessages.map((m, i) => [m.messageId === newLineAt && <NewLine key="new-line" />, (() => {
                 const prev = i > 0 ? filteredMessages[i - 1] : undefined;
 
                 // System messages: call events and group renames
@@ -1128,15 +1419,60 @@ function Chat() {
                   );
                 }
 
+                if (m.type === "group_members") {
+                  const who = (k: string) => (k === me ? "you" : getDisplayName(k) || k.slice(0, 8));
+                  const removed = (m.remove ?? []).filter((k) => k !== m.senderKeyHash);
+                  const parts = [
+                    m.add?.length ? `added ${m.add.map(who).join(", ")}` : "",
+                    removed.length ? `removed ${removed.map(who).join(", ")}` : "",
+                    m.remove?.includes(m.senderKeyHash) ? "left" : "",
+                  ].filter(Boolean);
+                  return (
+                    <li key={i} className={`text-xs text-center text-[var(--muted)] py-2 italic ${m.outbox?.status === "sending" ? "opacity-50" : ""}`}>
+                      {senderName(m.senderKeyHash)} {parts.join(" and ")}
+                      {m.outbox?.status === "failed" && (
+                        <span className="flex items-center justify-center gap-1.5 mt-1 not-italic text-red-500">
+                          Not sent
+                          <IconButton icon="refresh" label="Retry sending" onClick={() => retrySend(m.outbox!.id)} />
+                          <IconButton icon="close" label="Cancel sending" onClick={() => cancelSend(m.outbox!.id)} />
+                        </span>
+                      )}
+                    </li>
+                  );
+                }
+
                 // Regular message
                 const grouped = isGroupedWithPrev(m, prev);
-                const forMe = mentionsMe(m, me);
+                // Deleted for everyone: a one-line placeholder where it was, so the chat doesn't jump.
+                if (actions.deleted.has(m.messageId)) {
+                  return (
+                    <li key={i} data-mid={m.messageId} className={grouped ? "mt-0.5" : "mt-3"}>
+                      {!grouped && (
+                        <div className="flex items-baseline gap-2 mb-0.5">
+                          <span className="text-xs font-semibold text-[var(--text)]">{senderName(m.senderKeyHash)}</span>
+                          <span className="text-xs text-[var(--muted)]">{formatMsgTime(m.sentAt)}</span>
+                        </div>
+                      )}
+                      <div className="text-sm italic text-[var(--muted)]">Message deleted</div>
+                    </li>
+                  );
+                }
+                const forMe = mentionsMeNow(m);
                 const canReact = !m.outbox;
-                const endHold = () => holdTimer.current && clearTimeout(holdTimer.current);
+                const mine = m.senderKeyHash === me;
+                const edit = actions.edits.get(m.messageId);
+                const quote = replyTarget(m, messagesById, me);
+                const endHold = () => {
+                  if (holdTimer.current) clearTimeout(holdTimer.current);
+                  setPressing(null);
+                };
+                const tool = "h-7 w-7 flex items-center justify-center rounded hover:bg-white/10";
                 return (
                   <li
                     key={i}
-                    className={`group relative ${grouped ? "mt-0.5" : "mt-3"} ${forMe ? "border-l-2 border-amber-400 bg-amber-500/5 pl-2 -ml-2" : ""}`}
+                    data-mid={m.messageId}
+                    // Room on the left for the sender's picture (on the group's first message), so a group's lines align.
+                    className={`group relative rounded transition-colors duration-500 ${grouped ? "mt-0.5" : "mt-3"} ${forMe ? "border-l-2 border-amber-400 bg-amber-500/5 pl-12 md:pl-11 -ml-2" : "pl-10 md:pl-9"} ${flash === m.messageId ? "!bg-[var(--accent)]/20" : ""} ${pressing === m.messageId || sheetFor === m.messageId ? "!bg-[var(--border)] !duration-100" : ""}`}
                     // Phones: press and hold for reactions and Copy (no text selection).
                     onPointerDown={(e) => {
                       // Only one finger on the message itself: not a pinch in the photo viewer (it's drawn elsewhere on the
@@ -1144,6 +1480,7 @@ function Chat() {
                       if (!canReact || e.pointerType === "mouse" || !e.isPrimary || !e.currentTarget.contains(e.target as Node)) return;
                       if ((e.target as HTMLElement).closest("button, a, video, audio")) return;
                       endHold();
+                      setPressing(m.messageId);
                       holdStart.current = { x: e.clientX, y: e.clientY };
                       holdTimer.current = setTimeout(() => {
                         // The keyboard goes down for the sheet.
@@ -1167,19 +1504,43 @@ function Chat() {
                     style={{ touchAction: "manipulation" }}
                     onContextMenu={(e) => window.matchMedia("(pointer: coarse)").matches && e.preventDefault()}
                   >
-                    {/* Desktop: a react button at the top right when hovering the message. */}
+                    {/* Desktop: react, reply, and for your own edit and delete, at the top right when hovering the message. */}
                     {canReact && (
-                      <button
-                        type="button"
-                        aria-label="Add reaction"
-                        title="Add reaction"
-                        onClick={(e) => setReactPicker({ id: m.messageId, anchor: e.currentTarget.getBoundingClientRect() })}
-                        className={`absolute -top-3 right-1 z-10 h-7 w-7 items-center justify-center rounded border border-[var(--border)] bg-[var(--surface)] text-[var(--text)] shadow touch:!hidden ${
-                          reactPicker?.id === m.messageId ? "flex" : "hidden group-hover:flex"
+                      <div
+                        className={`absolute -top-3 right-1 z-10 items-center rounded border border-[var(--border)] bg-[var(--surface)] text-[var(--text)] shadow touch:!hidden ${
+                          reactPicker?.id === m.messageId ? "flex" : "hidden group-hover:flex group-focus-within:flex"
                         }`}
                       >
-                        <Icon name="chatReact" />
-                      </button>
+                        <button
+                          type="button"
+                          aria-label="Add reaction"
+                          title="Add reaction"
+                          onClick={(e) => setReactPicker({ id: m.messageId, anchor: e.currentTarget.getBoundingClientRect() })}
+                          className={tool}
+                        >
+                          <Icon name="chatReact" />
+                        </button>
+                        <button type="button" aria-label="Reply" title="Reply" onClick={() => startReply(m)} className={tool}>
+                          <Icon name="chatReply" />
+                        </button>
+                        {mine && m.type === "text" && (
+                          <button type="button" aria-label="Edit" title="Edit" onClick={() => startEdit(m)} className={tool}>
+                            <Icon name="chatPencil" />
+                          </button>
+                        )}
+                        {mine && (
+                          <button type="button" aria-label="Delete" title="Delete" onClick={() => deleteMessage(m)} className={`${tool} text-red-400`}>
+                            <Icon name="trash" />
+                          </button>
+                        )}
+                      </div>
+                    )}
+                    {!grouped && (
+                      <Avatar
+                        keyHash={m.senderKeyHash}
+                        name={getDisplayName(m.senderKeyHash)}
+                        className={`absolute top-0.5 ${forMe ? "left-1.5" : "left-0"} h-8 w-8 md:h-7 md:w-7 text-sm`}
+                      />
                     )}
                     {!grouped && (
                       <div className="flex items-baseline gap-2 mb-0.5">
@@ -1187,15 +1548,35 @@ function Chat() {
                         <span className="text-xs text-[var(--muted)]">{formatMsgTime(m.sentAt)}</span>
                       </div>
                     )}
+                    {quote === "missing" && (
+                      <div className="mb-0.5 border-l-2 border-[var(--border)] pl-2 text-xs italic text-[var(--muted)]">Original message not here</div>
+                    )}
+                    {quote && quote !== "missing" && (
+                      <button
+                        type="button"
+                        aria-label="Go to original message"
+                        title="Go to original message"
+                        onClick={() => jumpTo(quote.messageId)}
+                        className="mb-0.5 flex max-w-full items-baseline gap-1.5 border-l-2 border-[var(--border)] pl-2 text-left text-xs text-[var(--muted)] hover:text-[var(--text)]"
+                      >
+                        <span className="shrink-0 font-semibold">{senderName(quote.senderKeyHash)}</span>
+                        {actions.deleted.has(quote.messageId) ? <span className="italic">Message deleted</span> : <span className="min-w-0 truncate">{snippet(quote)}</span>}
+                      </button>
+                    )}
                     <div className={`text-sm ${m.outbox?.status === "sending" ? "opacity-50" : ""}`}>
                       {m.type === "text" && (
                         <MessageText
-                          body={m.body}
+                          body={edit?.body ?? m.body}
                           myKeyHash={me}
                           nameFor={nameFor}
                           inGroup={!!m.groupMemberKeyHashes}
                           fromMe={m.senderKeyHash === me}
                         />
+                      )}
+                      {edit && (
+                        <span className="ml-1 text-[11px] text-[var(--muted)]" title={`Edited ${formatMsgTime(edit.at)}`}>
+                          (edited)
+                        </span>
                       )}
                       {m.type === "file" && (
                         <ChatFile
@@ -1238,20 +1619,39 @@ function Chat() {
                     )}
                   </li>
                 );
-              })}
+              })()])}
             </ul>
+
+            {/* Scrolled up: back to the newest, with how many came in since. Pinned just above the message box. */}
+            {(far || newBelow > 0) && (
+              <div className="relative h-0">
+                <button
+                  type="button"
+                  aria-label="Jump to newest"
+                  title="Jump to newest"
+                  onClick={() => {
+                    const list = messagesListRef.current;
+                    list?.scrollTo({ top: list.scrollHeight, behavior: "smooth" });
+                  }}
+                  className="absolute right-3 bottom-3 z-10 h-10 w-10 rounded-full border border-[var(--border)] bg-[var(--surface)] text-[var(--text)] shadow-lg flex items-center justify-center"
+                >
+                  <Icon name="chatToBottom" size={18} />
+                  {newBelow > 0 && (
+                    <span
+                      className="absolute -top-1.5 -right-1.5 min-w-5 h-5 px-1 rounded-full bg-[var(--accent)] text-on-accent text-[11px] font-semibold leading-5 text-center"
+                      aria-label={`${newBelow} new`}
+                    >
+                      {newBelow > 99 ? "99+" : newBelow}
+                    </span>
+                  )}
+                </button>
+              </div>
+            )}
 
             {/* Compose bar — bottom padding respects iOS home indicator unless keyboard is up */}
             <div
               className={`px-2 pt-2 border-t border-[var(--border)] flex-col gap-2 ${selectedInactive ? "hidden" : "flex"}`}
               style={keyboardVisible ? { paddingBottom: "0.5rem" } : safeBottom}
-              onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
-              onDrop={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                const files = Array.from(e.dataTransfer?.files ?? []);
-                if (files.length) setPendingFiles((prev) => [...prev, ...files]);
-              }}
             >
               {pendingFiles.length > 0 && (
                 <div className="flex flex-wrap gap-1.5 text-xs text-[var(--muted)]">
@@ -1267,40 +1667,26 @@ function Chat() {
                   ))}
                 </div>
               )}
+              {(replyingTo || editingId) && (() => {
+                const t = filteredMessages.find((x) => x.messageId === (editingId ?? replyingTo));
+                return (
+                  <div className="flex items-center gap-2 border-l-2 border-[var(--accent)] pl-2 text-xs">
+                    <span className="text-[var(--muted)]">
+                      <Icon name={editingId ? "chatPencil" : "chatReply"} size={14} />
+                    </span>
+                    <span className="min-w-0 flex-1 truncate">
+                      <span className="font-semibold">{editingId ? "Editing message" : `Replying to ${t ? senderName(t.senderKeyHash) : "message"}`}</span>
+                      {!editingId && t && <span className="ml-1.5 text-[var(--muted)]">{snippet(t)}</span>}
+                    </span>
+                    <IconButton icon="close" label={editingId ? "Cancel editing" : "Cancel reply"} onClick={cancelCompose} />
+                  </div>
+                );
+              })()}
               <MentionPicker candidates={mentionCandidates} active={mentionActive} onPick={pickMention} />
-              <div className="flex items-end gap-2">
-                {/*
-                  sr-only keeps the input in the DOM (not display:none) so iOS Safari
-                  recognises the label click as a real user gesture and opens the file picker.
-                */}
-                <input
-                  id="relay-file-input"
-                  ref={fileInputRef}
-                  type="file"
-                  multiple
-                  className="sr-only"
-                  onChange={(e) => {
-                    const files = Array.from(e.target.files ?? []);
-                    if (files.length) setPendingFiles((prev) => [...prev, ...files]);
-                    e.target.value = "";
-                  }}
-                />
-                <label
-                  htmlFor="relay-file-input"
-                  role="button"
-                  tabIndex={0}
-                  aria-label="Attach file"
-                  title="Attach file"
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      fileInputRef.current?.click();
-                    }
-                  }}
-                  className={`${btn} flex-shrink-0 h-[42px] w-[42px] p-0 cursor-pointer select-none`}
-                >
-                  <Icon name="attach" size={18} />
-                </label>
+              {voice.recording && <RecordingBar voice={voice} />}
+              {/* Hidden, not removed, while recording: the message box keeps its draft and its place. */}
+              <div className={`items-end gap-2 ${voice.recording ? "hidden" : "flex"}`}>
+                <AttachButton touch={touchKeyboard} onFiles={addFiles} />
                 <textarea
                   ref={composerRef}
                   rows={1}
@@ -1329,10 +1715,23 @@ function Chat() {
                         return;
                       }
                     }
+                    if (e.key === "Escape" && (replyingTo || editingId)) {
+                      e.preventDefault();
+                      cancelCompose();
+                      return;
+                    }
                     if (e.key === "Enter" && !e.shiftKey && !window.matchMedia("(pointer: coarse)").matches && !e.nativeEvent.isComposing) {
                       e.preventDefault();
                       handleSend();
                     }
+                  }}
+                  // Pasted photos and files are attached (not their names pasted as text).
+                  onPaste={(e) => {
+                    const files = Array.from(e.clipboardData?.files ?? []);
+                    // Text wins: Word and Excel put a picture of the copied text on the clipboard too.
+                    if (!files.length || e.clipboardData.getData("text/plain").trim()) return;
+                    e.preventDefault();
+                    addFiles(files);
                   }}
                   onBlur={() => setMentionQuery(null)}
                   // Focus it ourselves without scrolling it into view: iOS's own scroll on focus is what made the
@@ -1345,23 +1744,32 @@ function Chat() {
                   placeholder={selected ? `Message ${conversationLabel(selected, me, getDisplayName, groupNamesFromMessages, stillHere)}` : "Message"}
                   className="flex-1 min-w-0 px-3 py-2 touch:min-h-10 resize-none block rounded bg-[var(--surface)] border border-[var(--border)] text-[var(--text)] placeholder-[var(--muted)]"
                 />
-                <button
-                  type="button"
-                  onClick={handleSend}
-                  // Keep the focus (and the keyboard) in the message box: pressing the button would otherwise take it.
-                  onMouseDown={(e) => e.preventDefault()}
-                  onTouchEnd={(e) => {
-                    e.preventDefault();
-                    if (canSend) handleSend();
-                  }}
-                  disabled={!canSend}
-                  aria-label="Send"
-                  title="Send"
-                  className={`${btnPrimary} flex-shrink-0 h-[42px] w-[42px] p-0`}
-                >
-                  <Icon name="chatSend" size={18} />
-                </button>
+                {/* Nothing to send yet: record a voice message instead. */}
+                {canSend ? (
+                  <button
+                    type="button"
+                    onClick={() => handleSend()}
+                    // Keep the focus (and the keyboard) in the message box: pressing the button would otherwise take it.
+                    onMouseDown={(e) => e.preventDefault()}
+                    onTouchEnd={(e) => {
+                      e.preventDefault();
+                      handleSend();
+                    }}
+                    aria-label="Send"
+                    title="Send"
+                    className={`${btnPrimary} flex-shrink-0 h-[42px] w-[42px] p-0`}
+                  >
+                    <Icon name="chatSend" size={18} />
+                  </button>
+                ) : (
+                  <MicButton voice={voice} />
+                )}
               </div>
+              {voice.error && (
+                <p role="alert" className="text-xs text-red-500 px-1">
+                  {voice.error}
+                </p>
+              )}
             </div>
           </>
         ) : (
@@ -1441,33 +1849,53 @@ function Chat() {
         </Modal>
       )}
 
+      {chatMenu && selected && (
+        <MuteMenu
+          anchor={chatMenu.anchor}
+          until={mutedUntil(conversationId(selected, me))}
+          onMute={(until) => setMute(conversationId(selected, me), until)}
+          onSearch={chatMenu.more ? () => setSearchOpen(true) : undefined}
+          onClose={closeChatMenu}
+        />
+      )}
       {reactPicker && (
         <ReactionPopover anchor={reactPicker.anchor} onPick={(e) => toggleReaction(reactPicker.id, e)} onClose={closePicker} />
       )}
       {sheetFor && (() => {
         const m = filteredMessages.find((x) => x.messageId === sheetFor);
-        if (!m) return null;
+        if (!m || actions.deleted.has(m.messageId)) return null;
+        const mine = m.senderKeyHash === me;
+        const more: SheetAction[] = [
+          { label: "Reply", icon: "chatReply", onClick: () => startReply(m) },
+          ...(mine && m.type === "text" ? [{ label: "Edit", icon: "chatPencil" as const, onClick: () => startEdit(m) }] : []),
+          ...(mine ? [{ label: "Delete", icon: "trash" as const, danger: true, onClick: () => deleteMessage(m) }] : []),
+        ];
         return (
           <MessageSheet
             onReact={(e) => toggleReaction(m.messageId, e)}
-            copyText={m.type === "text" ? plainText(m.body) : null}
+            copyText={m.type === "text" ? plainText(shownBody(m)) : null}
+            actions={more}
             onClose={closeSheet}
           />
         );
       })()}
 
       {membersOpen && selected?.type === "group" && identity && (
-        <Modal title="Members" onClose={closeMembers} compact>
-          <ul className="flex flex-col gap-1">
-            {selected.memberKeyHashes.filter(stillHere)
-              .sort((x, y) => (x === identity.keyHash ? -1 : y === identity.keyHash ? 1 : 0))
-              .map((k) => (
-                <li key={k} className="flex items-center gap-2 py-1 text-sm">
-                  <span className="truncate">{k === identity.keyHash ? "You" : getDisplayName(k) || k.slice(0, 8)}</span>
-                </li>
-              ))}
-          </ul>
-        </Modal>
+        <GroupMembers
+          conv={selected}
+          me={me}
+          people={newGroupCandidates.map((c) => c.keyHash).filter(stillHere)}
+          nameFor={nameFor}
+          stillHere={stillHere}
+          onChange={changeMembers}
+          onLeave={() => {
+            changeMembers({ remove: [me] });
+            closeMembers();
+            setSelected(null);
+            setSidebarVisible(true);
+          }}
+          onClose={closeMembers}
+        />
       )}
       {displayNameModal && (
         <Modal title="Set nickname" onClose={closeNickname} closeLabel={null} compact>
@@ -1529,6 +1957,16 @@ function Chat() {
         </Modal>
       )}
     </main>
+  );
+}
+
+/** Where the unread messages start, as of opening the chat. */
+function NewLine() {
+  return (
+    <li data-new-line role="separator" aria-label="New messages" className="mt-3 flex items-center gap-2 text-[11px] font-semibold uppercase text-red-400">
+      <span className="h-px flex-1 bg-red-400/60" />
+      New
+    </li>
   );
 }
 

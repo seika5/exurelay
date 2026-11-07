@@ -4,8 +4,12 @@
  * (member, recipient device) and can't read any of them; it checks only who may write and who may read.
  */
 
+import { createHash } from "node:crypto";
+
 export const MAX_COPIES_PER_POST = 500;
-export const MAX_CIPHERTEXT_LENGTH = 8192;
+// Copies are padded to one size that fits a profile picture (16 KB of plaintext, about 21.9K base64 characters).
+// Older apps send copies of 8192 characters at most.
+export const MAX_CIPHERTEXT_LENGTH = 24576;
 const NONCE = /^[A-Za-z0-9+/]{22}==$/; // 16 bytes, base64
 const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
 const KEY_HASH = /^[0-9a-f]{64}$/;
@@ -37,4 +41,13 @@ export function validateProfileCopies(body, session, isRecipient) {
     rows.push({ author: session.member, recipient, sender: session.keyHash, nonce, ciphertext, updatedAt });
   }
   return { ok: true, rows };
+}
+
+/**
+ * A short tag for the copies a device can read, from each copy's author, sender, nonce and date (a new copy always
+ * has a new nonce). A device polls with the tag it last got and downloads the copies only when it differs.
+ */
+export function profilesTag(copies) {
+  const lines = copies.map((c) => `${c.author}|${c.sender}|${c.nonce}|${c.updatedAt}`).sort();
+  return createHash("sha256").update(lines.join("\n")).digest("hex").slice(0, 32);
 }

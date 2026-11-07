@@ -56,6 +56,12 @@ html.page-locked body {
     user-select: text;
     -webkit-touch-callout: default;
   }
+  /* Except code in a message, which would start selecting instead of the message's press and hold. */
+  .selectable code {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+  }
 }
 
 /* Hides the browser's own scrollbar (ScrollList.tsx draws one that stays visible). */
@@ -64,4 +70,10 @@ html.page-locked body {
 }
 .no-scrollbar::-webkit-scrollbar {
   display: none;
+}
+
+/* The matched text in the chat search's current result (ChatSearch.tsx). */
+::highlight(relay-search) {
+  background-color: #facc15;
+  color: #0f0f12;
 }

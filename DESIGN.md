@@ -34,6 +34,19 @@ Every request reaches the server from an IP address. A typical member's IP is st
 | **Data at rest** | Database dump, seized disk, a curious admin browsing tables | Content, senders, recipients, who was notified (§5, §9). It does see the member list: public keys, devices, who is an admin (below). |
 | **Actively malicious operator** | Logs IPs and timing for every request | Content only. Senders, recipients, notification targets and online times can be inferred from IPs and timing unless members hide their IP (VPN/Tor-style relay). |
 
+### Known gaps, and what helps
+
+| Gap | Mitigation |
+| --- | --- |
+| The server sees each request's IP address and time, which can tie anonymous requests (uploads, downloads, call joins) to a member | A VPN or Tor |
+| The server can tell which members have the app open: the background connection and the minute-by-minute name check carry the login | None yet (a VPN doesn't help: the login itself says who) |
+| Activity and rough size: when uploads happen, and how many blobs each takes (a long message or file takes several) | Decoys (admin setting); more decoys blur it more, at a data cost |
+| Calls: the server sees an anonymous room, when it starts and ends, and each connection's IP (so it can guess who by IP and timing); people in a call see each other's IPs (direct WebRTC); the TURN relay sees IPs. Calls started by older apps still show who joined | A VPN or Tor; relaying every call through TURN would hide IPs from peers (not built); keep the app updated |
+| Notifications: the server learns, live, which device is being mentioned or rung; Apple or Google sees each wake-up | Turn notifications off |
+| Name and picture updates: the server sees when someone changes theirs | None |
+| No forward secrecy, not post-quantum (§3) | Open |
+| Deleted and edited messages stay on the server, encrypted, until they expire, and older app versions still show the original | Keep the app updated |
+
 Any measure that only hides something from the second kind of adversary *without* IP hiding gives a false sense of security, so it's marked as such or not built. The server code must not log IPs or request details, and the operator must keep it that way.
 
 ### What the server stores in plain text
@@ -138,10 +151,11 @@ Keys aren't copied between devices (they're non-extractable once loaded, §4 "wh
 ### As built: names (sealed profiles)
 
 - **What's sealed:** a member's display name, for every current device of every member (their own other devices included), and the names of their devices, for their own devices only. Certificates and the member list carry no names.
-- **How:** the sending device derives a key with HKDF over the static ECDH secret with the recipient device (as messages do), with info `exurelay-profile-v1:` + a random 16-byte nonce, so it can't collide with a message key (whose info is a bare 16-byte id). AES-GCM, with author, sender device, recipient device and `updatedAt` as associated data, so the server can't move a copy to another member or device or change its date. The plaintext is padded (512 bytes for a name, 2 KB steps with device names), so lengths don't reveal names. `relay-web/src/lib/profileSeal.ts`.
+- **How:** the sending device derives a key with HKDF over the static ECDH secret with the recipient device (as messages do), with info `exurelay-profile-v1:` + a random 16-byte nonce, so it can't collide with a message key (whose info is a bare 16-byte id). AES-GCM, with author, sender device, recipient device and `updatedAt` as associated data, so the server can't move a copy to another member or device or change its date. The plaintext is padded to 16 KB (room for a picture), so lengths don't reveal names or pictures. `relay-web/src/lib/profileSeal.ts`.
 - **Storage:** one `ProfileCopy` per (member, recipient device), newest `updatedAt` kept. Writing and reading need a login: a device writes copies as its own member, for other current devices, and reads only the copies addressed to it. Removing a member or unlinking a device deletes the copies by and for them.
 - **Sending:** each device sends only what changed for each recipient, after a rename, a new member or device, or a device-name change. `updatedAt` follows the settings already synced between a member's devices, so a device that hasn't caught up can't overwrite a newer name. The server announces changes on the socket, and apps refresh at once.
-- **Passing names along:** each copy also carries the author's name signed with their signing key, and the signed names of up to 10 other members. Receivers verify each against that member's devices in the member list and keep the newest, so a new member gets everyone's name from whoever is online, and nobody can pass along a name the member didn't sign. A new member's own name travels the same way from the admin who enrolled them: their enrollment code, which they signed, rides in the admin's copies until their own name arrives. Each copy stays within 4 KB, dropping passed-along names first.
+- **Passing names along:** each copy also carries the author's name signed with their signing key, and the signed names of up to 10 other members. Receivers verify each against that member's devices in the member list and keep the newest, so a new member gets everyone's name from whoever is online, and nobody can pass along a name the member didn't sign. A new member's own name travels the same way from the admin who enrolled them: their enrollment code, which they signed, rides in the admin's copies until their own name arrives. Each copy's other content stays within its budget, dropping passed-along names first.
+- **Pictures:** a member's profile picture (center-cropped, 96 px, WebP or JPEG re-encoded until it's at most 8 KB) rides in their own copies, and every copy is padded to one 16 KB size whether or not it carries one, so the server can't tell who has a picture. Pictures aren't passed along: a member gets someone's picture once that person's app has been online since. My other devices take my picture from my copies, like device names. Members without one show their initial on a color from their key hash. Because copies are bigger, a device polls with the tag of the copies it last got (`GET /api/directory/profiles?tag=`) and downloads them only when they changed. Servers from before pictures (ciphertexts up to 8192 characters) get the old, smaller copies without a picture. `relay-web/src/lib/avatar.ts`.
 - **Trade-off:** a name reaches someone once any member who has it has been online since, and a member's signed name exists once their app has opened with this version. Until then it shows their key fingerprint. The server can still withhold a copy or replay an older one, but can't read or forge one.
 
 ### Decided: admin tab
@@ -234,7 +248,7 @@ Every send (message, file, call event, group rename) is encrypted **once** and s
 - **Fetching:** every member downloads every blob once with `GET /api/blobs?since=<seq>` (binary pages), and the server pings all members' sockets after each upload. Uploads take turns (a Postgres advisory lock around each batch's insert), so blobs become visible in `seq` order and a cursor never skips a batch that committed late.
 - **Attachments** travel the same way as messages, so they're indistinguishable from text and every member downloads them (a 5 MB photo costs every member 5 MB once). There's no size limit.
 - **Limits:** a send can have at most ⌊(S − 32) / 104⌋ recipients including yourself (629 at 64 KB). Trial decryption costs one small hash per member per blob: nothing at tens of members, seconds when catching up days of traffic at many hundreds.
-- **What the server still sees:** when uploads happen and how big each batch is, and (from IPs) roughly who uploads and downloads. Not who sent what to whom, or text vs. files.
+- **What the server still sees:** when uploads happen and how big each batch is, and (from IPs) roughly who uploads and downloads. Not who sent what to whom, or text vs. files. Reactions, edits, deletes, replies, voice messages and group membership changes are ordinary blobs too. (§1 "Known gaps".)
 - Hard cutover: older blobs aren't readable.
 
 ### Decided: encrypted local cache
@@ -353,6 +367,7 @@ IP hiding is optional per member; members who want the strong guarantee should u
 | WebRTC mesh, Socket.io signaling, STUN plus optional TURN. Media is DTLS-SRTP peer-to-peer. | Current |
 | The room id was a SHA-256 of the sorted member key hashes, so anyone who knew the members could compute it. | **Replaced** (phase 6): random room ids, below |
 | SDP (including DTLS fingerprints) passed through the server **unauthenticated**, so the server could man-in-the-middle a call. | **Fixed** (phase 6): sealed signaling, below |
+| Calls logged in, and `join_room` sent the conversation's member list, so the server knew who called whom, for how long, and who was muted. | **Fixed**: anonymous call rooms, below. The old logged-in join stays on the server for older apps (to remove later) |
 | `join_room` accepted a client-*asserted* key hash, the first joiner set the room's allowed list, and clients sent an offer (with mic/camera) to any peer that appeared, so anyone who knew the hashes could join and receive media, or squat a room id. | **Fixed**: the socket's key hash comes from its login session (phase 3); room ids are random and only shared inside encrypted messages; offers and answers are sealed to conversation members only (phase 6) |
 
 ### As built (phase 6): call security
@@ -361,6 +376,8 @@ IP hiding is optional per member; members who want the strong guarantee should u
 - **Media only to verified peers:** signals are sealed to, and accepted from, only members of the call's conversation. The SDP and its DTLS fingerprint are inside the sealed envelope, so only that member can complete the connection, and the server can't sit in the middle.
 - **Random room ids:** whoever starts a call picks a random 128-bit room id and announces it in the encrypted "call started" message. Others join the room named by the conversation's latest "started" event, until an "ended". The Call button says **Join call** while one is going. Known limit: two people starting a call at the very same moment end up in two rooms.
 - **Tiles for members not in the call:** dimmed "not in call" tiles under the call, with **Notify** (a ring push, phase 7).
+- **Anonymous rooms** (`relay-web/src/lib/callSocket.ts`, `callIntro.ts`): each call has its own connection to the server's `/call` namespace with no login, paid for with one anonymous token per join. The "started" message also carries a random 32-byte room secret. On joining, each person sends the others an intro sealed with a key from that secret and signed by their device key ({room, socket, member, device, time}); only a valid intro from a current member of the conversation makes someone a participant. The server sees only the random room id, socket ids, timing, and sealed envelopes: not who is in a call, which chat it belongs to, or mute state (now sealed too).
+- **Limits:** the server can't kick a removed member out of a call already going (peers refuse new intros from them, and each new call has a fresh secret). Calls started by older apps (no secret) use the old logged-in join, and old and new apps can't share a call. IPs: §1 "Known gaps".
 - The wrapper sits around the call socket, so the existing WebRTC code is unchanged; signals to and from each peer are kept in order.
 - **Surviving a network change** (a phone moving between Wi-Fi and cellular). Two things break, and each is repaired:
   - *Signaling:* the socket reconnects under a new id and is no longer in the room. The app joins again as if new (dropping every peer connection) and the others connect to the new id. The server tells a room when a socket drops (`peer_left` on disconnect) and pings every 10 s with a 10 s timeout, so a dead socket is noticed in about 20 s; a peer that sees the same device join under a new id drops its old tile at once.
@@ -369,7 +386,7 @@ IP hiding is optional per member; members who want the strong guarantee should u
 ### Decided: call tiles for everyone in the conversation
 
 - During a group call, every conversation member gets a tile. Members not in the call show as a dimmed "not in call" rectangle with a **Notify** button that sends them a ring push (§9).
-- It says "not in call", not "offline". The app only knows who has joined the room. Real online/offline presence would need the server to track who is connected, which is the kind of metadata Exurelay avoids.
+- It says "not in call", not "offline". The app only knows who has joined the room, and doesn't share online/offline presence between members. (The server itself can tell who has the app open: §1 "Known gaps".)
 - Starting or joining a call never notifies anyone by itself. Only **Notify** sends a ring. Rings are rate-limited per person (e.g. one per 30 s), and the receiver can mute rings per conversation.
 
 Recommended fix: authenticate signaling end to end. Seal each offer/answer/ICE message with the pairwise key (the same ECDH as messages) so the server routes only opaque envelopes, and attach media only to a verified peer. Rooms use random ids shared inside encrypted messages instead of deterministic ones.
@@ -402,6 +419,17 @@ Recommended fix: authenticate signaling end to end. Seal each offer/answer/ICE m
 - **Composing:** typing `@` at the start or after a space opens a picker of the conversation's other members by your names for them, plus `@everyone` in groups. Arrow keys and Enter/Tab pick, Esc closes. The draft shows `@Name`, and sending turns each picked name into its token.
 - **Rendering:** each mention shows as `@` plus *your* name for that person. Mentions of you (or `@everyone` in your groups) are amber, and the message gets an amber bar on the left.
 - **Badge:** the sidebar shows `@N` on a conversation with N unread mentions of you. A conversation counts as read up to its newest message while it's open and the app is in front. The read markers are saved with the sync cursor in the encrypted cache, and kept through a re-sync.
+
+### Decided: group members
+
+Members can add people to a group and leave it, and its history stays with it, like Discord or Signal (`relay-web/src/lib/groups.ts`).
+
+- **Identity:** a new group gets a `groupId`, `g:<128 random bits, hex>:<creator keyHash>`, sent inside every group message. Naming the creator in the id means no one can claim to have made it. A legacy group (from before groupIds) is still known by its exact member set. Its first membership change gives it the id `l:<its sorted member set>`: derived rather than random, so two people changing it at once pick the same id, and its old messages, name and read marks stay in the same chat.
+- **Changes:** `{ type: "group_members", groupId, add?, remove?, groupMemberKeyHashes }`, where the list is the one after the change. It goes to the old and the new members, so someone removed learns it. Anyone in the group can add people and anyone can leave. Only the creator can remove someone else, so in a legacy group (creator unknown) no one can.
+- **Working out the members:** each device goes through the group messages it holds, by `sentAt`. The first one gives the starting list (older ones may have expired, and someone just added holds nothing before the add). Each allowed change from a member then applies its additions and removals, rather than replacing the whole list, so an add and a leave at the same moment both stick. Messages from someone who wasn't a member at the time are dropped. A group you're no longer in drops off your chat list.
+- **New members** see the chat from when they joined: earlier messages were encrypted to the members at the time.
+- **Older versions** don't show `group_members` and file messages by `groupMemberKeyHashes`, which always carries the sender's current list. After a change, they show the group's new messages as a new group with the new member set, and their replies (no groupId) land in that member-set chat in newer versions too.
+- **Limits:** `sentAt` comes from the sender, so a member could backdate a message. A device whose held messages start after a change (the change expired) takes the members from the first message it holds. When the creator leaves, no one can remove others any more.
 
 ---
 

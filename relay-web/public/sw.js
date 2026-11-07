@@ -99,12 +99,9 @@ async function openPush(data) {
   return { ...content, name: peer.name };
 }
 
-function text(kind, c) {
-  const who = c?.name || "Someone";
-  const where = c?.group ? ` in ${c.group}` : "";
-  if (kind === "ring") return c ? `${who} is calling you${where}` : "Someone is calling you in Exurelay";
-  if (kind === "everyone") return c ? `${who} mentioned everyone${where}` : "You were mentioned in Exurelay";
-  return c ? `${who} mentioned you${where}` : "You were mentioned in Exurelay";
+// Nothing about who or where: a notification can show on a locked screen. The app shows the rest once opened.
+function text(kind) {
+  return kind === "ring" ? "Incoming call" : "You were mentioned";
 }
 
 self.addEventListener("push", (event) => {
@@ -129,7 +126,7 @@ self.addEventListener("push", (event) => {
       const tag = inApp ? "relay-in-app" : data.kind === "ring" ? "relay-ring" : undefined;
       // Every push must show a notification (Safari revokes subscriptions that don't).
       // The message is the title: iPhone already adds "from Exurelay" under it, so an "Exurelay" title only repeats it.
-      await self.registration.showNotification(text(data.kind, content), {
+      await self.registration.showNotification(text(data.kind), {
         icon: `${BASE}icon-192.png`,
         badge: `${BASE}icon-192.png`,
         tag,

@@ -6,8 +6,8 @@ import { DEFAULT_QUICK_EMOJI, EMOJI_GROUPS, getQuickEmoji, setQuickEmoji } from 
 import { SectionTitle } from "@/components/InfoTip";
 import { useVisibleViewport } from "@/lib/useVisibleViewport";
 import type { Reaction } from "@/lib/reactions";
-import { Icon } from "@/components/icons";
-import { btn, field } from "@/components/ui";
+import { Icon, type IconName } from "@/components/icons";
+import { btn, btnDanger, field } from "@/components/ui";
 import { EMOJI_NAMES } from "@/lib/emojiNames";
 
 /**
@@ -146,23 +146,29 @@ export function ReactionPopover({ anchor, onPick, onClose }: { anchor: DOMRect; 
   );
 }
 
+/** An action the sheet offers below Copy (Reply, Edit, Delete). The sheet closes first. */
+export type SheetAction = { label: string; icon: IconName; onClick: () => void; danger?: boolean };
+
 /**
  * Phone: what press and hold on a message brings up from the bottom. Five quick reactions, a button for every emoji,
- * and Copy (for text).
+ * Copy (for text), and any `actions`.
  */
 export function MessageSheet({
   onReact,
   copyText,
+  actions = [],
   onClose,
 }: {
   onReact: (emoji: string) => void;
   /** The message's text, if it has any to copy. */
   copyText: string | null;
+  actions?: SheetAction[];
   onClose: () => void;
 }) {
   const [all, setAll] = useState(false);
   const [quick] = useState(getQuickEmoji);
   const visible = useVisibleViewport();
+  const armed = useRef(false);
   useEffect(() => {
     const key = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     document.addEventListener("keydown", key);
@@ -183,6 +189,14 @@ export function MessageSheet({
       <div
         role="dialog"
         aria-label="Message"
+        // The finger that held the message lifts over the sheet, and that lift taps whatever is under it: ignore taps
+        // until a new touch starts on the sheet.
+        onPointerDown={() => (armed.current = true)}
+        onClickCapture={(e) => {
+          if (armed.current) return;
+          e.preventDefault();
+          e.stopPropagation();
+        }}
         className="rounded-t-2xl border-t border-[var(--border)] bg-[var(--surface)] px-3 pt-3 flex flex-col gap-3 shadow-[0_-8px_24px_rgba(0,0,0,0.4)]"
         // At least a third of the screen tall, however little is in it.
         style={{ paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 0.75rem)", minHeight: visible.height ? visible.height / 3 : "33vh" }}
@@ -217,6 +231,21 @@ export function MessageSheet({
             Copy
           </button>
         )}
+        {!all &&
+          actions.map((a) => (
+            <button
+              key={a.label}
+              type="button"
+              className={`${a.danger ? btnDanger : btn} !justify-start gap-3 h-12 px-4`}
+              onClick={() => {
+                onClose();
+                a.onClick();
+              }}
+            >
+              <Icon name={a.icon} size={18} />
+              {a.label}
+            </button>
+          ))}
       </div>
     </div>,
     document.body

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { generateKeyPair } from "../crypto";
-import { openProfile, sealProfile, type ReceivedCopy } from "../profileSeal";
+import { MAX_AVATAR_BYTES } from "../avatar";
+import { COPY_BUDGET, PADDED_SIZE, openProfile, padPayload, sealProfile, type ReceivedCopy } from "../profileSeal";
 
 const A = "a".repeat(64); // author (member)
 const S = "s".repeat(64); // sending device
@@ -55,5 +56,38 @@ describe("sealed profiles", () => {
     const withDevices = await sealProfile(sender.privateKey, recipient.publicKey, ids, { name: "Al", updatedAt: 1, devices: { [S]: "Phone" } });
     const withMore = await sealProfile(sender.privateKey, recipient.publicKey, ids, { name: "Al", updatedAt: 1, devices: { [S]: "Phone", [R]: "MacBook Pro" } });
     expect(withDevices.ciphertext.length).toBe(withMore.ciphertext.length);
+  });
+
+  it("carries a picture, the same size as a copy without one, within the server's limit", async () => {
+    const { sender, recipient } = await setup();
+    const ids = { author: A, sender: S, recipient: R };
+    const avatar = "data:image/jpeg;base64," + "A".repeat((MAX_AVATAR_BYTES / 3) * 4 - 4) + "AAA=";
+    const payload = { name: "Ana", updatedAt: 3, avatar };
+    const c = await sealProfile(sender.privateKey, recipient.publicKey, ids, payload);
+    expect(await openProfile(recipient.privateKey, sender.publicKey, R, received(A, S, c))).toEqual(payload);
+    const none = await sealProfile(sender.privateKey, recipient.publicKey, ids, { name: "Ana", updatedAt: 3 });
+    expect(none.ciphertext.length).toBe(c.ciphertext.length);
+    // A full copy (the biggest picture, the rest filling the budget) still pads to the one size, within the server's limit.
+    const full = { name: "Ana", updatedAt: 3, avatar, relay: ["x".repeat(COPY_BUDGET - avatar.length - 80)] };
+    expect(new TextEncoder().encode(JSON.stringify(full)).length).toBeLessThanOrEqual(COPY_BUDGET);
+    expect(padPayload(full).length).toBe(PADDED_SIZE);
+    const fullCopy = await sealProfile(sender.privateKey, recipient.publicKey, ids, full);
+    expect(fullCopy.ciphertext.length).toBe(c.ciphertext.length);
+    expect(c.ciphertext.length).toBeLessThanOrEqual(24576);
+  });
+
+  it("drops a picture that isn't an image data URL, keeping the rest", async () => {
+    const { sender, recipient } = await setup();
+    const ids = { author: A, sender: S, recipient: R };
+    const c = await sealProfile(sender.privateKey, recipient.publicKey, ids, { name: "Ana", updatedAt: 3, avatar: "javascript:alert(1)" });
+    expect(await openProfile(recipient.privateKey, sender.publicKey, R, received(A, S, c))).toEqual({ name: "Ana", updatedAt: 3 });
+  });
+
+  it("uses the old sizes for servers from before pictures", async () => {
+    const { sender, recipient } = await setup();
+    const ids = { author: A, sender: S, recipient: R };
+    const c = await sealProfile(sender.privateKey, recipient.publicKey, ids, { name: "Ana", updatedAt: 3 }, true);
+    expect(c.ciphertext.length).toBeLessThan(2000);
+    expect(await openProfile(recipient.privateKey, sender.publicKey, R, received(A, S, c))).toEqual({ name: "Ana", updatedAt: 3 });
   });
 });

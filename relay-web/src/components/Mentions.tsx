@@ -1,6 +1,8 @@
 "use client";
 
-import { EVERYONE, splitMentions } from "@/lib/mentions";
+import type { ReactNode } from "react";
+import { parseFormatting, type FmtNode } from "@/lib/format";
+import { EVERYONE } from "@/lib/mentions";
 
 export type MentionCandidate = { keyHash: string; label: string };
 
@@ -42,8 +44,8 @@ export function MentionPicker({
 }
 
 /**
- * A text message body with each mention shown as "@name" in the viewer's own names. Mentions of you stand out,
- * except in your own messages.
+ * A text message body, formatted (format.ts), with each mention shown as "@name" in the viewer's own names.
+ * Mentions of you stand out, except in your own messages.
  */
 export function MessageText({
   body,
@@ -58,21 +60,50 @@ export function MessageText({
   inGroup: boolean;
   fromMe: boolean;
 }) {
-  return (
-    <span className="selectable whitespace-pre-wrap break-words">
-      {splitMentions(body).map((s, i) => {
-        if ("text" in s) return <span key={i}>{s.text}</span>;
-        const isEveryone = s.mention === EVERYONE;
-        const me = !fromMe && (s.mention === myKeyHash || (isEveryone && inGroup));
-        return (
-          <span
-            key={i}
-            className={me ? "text-amber-300 font-medium" : "text-[var(--accent)] font-medium"}
-          >
-            @{isEveryone ? "everyone" : nameFor(s.mention)}
-          </span>
-        );
-      })}
-    </span>
-  );
+  const render = (nodes: FmtNode[]): ReactNode[] =>
+    nodes.map((n, i) => {
+      switch (n.type) {
+        case "text":
+          return <span key={i}>{n.text}</span>;
+        case "bold":
+          return (
+            <strong key={i} className="font-semibold">
+              {render(n.children)}
+            </strong>
+          );
+        case "italic":
+          return <em key={i}>{render(n.children)}</em>;
+        case "code":
+          return (
+            <code key={i} className="rounded bg-white/10 px-1 py-px font-mono text-[0.85em]">
+              {n.text}
+            </code>
+          );
+        case "codeBlock":
+          return (
+            <pre
+              key={i}
+              className="my-1 max-w-full overflow-x-auto whitespace-pre rounded border border-[var(--border)] bg-[var(--surface)] px-2 py-1.5 font-mono text-xs"
+            >
+              <code>{n.text}</code>
+            </pre>
+          );
+        case "link":
+          return (
+            <a key={i} href={n.href} target="_blank" rel="noopener noreferrer nofollow" className="text-[var(--accent)] underline underline-offset-2">
+              {n.text}
+            </a>
+          );
+        case "mention": {
+          const isEveryone = n.id === EVERYONE;
+          const me = !fromMe && (n.id === myKeyHash || (isEveryone && inGroup));
+          return (
+            <span key={i} className={me ? "text-amber-300 font-medium" : "text-[var(--accent)] font-medium"}>
+              @{isEveryone ? "everyone" : nameFor(n.id)}
+            </span>
+          );
+        }
+      }
+    });
+  return <span className="selectable whitespace-pre-wrap break-words">{render(parseFormatting(body))}</span>;
 }

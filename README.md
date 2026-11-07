@@ -32,8 +32,9 @@ See **[DESIGN.md](DESIGN.md)** for the threat model, cryptography, every design 
 - **Customizable.** Sandboxed plugins (themes, custom message types, their own screens) in the official app, or fork it and change anything.
 - **Expiry with blurred timing.** Blobs expire at a random time about 3–4 days after the day they were sent; exact send times are never stored.
 
-What the server still sees: when uploads happen and how big each batch is, IP addresses, who is in a call room
-together, and (for pushes) who is being mentioned or rung at that moment. DESIGN.md §1 and §9 go into this.
+What the server still sees: IP addresses and timing (a VPN or Tor hides IPs), which members have the app open, when
+uploads happen and roughly how big they are, and who is being mentioned or rung at that moment. Calls join anonymous
+rooms, but peers see each other's IPs. DESIGN.md §1 lists every known gap and what helps.
 
 ---
 

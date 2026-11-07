@@ -351,6 +351,20 @@ export async function tokenFetch(path: string, init: RequestInit = {}): Promise<
   }
 }
 
+/**
+ * Pay with one token outside fetch (joining a call on its socket). `use` gets the token and returns null if the
+ * server refused it; we then retry the same way tokenFetch does.
+ */
+export async function withToken<T>(use: (token: string) => Promise<T | null>): Promise<T | null> {
+  for (let attempt = 0; ; attempt++) {
+    const t = await takeToken();
+    const out = await use(`${t.keyId}.${t.msg}.${t.sig}`);
+    if (out !== null || attempt >= 2) return out;
+    keysCache = null;
+    if (attempt === 1) writePool([]);
+  }
+}
+
 const checkedIssuers = new Set<string>();
 
 /**
