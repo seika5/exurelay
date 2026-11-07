@@ -12,7 +12,7 @@ export const HISTORY_BATCH_BYTES = 192 * 1024;
 export const HISTORY_TOTAL_BYTES = 2 * 1024 * 1024;
 
 /** Kinds copied as they are; files go without their contents; device_sync and history themselves never. */
-const COPIED = new Set(["text", "file", "contact", "call_event", "group_rename", "plugin"]);
+const COPIED = new Set(["text", "file", "contact", "call_event", "group_rename", "group_members", "plugin"]);
 
 export type HistoryPlan = {
   batches: CachedMessage[][];

@@ -403,6 +403,17 @@ Recommended fix: authenticate signaling end to end. Seal each offer/answer/ICE m
 - **Rendering:** each mention shows as `@` plus *your* name for that person. Mentions of you (or `@everyone` in your groups) are amber, and the message gets an amber bar on the left.
 - **Badge:** the sidebar shows `@N` on a conversation with N unread mentions of you. A conversation counts as read up to its newest message while it's open and the app is in front. The read markers are saved with the sync cursor in the encrypted cache, and kept through a re-sync.
 
+### Decided: group members
+
+Members can add people to a group and leave it, and its history stays with it, like Discord or Signal (`relay-web/src/lib/groups.ts`).
+
+- **Identity:** a new group gets a `groupId`, `g:<128 random bits, hex>:<creator keyHash>`, sent inside every group message. Naming the creator in the id means no one can claim to have made it. A legacy group (from before groupIds) is still known by its exact member set. Its first membership change gives it the id `l:<its sorted member set>`: derived rather than random, so two people changing it at once pick the same id, and its old messages, name and read marks stay in the same chat.
+- **Changes:** `{ type: "group_members", groupId, add?, remove?, groupMemberKeyHashes }`, where the list is the one after the change. It goes to the old and the new members, so someone removed learns it. Anyone in the group can add people and anyone can leave. Only the creator can remove someone else, so in a legacy group (creator unknown) no one can.
+- **Working out the members:** each device goes through the group messages it holds, by `sentAt`. The first one gives the starting list (older ones may have expired, and someone just added holds nothing before the add). Each allowed change from a member then applies its additions and removals, rather than replacing the whole list, so an add and a leave at the same moment both stick. Messages from someone who wasn't a member at the time are dropped. A group you're no longer in drops off your chat list.
+- **New members** see the chat from when they joined: earlier messages were encrypted to the members at the time.
+- **Older versions** don't show `group_members` and file messages by `groupMemberKeyHashes`, which always carries the sender's current list. After a change, they show the group's new messages as a new group with the new member set, and their replies (no groupId) land in that member-set chat in newer versions too.
+- **Limits:** `sentAt` comes from the sender, so a member could backdate a message. A device whose held messages start after a change (the change expired) takes the members from the first message it holds. When the creator leaves, no one can remove others any more.
+
 ---
 
 ## 9. Distribution, customization and notifications

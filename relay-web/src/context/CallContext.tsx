@@ -15,7 +15,7 @@ const FALLBACK_ICE_SERVERS: RTCIceServer[] = [
   { urls: "stun:stun1.l.google.com:19302" },
 ];
 
-export type ConversationForCall = { type: "dm"; otherKeyHash: string } | { type: "group"; memberKeyHashes: string[] };
+export type ConversationForCall = { type: "dm"; otherKeyHash: string } | { type: "group"; memberKeyHashes: string[]; groupId?: string };
 
 type CallState = {
   socket: Socket | null;

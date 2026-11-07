@@ -11,6 +11,8 @@ export type DecryptedMessageBody =
   | { senderKeyHash: string; sentAt: number; recipientKeyHash?: string; type: "contact"; keyHash: string; publicKey: string; name?: string; groupMemberKeyHashes?: string[] }
   | { senderKeyHash: string; sentAt: number; type: "call_event"; event: "started" | "ended"; recipientKeyHash?: string; groupMemberKeyHashes?: string[]; roomId?: string }
   | { senderKeyHash: string; sentAt: number; type: "group_rename"; newName: string; groupMemberKeyHashes: string[]; recipientKeyHash?: string }
+  /** People added to or removed from a group (groups.ts); `groupMemberKeyHashes` is the list after the change. */
+  | { senderKeyHash: string; sentAt: number; type: "group_members"; groupId: string; add?: string[]; remove?: string[]; groupMemberKeyHashes: string[]; recipientKeyHash?: string }
   /** A plugin's message type (`x-<name>/<type>`, plugins.ts); everyone without that plugin sees the fallback. */
   | { senderKeyHash: string; sentAt: number; type: "plugin"; pluginType: string; data: unknown; fallback: string; recipientKeyHash?: string; groupMemberKeyHashes?: string[] }
   /** An emoji on a message (`target` is its messageId), or taken back (`on: false`). Tallied, never shown (reactions.ts). */
@@ -22,9 +24,10 @@ export type DecryptedMessageBody =
 
 /**
  * messageId: random UUID chosen by the sender, the same for every recipient (protocol v2). Every message may also
- * carry the sender's token issuer key id, for the cross-check in tokens.ts.
+ * carry the sender's token issuer key id, for the cross-check in tokens.ts. A group message carries its group's
+ * `groupId`, except in a legacy group no one has added or removed anyone from yet (groups.ts).
  */
-export type DecryptedMessage = DecryptedMessageBody & { messageId: string; issuer?: string };
+export type DecryptedMessage = DecryptedMessageBody & { messageId: string; issuer?: string; groupId?: string };
 
 export function encodeMessage(m: DecryptedMessage): string {
   return JSON.stringify(m);

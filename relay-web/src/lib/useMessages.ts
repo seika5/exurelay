@@ -21,6 +21,7 @@ import {
   type CachedMessage,
 } from "@/lib/messageCache";
 import { serverScopedKey } from "@/lib/server";
+import { computeGroups, groupConversationId, groupIdOfMessage } from "@/lib/groups";
 
 const RETENTION_KEY = "relay.retentionDays";
 
@@ -70,7 +71,7 @@ export type OutboxStatus = "sending" | "sent" | "failed";
 export type ShownMessage = DecryptedMessage & { outbox?: { id: string; status: OutboxStatus } };
 
 /** Message kinds shown in conversations; anything else (hidden kinds, or a newer version's) isn't. */
-const SHOWN_KINDS = new Set<string>(["text", "file", "contact", "call_event", "group_rename", "plugin"]);
+const SHOWN_KINDS = new Set<string>(["text", "file", "contact", "call_event", "group_rename", "group_members", "plugin"]);
 /** Kinds only my own devices send each other, applied and never shown. */
 const HIDDEN_KINDS = new Set<string>(["device_sync", "history"]);
 type OutboxEntry = { id: string; message: DecryptedMessage; status: OutboxStatus; post: () => Promise<void> };
@@ -92,21 +93,23 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const outboxMatch = (a: DecryptedMessage, b: DecryptedMessage) => a.messageId === b.messageId;
 
-export type Conversation = { type: "dm"; otherKeyHash: string } | { type: "group"; memberKeyHashes: string[] };
+/** A group's memberKeyHashes are its current members; groupId is unset only for a legacy group (groups.ts). */
+export type Conversation = { type: "dm"; otherKeyHash: string } | { type: "group"; memberKeyHashes: string[]; groupId?: string };
 
 export function conversationId(c: Conversation, myKeyHash: string): string {
   if (c.type === "dm") return `dm:${[myKeyHash, c.otherKeyHash].sort().join(",")}`;
-  return `group:${[...c.memberKeyHashes].sort().join(",")}`;
+  return groupConversationId(c);
 }
 
-/** True if this message belongs in this conversation. Group messages never belong in a DM. */
 /** The conversation a message belongs to, as the chat list groups them. */
 export function conversationIdOf(m: DecryptedMessage, myKeyHash: string): string | null {
-  if (m.groupMemberKeyHashes && m.groupMemberKeyHashes.length >= 2) return conversationId({ type: "group", memberKeyHashes: m.groupMemberKeyHashes }, myKeyHash);
+  const group = groupIdOfMessage(m);
+  if (group) return group;
   const other = m.senderKeyHash === myKeyHash ? m.recipientKeyHash : m.senderKeyHash;
   return other ? conversationId({ type: "dm", otherKeyHash: other }, myKeyHash) : null;
 }
 
+/** True if this message belongs in this conversation. Group messages never belong in a DM. */
 export function messageBelongsToConversation(
   msg: DecryptedMessage,
   conv: Conversation,
@@ -119,10 +122,7 @@ export function messageBelongsToConversation(
     const pair = new Set([myKeyHash, conv.otherKeyHash]);
     return pair.has(a) && (b == null || pair.has(b));
   }
-  if (!msg.groupMemberKeyHashes) return false;
-  const g = new Set([...msg.groupMemberKeyHashes].sort());
-  const c = new Set([...conv.memberKeyHashes].sort());
-  return g.size === c.size && Array.from(g).every((k) => c.has(k));
+  return groupIdOfMessage(msg) === groupConversationId(conv);
 }
 
 export function useMessages(
@@ -184,23 +184,28 @@ export function useMessages(
 
   const contactByKeyHash = new Map(identity?.contacts.map((c) => [c.keyHash, c]) ?? []);
 
-  const messages = useMemo(() => {
-    // Only kinds this version shows: a newer one's message kinds never appear as blank messages here.
-    const list: ShownMessage[] = receivedMessages.filter((m) => SHOWN_KINDS.has(m.type));
+  // Everything held plus what's still on its way (so a membership change shows at once), with each group's members
+  // worked out from it, and messages from non-members dropped (groups.ts).
+  const { held, groups } = useMemo(() => {
+    const list: ShownMessage[] = [...receivedMessages];
     for (const o of outbox) {
-      if (!SHOWN_KINDS.has(o.message.type)) continue;
       if (!receivedMessages.some((m) => outboxMatch(m, o.message))) list.push({ ...o.message, outbox: { id: o.id, status: o.status } });
     }
-    list.sort((a, b) => a.sentAt - b.sentAt);
-    return list;
+    const { groups, rejected } = computeGroups(list);
+    return { held: list.filter((m) => !rejected.has(m.messageId)), groups };
   }, [receivedMessages, outbox]);
+
+  const messages = useMemo(
+    // Only kinds this version shows: a newer one's message kinds never appear as blank messages here.
+    () => held.filter((m) => SHOWN_KINDS.has(m.type)).sort((a, b) => a.sentAt - b.sentAt),
+    [held]
+  );
 
   /** Reactions on each message by its id, including ones still on their way (they show at once). */
   const reactions = useMemo(() => {
     if (!identity) return new Map<string, Reaction[]>();
-    const pending = outbox.map((o) => o.message).filter((m) => m.type === "reaction" && !receivedMessages.some((r) => r.messageId === m.messageId));
-    return tallyReactions([...receivedMessages, ...pending, ...outbox.map((o) => o.message).filter((m) => m.type !== "reaction")], identity.keyHash);
-  }, [receivedMessages, outbox, identity]);
+    return tallyReactions(held, identity.keyHash);
+  }, [held, identity]);
 
   const owner = identity?.keyHash ?? null;
 
@@ -390,11 +395,12 @@ export function useMessages(
     const seen = new Set<string>();
     const list: Conversation[] = [];
     for (const m of messages) {
-      if (m.groupMemberKeyHashes && m.groupMemberKeyHashes.length >= 2) {
-        const id = conversationId({ type: "group", memberKeyHashes: m.groupMemberKeyHashes }, myKeyHash);
-        if (!seen.has(id)) {
-          seen.add(id);
-          list.push({ type: "group", memberKeyHashes: m.groupMemberKeyHashes });
+      const groupId = groupIdOfMessage(m);
+      if (groupId) {
+        const g = groups.get(groupId);
+        if (g && !seen.has(groupId)) {
+          seen.add(groupId);
+          list.push({ type: "group", memberKeyHashes: g.members, ...(g.groupId ? { groupId: g.groupId } : {}) });
         }
       } else {
         const other =
@@ -416,7 +422,7 @@ export function useMessages(
       return max;
     };
     return list.sort((a, b) => lastAt(b) - lastAt(a));
-  }, [identity?.keyHash, messages]);
+  }, [identity?.keyHash, messages, groups]);
 
   const setStatus = useCallback(
     (id: string, status: OutboxStatus) => setOutbox((box) => box.map((o) => (o.id === id ? { ...o, status } : o))),

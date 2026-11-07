@@ -34,6 +34,8 @@ import { ChatFile } from "@/components/ChatFile";
 import { MessageSheet, ReactionChips, ReactionPopover } from "@/components/Reactions";
 import { getQuickEmoji } from "@/lib/emoji";
 import { ScrollList } from "@/components/ScrollList";
+import { GroupMembers } from "@/components/GroupMembers";
+import { groupFields, membershipChange, newGroupId } from "@/lib/groups";
 
 const GROUP_BREAK_MS = 10 * 60 * 1000;
 
@@ -46,8 +48,8 @@ function isGroupedWithPrev(
   prev: DecryptedMessage | undefined
 ): boolean {
   if (!prev) return false;
-  if (msg.type === "call_event" || msg.type === "group_rename") return false;
-  if (prev.type === "call_event" || prev.type === "group_rename") return false;
+  if (msg.type === "call_event" || msg.type === "group_rename" || msg.type === "group_members") return false;
+  if (prev.type === "call_event" || prev.type === "group_rename" || prev.type === "group_members") return false;
   if (msg.senderKeyHash !== prev.senderKeyHash) return false;
   return msg.sentAt - prev.sentAt < GROUP_BREAK_MS;
 }
@@ -241,11 +243,22 @@ function Chat() {
   const closePicker = useCallback(() => setReactPicker(null), []);
   const closeSheet = useCallback(() => setSheetFor(null), []);
 
-  // The chats the list shows: not a DM with a removed member, nor a group that's down to just you.
+  // The chats the list shows: not a DM with a removed member, nor a group you're not in or that's down to just you.
   const listed = useMemo(
-    () => conversations.filter((c) => (c.type === "dm" ? stillHere(c.otherKeyHash) : c.memberKeyHashes.filter(stillHere).length >= 2)),
-    [conversations, stillHere]
+    () =>
+      conversations.filter((c) =>
+        c.type === "dm" ? stillHere(c.otherKeyHash) : c.memberKeyHashes.includes(identity?.keyHash ?? "") && c.memberKeyHashes.filter(stillHere).length >= 2
+      ),
+    [conversations, stillHere, identity?.keyHash]
   );
+
+  // The open group's members change as people are added or leave: keep it current, so sends and calls go to them.
+  useEffect(() => {
+    if (selected?.type !== "group" || !identity) return;
+    const id = conversationId(selected, identity.keyHash);
+    const fresh = conversations.find((c) => c.type === "group" && conversationId(c, identity.keyHash) === id);
+    if (fresh?.type === "group" && (fresh.groupId !== selected.groupId || fresh.memberKeyHashes.join() !== selected.memberKeyHashes.join())) setSelected(fresh);
+  }, [conversations, selected, identity]);
   const keyboardVisible = visible.keyboard;
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesListRef = useRef<HTMLUListElement>(null);
@@ -564,7 +577,7 @@ function Chat() {
         });
       } else {
         sendMessage(
-          { ...base, groupMemberKeyHashes: selected.memberKeyHashes } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
+          { ...base, ...groupFields(selected) } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
           selected.memberKeyHashes.filter((k) => k !== identity.keyHash && stillHere(k))
         );
       }
@@ -598,7 +611,7 @@ function Chat() {
       });
     } else {
       sendMessage(
-        { ...base, groupMemberKeyHashes: selected.memberKeyHashes } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
+        { ...base, ...groupFields(selected) } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
         selected.memberKeyHashes.filter((k) => k !== identity.keyHash && stillHere(k))
       );
     }
@@ -645,7 +658,7 @@ function Chat() {
         );
       } else if (selected?.type === "group") {
         await sendMessage(
-          { type: "text", body: text, groupMemberKeyHashes: selected.memberKeyHashes, mentions: sentMentions } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
+          { type: "text", body: text, ...groupFields(selected), mentions: sentMentions } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
           recipients
         );
       }
@@ -659,7 +672,7 @@ function Chat() {
         body,
         filename: file.name,
         fileSize: file.size,
-        ...(selected?.type === "group" ? { groupMemberKeyHashes: selected.memberKeyHashes } : {}),
+        ...(selected?.type === "group" ? groupFields(selected) : {}),
       };
       if (selected?.type === "dm") {
         await sendMessage(
@@ -683,13 +696,14 @@ function Chat() {
   const handleCreateGroup = () => {
     if (newGroupSelected.size === 0 || !identity) return;
     const memberKeyHashes = [identity.keyHash, ...Array.from(newGroupSelected)];
-    setSelected({ type: "group", memberKeyHashes });
+    const groupId = newGroupId(identity.keyHash);
+    setSelected({ type: "group", memberKeyHashes, groupId });
     setSidebarVisible(false);
     const name = newGroupName.trim();
     // A group's name is its latest rename message; sending one now also shows the group to its members.
     if (name) {
       sendMessage(
-        { type: "group_rename", newName: name, groupMemberKeyHashes: memberKeyHashes } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
+        { type: "group_rename", newName: name, groupMemberKeyHashes: memberKeyHashes, groupId } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
         memberKeyHashes.filter((k) => k !== identity.keyHash)
       ).catch(() => {});
     }
@@ -739,10 +753,20 @@ function Chat() {
     if (!identity || groupRenameModal?.type !== "group") return;
     const newName = groupRenameValue.trim() || "Group Chat";
     await sendMessage(
-      { type: "group_rename", newName, groupMemberKeyHashes: groupRenameModal.memberKeyHashes } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
+      { type: "group_rename", newName, ...groupFields(groupRenameModal) } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
       groupRenameModal.memberKeyHashes.filter((k) => k !== identity.keyHash)
     );
     closeGroupRename();
+  };
+
+  /** Add people to the open group or remove them (groups.ts): told to everyone in it before and after. */
+  const changeMembers = (change: { add?: string[]; remove?: string[] }) => {
+    if (!identity || selected?.type !== "group") return;
+    const { message, recipients } = membershipChange(selected, change);
+    sendMessage(
+      message as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
+      recipients.filter((k) => k !== identity.keyHash && stillHere(k))
+    ).catch(() => {});
   };
 
   const handleStartCall = async () => {
@@ -764,7 +788,7 @@ function Chat() {
         );
       } else {
         await sendMessage(
-          { type: "call_event", event: "started", groupMemberKeyHashes: selected.memberKeyHashes, roomId: callRoomId } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
+          { type: "call_event", event: "started", ...groupFields(selected), roomId: callRoomId } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
           selected.memberKeyHashes.filter((k) => k !== identity.keyHash && stillHere(k))
         );
       }
@@ -784,7 +808,7 @@ function Chat() {
         );
       } else {
         await sendMessage(
-          { type: "call_event", event: "ended", groupMemberKeyHashes: conv.memberKeyHashes } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
+          { type: "call_event", event: "ended", ...groupFields(conv) } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
           conv.memberKeyHashes.filter((k) => k !== identity.keyHash)
         );
       }
@@ -792,7 +816,8 @@ function Chat() {
   };
 
   /** A DM partner who is no longer in the member directory (removed, or re-enrolled with a new key). */
-  const isInactive = (conv: Conversation | null) => conv?.type === "dm" && directoryLoaded && !getMember(conv.otherKeyHash);
+  const isInactive = (conv: Conversation | null) =>
+    conv?.type === "dm" ? directoryLoaded && !getMember(conv.otherKeyHash) : conv?.type === "group" && !conv.memberKeyHashes.includes(identity?.keyHash ?? "");
   const selectedInactive = isInactive(selected);
 
   // On a phone, set up only inside the installed app (its storage is separate from the browser tab's).
@@ -914,16 +939,8 @@ function Chat() {
           )}
 
           {listed.map((conv) => {
-            const key = conv.type === "dm"
-              ? `dm:${conv.otherKeyHash}`
-              : `g:${[...conv.memberKeyHashes].sort().join(",")}`;
-            const isSelected =
-              selected?.type === conv.type &&
-              (conv.type === "dm"
-                ? selected.type === "dm" && selected.otherKeyHash === conv.otherKeyHash
-                : selected.type === "group" &&
-                  selected.memberKeyHashes.length === conv.memberKeyHashes.length &&
-                  [...selected.memberKeyHashes].sort().join() === [...conv.memberKeyHashes].sort().join());
+            const key = conversationId(conv, me);
+            const isSelected = !!selected && conversationId(selected, me) === key;
 
             const openContextFor = () => openRename(conv);
 
@@ -1072,7 +1089,7 @@ function Chat() {
                   </span>
                 </button>
               </div>
-              {selected.type === "group" && (
+              {selected.type === "group" && !selectedInactive && (
                 <IconButton icon="chatMembers" label="Members" onClick={() => setMembersOpen(true)} />
               )}
               {!inCall && !selectedInactive && (
@@ -1124,6 +1141,28 @@ function Chat() {
                   return (
                     <li key={i} className="text-xs text-center text-[var(--muted)] py-2 italic">
                       {senderName(m.senderKeyHash)} renamed the group to {m.newName}
+                    </li>
+                  );
+                }
+
+                if (m.type === "group_members") {
+                  const who = (k: string) => (k === me ? "you" : getDisplayName(k) || k.slice(0, 8));
+                  const removed = (m.remove ?? []).filter((k) => k !== m.senderKeyHash);
+                  const parts = [
+                    m.add?.length ? `added ${m.add.map(who).join(", ")}` : "",
+                    removed.length ? `removed ${removed.map(who).join(", ")}` : "",
+                    m.remove?.includes(m.senderKeyHash) ? "left" : "",
+                  ].filter(Boolean);
+                  return (
+                    <li key={i} className={`text-xs text-center text-[var(--muted)] py-2 italic ${m.outbox?.status === "sending" ? "opacity-50" : ""}`}>
+                      {senderName(m.senderKeyHash)} {parts.join(" and ")}
+                      {m.outbox?.status === "failed" && (
+                        <span className="flex items-center justify-center gap-1.5 mt-1 not-italic text-red-500">
+                          Not sent
+                          <IconButton icon="refresh" label="Retry sending" onClick={() => retrySend(m.outbox!.id)} />
+                          <IconButton icon="close" label="Cancel sending" onClick={() => cancelSend(m.outbox!.id)} />
+                        </span>
+                      )}
                     </li>
                   );
                 }
@@ -1457,17 +1496,21 @@ function Chat() {
       })()}
 
       {membersOpen && selected?.type === "group" && identity && (
-        <Modal title="Members" onClose={closeMembers} compact>
-          <ul className="flex flex-col gap-1">
-            {selected.memberKeyHashes.filter(stillHere)
-              .sort((x, y) => (x === identity.keyHash ? -1 : y === identity.keyHash ? 1 : 0))
-              .map((k) => (
-                <li key={k} className="flex items-center gap-2 py-1 text-sm">
-                  <span className="truncate">{k === identity.keyHash ? "You" : getDisplayName(k) || k.slice(0, 8)}</span>
-                </li>
-              ))}
-          </ul>
-        </Modal>
+        <GroupMembers
+          conv={selected}
+          me={me}
+          people={newGroupCandidates.map((c) => c.keyHash).filter(stillHere)}
+          nameFor={nameFor}
+          stillHere={stillHere}
+          onChange={changeMembers}
+          onLeave={() => {
+            changeMembers({ remove: [me] });
+            closeMembers();
+            setSelected(null);
+            setSidebarVisible(true);
+          }}
+          onClose={closeMembers}
+        />
       )}
       {displayNameModal && (
         <Modal title="Set nickname" onClose={closeNickname} closeLabel={null} compact>
