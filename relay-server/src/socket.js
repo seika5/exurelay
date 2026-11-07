@@ -1,13 +1,20 @@
 /**
- * Socket.io: signaling for WebRTC 1:1 and group (room-based), plus "blobs" pings. Blobs carry no recipient, so the
- * ping goes to every socket (every logged-in member) after each upload, and each client syncs from its cursor.
- * Each socket must present a login session (handshake auth.session), which fixes its keyHash:
- * a socket can only listen for its own blobs and join calls as itself.
- * Room authorization: only key hashes in the room's allowed set can join, and they must be members.
+ * Socket.io, two namespaces:
+ * - "/" (logged in): "blobs" and "directory" pings. Blobs carry no recipient, so the ping goes to every socket (every
+ *   logged-in member) after each upload, and each client syncs from its cursor. Each socket must present a login
+ *   session (handshake auth.session), which fixes its keyHash. It still carries legacy calls (join_room), where the
+ *   server sees who calls whom, for older apps only.
+ * - "/call" (anonymous, registerCallHandlers): calls. No login; the server never learns who is in a call.
  */
-const roomAllowedKeyHashes = new Map(); // roomId -> Set(keyHash)
+const roomAllowedKeyHashes = new Map(); // roomId -> Set(keyHash), legacy calls only
 /** An SDP with many candidates, base64 and encrypted, fits well inside this. */
 const MAX_SEALED_SIGNAL = 64 * 1024;
+/** Same format as relay-web/src/lib/callRoom.ts newRoomId. */
+const ROOM_ID = /^room-[A-Za-z0-9_-]{16,64}$/;
+const MAX_ROOM_SIZE = 50;
+/** An anonymous socket that hasn't joined a call by then is dropped, so idle connections can't pile up for free. */
+const JOIN_WITHIN_MS = 30_000;
+const MAX_FAILED_JOINS = 5;
 
 function emitRoomJoinError(socket, message = "Not allowed to join this call.") {
   socket.emit("room_join_error", { message });
@@ -49,6 +56,7 @@ export function registerSocketHandlers(io, prisma, auth) {
       });
     });
 
+    // LEGACY, remove once apps older than the "/call" namespace are gone: a call joined as the logged-in member.
     // The member comes from the login session (a linked device joins as its member); the client's claim must match.
     socket.on("join_room", async (roomId, keyHash, allowedKeyHashes) => {
       try {
@@ -119,6 +127,83 @@ export function registerSocketHandlers(io, prisma, auth) {
       }
     });
 
+  });
+}
+
+/**
+ * Anonymous calls (DESIGN.md §7) on the "/call" namespace. Sockets here don't log in. Joining a room costs one
+ * anonymous token, so strangers can't flood rooms; knowing the random room id, which is only ever sent inside
+ * encrypted messages, is the capability. The server keeps room -> socket ids and relays opaque envelopes between
+ * sockets in the same room: "intro" (sealed with the room secret: which member and device is behind a socket) and
+ * "signal" (sealed device to device). Joins and member lists name socket ids only.
+ *
+ * Removed members can't be kicked from a call here, since the server doesn't know who they are. Each new call has a
+ * fresh secret sent only to current members, and peers refuse intros from anyone no longer in the conversation.
+ */
+export function registerCallHandlers(nsp, spend, { joinWithinMs = JOIN_WITHIN_MS } = {}) {
+  nsp.on("connection", (socket) => {
+    let room = null;
+    let failed = 0;
+    const idle = setTimeout(() => {
+      if (!room) socket.disconnect(true);
+    }, joinWithinMs);
+    idle.unref?.();
+    const reply = (cb, value) => {
+      if (typeof cb === "function") cb(value);
+    };
+    const size = (r) => nsp.adapter.rooms.get(r)?.size ?? 0;
+    const leave = () => {
+      const r = room;
+      room = null;
+      socket.leave(r);
+      socket.to(r).emit("peer_left", socket.id);
+      return size(r) === 0;
+    };
+
+    socket.on("join", async (roomId, token, cb) => {
+      if (typeof roomId !== "string" || !ROOM_ID.test(roomId)) return reply(cb, { ok: false, error: "room" });
+      // Checked before spending, so a full room doesn't cost a token.
+      if (size(roomId) >= MAX_ROOM_SIZE) return reply(cb, { ok: false, error: "full" });
+      let ok = false;
+      try {
+        ok = await spend(token);
+      } catch {
+        return reply(cb, { ok: false, error: "server" });
+      }
+      if (!ok) {
+        if (++failed >= MAX_FAILED_JOINS) socket.disconnect(true);
+        return reply(cb, { ok: false, error: "token" });
+      }
+      if (socket.connected === false) return;
+      clearTimeout(idle);
+      if (room) leave();
+      room = roomId;
+      socket.join(roomId);
+      const others = [...(nsp.adapter.rooms.get(roomId) ?? [])].filter((id) => id !== socket.id);
+      socket.to(roomId).emit("peer_joined", socket.id);
+      reply(cb, { ok: true, members: others });
+    });
+
+    const relay = (event) => (payload) => {
+      const to = payload?.to;
+      const sealed = payload?.sealed;
+      if (!room || typeof to !== "string" || to === socket.id) return;
+      if (typeof sealed !== "string" || sealed.length > MAX_SEALED_SIGNAL) return;
+      const target = nsp.sockets.get(to);
+      if (target?.rooms?.has(room)) target.emit(event, { from: socket.id, sealed });
+    };
+    socket.on("intro", relay("intro"));
+    socket.on("signal", relay("signal"));
+
+    socket.on("leave", (roomId, cb) => {
+      if (!room || roomId !== room) return reply(cb, { last: false });
+      reply(cb, { last: leave() });
+    });
+
+    socket.on("disconnecting", () => {
+      clearTimeout(idle);
+      if (room) socket.to(room).emit("peer_left", socket.id);
+    });
   });
 }
 

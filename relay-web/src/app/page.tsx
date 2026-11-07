@@ -17,7 +17,8 @@ import {
   conversationId,
   messageBelongsToConversation,
 } from "@/lib/useMessages";
-import { activeCallRoom, newRoomId } from "@/lib/callRoom";
+import { activeCall, newRoomId } from "@/lib/callRoom";
+import { newRoomKey } from "@/lib/callIntro";
 import type { DecryptedMessage } from "@/lib/blobPayload";
 import { blobSettings } from "@/lib/signed";
 import { activeMentionQuery, encodeDraft, mentionsMe, splitMentions, EVERYONE, type PickedMention } from "@/lib/mentions";
@@ -314,7 +315,7 @@ function Chat() {
   }, [selected]);
 
   /** The room of this conversation's ongoing call, if any (random, announced in the encrypted "started" message). */
-  const ongoingRoom = useMemo(() => activeCallRoom(filteredMessages), [filteredMessages]);
+  const ongoingCall = useMemo(() => activeCall(filteredMessages), [filteredMessages]);
 
   /** Display name for a member as this viewer knows them. */
   const nameFor = useCallback(
@@ -992,8 +993,10 @@ function Chat() {
   const handleStartCall = async () => {
     if (!identity || !selected) return;
     setCurrentCallConversation(selected);
-    // Join the ongoing call, or start one in a fresh random room.
-    const callRoomId = ongoingRoom ?? newRoomId();
+    // Join the ongoing call, or start one in a fresh random room with a fresh secret. An ongoing call without a secret
+    // (an older app started it) is joined the legacy way.
+    const call = ongoingCall ?? { roomId: newRoomId(), roomKey: newRoomKey() };
+    const callRoomId = call.roomId;
     const allowedKeyHashes =
       selected.type === "dm"
         ? [identity.keyHash, selected.otherKeyHash].sort()
@@ -1002,18 +1005,18 @@ function Chat() {
       if (!selected || !identity) return;
       if (selected.type === "dm") {
         await sendMessage(
-          { type: "call_event", event: "started", recipientKeyHash: selected.otherKeyHash, roomId: callRoomId } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
+          { type: "call_event", event: "started", recipientKeyHash: selected.otherKeyHash, roomId: callRoomId, roomKey: call.roomKey } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
           [selected.otherKeyHash],
           { recipientKeyHash: selected.otherKeyHash }
         );
       } else {
         await sendMessage(
-          { type: "call_event", event: "started", ...groupFields(selected), roomId: callRoomId } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
+          { type: "call_event", event: "started", ...groupFields(selected), roomId: callRoomId, roomKey: call.roomKey } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
           selected.memberKeyHashes.filter((k) => k !== identity.keyHash && stillHere(k))
         );
       }
     };
-    await startOrJoinCall(callRoomId, identity.keyHash, allowedKeyHashes, sendStartedIfFirst);
+    await startOrJoinCall(callRoomId, call.roomKey, allowedKeyHashes, sendStartedIfFirst);
   };
 
   const handleHangUp = async () => {
@@ -1364,11 +1367,11 @@ function Chat() {
                 <button
                   type="button"
                   onClick={handleStartCall}
-                  aria-label={ongoingRoom ? "Join call" : "Call"}
-                  title={ongoingRoom ? "Join call" : "Call"}
+                  aria-label={ongoingCall ? "Join call" : "Call"}
+                  title={ongoingCall ? "Join call" : "Call"}
                   className={`${btnPrimary} flex-shrink-0 h-9 w-9 p-0 touch:h-10 touch:w-10`}
                 >
-                  <span className={ongoingRoom ? "animate-pulse" : ""}><Icon name="callStart" size={18} /></span>
+                  <span className={ongoingCall ? "animate-pulse" : ""}><Icon name="callStart" size={18} /></span>
                 </button>
               )}
             </div>
