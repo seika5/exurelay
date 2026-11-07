@@ -78,7 +78,7 @@ export function Modal({
   );
 }
 
-type ConfirmRequest = { message: string; ok: string; danger: boolean; resolve: (yes: boolean) => void };
+type ConfirmRequest = { message: string; ok: string; cancel: string; danger: boolean; resolve: (yes: boolean) => void };
 let show: ((r: ConfirmRequest) => void) | null = null;
 
 /**
@@ -86,9 +86,9 @@ let show: ((r: ConfirmRequest) => void) | null = null;
  * an installed iPhone app, and its OK looks the same for "Remove" as for anything else). Falls back to the browser's
  * confirm if no ConfirmHost is mounted.
  */
-export function confirmDialog(message: string, opts: { ok?: string; danger?: boolean } = {}): Promise<boolean> {
+export function confirmDialog(message: string, opts: { ok?: string; cancel?: string; danger?: boolean } = {}): Promise<boolean> {
   if (!show) return Promise.resolve(window.confirm(message));
-  return new Promise((resolve) => show!({ message, ok: opts.ok ?? "OK", danger: opts.danger ?? false, resolve }));
+  return new Promise((resolve) => show!({ message, ok: opts.ok ?? "OK", cancel: opts.cancel ?? "Cancel", danger: opts.danger ?? false, resolve }));
 }
 
 /** Mounted once (layout.tsx): shows confirmDialog's questions. */
@@ -117,7 +117,7 @@ export function ConfirmHost() {
         <p className="text-sm whitespace-pre-wrap">{req.message}</p>
         <div className="flex justify-end gap-2">
           <button type="button" className={btn} onClick={() => answer(false)}>
-            Cancel
+            {req.cancel}
           </button>
           <button type="button" autoFocus className={req.danger ? btnDanger : btnPrimary} onClick={() => answer(true)}>
             {req.ok}

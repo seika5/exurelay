@@ -31,6 +31,8 @@ import { Modal, confirmDialog } from "@/components/Modal";
 import { btn, btnPrimary, field } from "@/components/ui";
 import { PageLock, useVisibleViewport } from "@/lib/useVisibleViewport";
 import { ChatFile } from "@/components/ChatFile";
+import { AttachButton, DropOverlay, prepareFiles, useFileDrop } from "@/components/AttachMenu";
+import { MicButton, RecordingBar, useVoiceRecorder } from "@/components/VoiceRecorder";
 import { MessageSheet, ReactionChips, ReactionPopover } from "@/components/Reactions";
 import { getQuickEmoji } from "@/lib/emoji";
 import { ScrollList } from "@/components/ScrollList";
@@ -247,7 +249,6 @@ function Chat() {
     [conversations, stillHere]
   );
   const keyboardVisible = visible.keyboard;
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesListRef = useRef<HTMLUListElement>(null);
   const wasAtBottomRef = useRef(true);
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -616,8 +617,9 @@ function Chat() {
       .map((seg) => ("text" in seg ? seg.text : `@${seg.mention === EVERYONE ? "everyone" : nameFor(seg.mention)}`))
       .join("");
 
-  const handleSend = async () => {
-    if (!identity || (!input.trim() && pendingFiles.length === 0)) return;
+  /** `extra`: files sent along without being attached first (a voice message). */
+  const handleSend = async (extra: File[] = []) => {
+    if (!identity || (!input.trim() && pendingFiles.length === 0 && extra.length === 0)) return;
     const recipients =
       selected?.type === "dm"
         ? [selected.otherKeyHash]
@@ -629,7 +631,7 @@ function Chat() {
     // Plugins that asked may change the text first (sandboxed; at most 0.5 s each).
     const draft = plugins && input.trim() ? await plugins.beforeSend(input.trim()) : input.trim();
     const { body: text, mentions } = encodeDraft(draft, picked);
-    const files = pendingFiles;
+    const files = [...pendingFiles, ...extra];
     setInput("");
     setPicked([]);
     setMentionQuery(null);
@@ -794,6 +796,14 @@ function Chat() {
   /** A DM partner who is no longer in the member directory (removed, or re-enrolled with a new key). */
   const isInactive = (conv: Conversation | null) => conv?.type === "dm" && directoryLoaded && !getMember(conv.otherKeyHash);
   const selectedInactive = isInactive(selected);
+
+  // Attaching (picker, camera, paste, drop): big photos may be swapped for a smaller copy first (AttachMenu.tsx).
+  const addFiles = useCallback(async (files: File[]) => {
+    const ready = await prepareFiles(files);
+    if (ready.length) setPendingFiles((prev) => [...prev, ...ready]);
+  }, []);
+  const drop = useFileDrop(!!selected && !selectedInactive && !(inCall && callExpanded), addFiles);
+  const voice = useVoiceRecorder((file) => handleSend([file]));
 
   // On a phone, set up only inside the installed app (its storage is separate from the browser tab's).
   if (installFirst && !loading && (!server || needsSetup)) return <InstallFirst />;
@@ -1019,7 +1029,8 @@ function Chat() {
 
       {/* ── Main chat panel ────────────────────────────────────────────────── */}
       {/* Mobile: full-screen when sidebar is hidden. Desktop: always visible flex-1. */}
-      <div className={`flex-col min-w-0 flex-1 relative ${!sidebarVisible ? "flex" : "hidden md:flex"}`}>
+      <div className={`flex-col min-w-0 flex-1 relative ${!sidebarVisible ? "flex" : "hidden md:flex"}`} {...drop.handlers}>
+        {drop.over && <DropOverlay />}
 
         {/* Minimised call tile — positioned below the header, respecting safe area */}
         {inCall && !callExpanded && (
@@ -1245,13 +1256,6 @@ function Chat() {
             <div
               className={`px-2 pt-2 border-t border-[var(--border)] flex-col gap-2 ${selectedInactive ? "hidden" : "flex"}`}
               style={keyboardVisible ? { paddingBottom: "0.5rem" } : safeBottom}
-              onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
-              onDrop={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                const files = Array.from(e.dataTransfer?.files ?? []);
-                if (files.length) setPendingFiles((prev) => [...prev, ...files]);
-              }}
             >
               {pendingFiles.length > 0 && (
                 <div className="flex flex-wrap gap-1.5 text-xs text-[var(--muted)]">
@@ -1268,39 +1272,10 @@ function Chat() {
                 </div>
               )}
               <MentionPicker candidates={mentionCandidates} active={mentionActive} onPick={pickMention} />
-              <div className="flex items-end gap-2">
-                {/*
-                  sr-only keeps the input in the DOM (not display:none) so iOS Safari
-                  recognises the label click as a real user gesture and opens the file picker.
-                */}
-                <input
-                  id="relay-file-input"
-                  ref={fileInputRef}
-                  type="file"
-                  multiple
-                  className="sr-only"
-                  onChange={(e) => {
-                    const files = Array.from(e.target.files ?? []);
-                    if (files.length) setPendingFiles((prev) => [...prev, ...files]);
-                    e.target.value = "";
-                  }}
-                />
-                <label
-                  htmlFor="relay-file-input"
-                  role="button"
-                  tabIndex={0}
-                  aria-label="Attach file"
-                  title="Attach file"
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      fileInputRef.current?.click();
-                    }
-                  }}
-                  className={`${btn} flex-shrink-0 h-[42px] w-[42px] p-0 cursor-pointer select-none`}
-                >
-                  <Icon name="attach" size={18} />
-                </label>
+              {voice.recording && <RecordingBar voice={voice} />}
+              {/* Hidden, not removed, while recording: the message box keeps its draft and its place. */}
+              <div className={`items-end gap-2 ${voice.recording ? "hidden" : "flex"}`}>
+                <AttachButton touch={touchKeyboard} onFiles={addFiles} />
                 <textarea
                   ref={composerRef}
                   rows={1}
@@ -1334,6 +1309,13 @@ function Chat() {
                       handleSend();
                     }
                   }}
+                  // Pasted photos and files are attached (not their names pasted as text).
+                  onPaste={(e) => {
+                    const files = Array.from(e.clipboardData?.files ?? []);
+                    if (!files.length) return;
+                    e.preventDefault();
+                    addFiles(files);
+                  }}
                   onBlur={() => setMentionQuery(null)}
                   // Focus it ourselves without scrolling it into view: iOS's own scroll on focus is what made the
                   // screen overshoot and flick back (the layout moves above the keyboard by itself).
@@ -1345,23 +1327,32 @@ function Chat() {
                   placeholder={selected ? `Message ${conversationLabel(selected, me, getDisplayName, groupNamesFromMessages, stillHere)}` : "Message"}
                   className="flex-1 min-w-0 px-3 py-2 touch:min-h-10 resize-none block rounded bg-[var(--surface)] border border-[var(--border)] text-[var(--text)] placeholder-[var(--muted)]"
                 />
-                <button
-                  type="button"
-                  onClick={handleSend}
-                  // Keep the focus (and the keyboard) in the message box: pressing the button would otherwise take it.
-                  onMouseDown={(e) => e.preventDefault()}
-                  onTouchEnd={(e) => {
-                    e.preventDefault();
-                    if (canSend) handleSend();
-                  }}
-                  disabled={!canSend}
-                  aria-label="Send"
-                  title="Send"
-                  className={`${btnPrimary} flex-shrink-0 h-[42px] w-[42px] p-0`}
-                >
-                  <Icon name="chatSend" size={18} />
-                </button>
+                {/* Nothing to send yet: record a voice message instead. */}
+                {canSend ? (
+                  <button
+                    type="button"
+                    onClick={() => handleSend()}
+                    // Keep the focus (and the keyboard) in the message box: pressing the button would otherwise take it.
+                    onMouseDown={(e) => e.preventDefault()}
+                    onTouchEnd={(e) => {
+                      e.preventDefault();
+                      handleSend();
+                    }}
+                    aria-label="Send"
+                    title="Send"
+                    className={`${btnPrimary} flex-shrink-0 h-[42px] w-[42px] p-0`}
+                  >
+                    <Icon name="chatSend" size={18} />
+                  </button>
+                ) : (
+                  <MicButton voice={voice} />
+                )}
               </div>
+              {voice.error && (
+                <p role="alert" className="text-xs text-red-500 px-1">
+                  {voice.error}
+                </p>
+              )}
             </div>
           </>
         ) : (
