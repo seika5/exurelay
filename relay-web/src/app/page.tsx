@@ -1,5 +1,6 @@
 "use client";
 
+import { flushSync } from "react-dom";
 import { useState, useMemo, useEffect, useLayoutEffect, useRef, useCallback } from "react";
 import { useIdentity } from "@/context/IdentityContext";
 import { useCall } from "@/context/CallContext";
@@ -246,6 +247,28 @@ function Chat() {
     [directoryLoaded, identity?.keyHash, getMember]
   );
   // Reactions: the desktop picker (which message, where its button is) and the phone's press-and-hold sheet.
+  // Message times say "today" by leaving the date off: redraw at midnight (and on coming back to the app), so
+  // yesterday's messages get their date even if the chat stays open across it.
+  const [, setDay] = useState(() => new Date().toDateString());
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout>;
+    const check = () => setDay(new Date().toDateString());
+    const schedule = () => {
+      const next = new Date();
+      next.setHours(24, 0, 1, 0);
+      timer = setTimeout(() => {
+        check();
+        schedule();
+      }, next.getTime() - Date.now());
+    };
+    schedule();
+    document.addEventListener("visibilitychange", check);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener("visibilitychange", check);
+    };
+  }, []);
+
   const [reactPicker, setReactPicker] = useState<{ id: string; anchor: DOMRect } | null>(null);
   const [sheetFor, setSheetFor] = useState<string | null>(null);
   // The message a finger is on (shaded, like a pressed chat in the list), until it lifts or the menu closes.
@@ -388,10 +411,40 @@ function Chat() {
     newLine.current = { for: openId, at: i < 0 ? null : filteredMessages[i].messageId, mark };
   }
   const newLineAt = newLine.current.for === openId ? newLine.current.at : null;
+  // The line goes once you've caught up: back at the bottom after being away from it (opening at the line counts as
+  // away), or after sending. Leaving the chat clears it too (the next opening starts from the new read mark).
+  const [newLineDone, setNewLineDone] = useState<string | null>(null);
+  const awayFromBottom = useRef(false);
+  const showNewLineAt = newLineDone === openId ? null : newLineAt;
+  // Reset per opening (awayFromBottom is set by the opening scroll below, which runs first).
+  useEffect(() => setNewLineDone(null), [openId, chatOnScreen]);
 
   // The search bar.
   const [searchOpen, setSearchOpen] = useState(false);
-  const closeSearch = useCallback(() => setSearchOpen(false), []);
+  // Where the chat was (distance from the bottom) when search opened, to go back to if no match was shown.
+  const beforeSearch = useRef<number | null>(null);
+  const openSearch = () => {
+    const list = messagesListRef.current;
+    beforeSearch.current = list ? list.scrollHeight - list.clientHeight - list.scrollTop : null;
+    // Rendered now, then focused inside this tap (iPhone only brings the keyboard up for that), without scrolling.
+    flushSync(() => setSearchOpen(true));
+    document.getElementById("chat-search")?.focus({ preventScroll: true });
+  };
+  const closeSearch = useCallback((at: string | null = null) => {
+    (document.activeElement as HTMLElement | null)?.blur?.();
+    setSearchOpen(false);
+    const from = beforeSearch.current;
+    beforeSearch.current = null;
+    // After the bar goes and the keyboard is down: back where you were, or the match you were looking at.
+    for (const delay of [0, 150, 400]) {
+      setTimeout(() => {
+        const list = messagesListRef.current;
+        if (!list) return;
+        if (at) list.querySelector(`[data-mid="${CSS.escape(at)}"]`)?.scrollIntoView({ block: "nearest" });
+        else if (from !== null) list.scrollTop = list.scrollHeight - list.clientHeight - from;
+      }, delay);
+    }
+  }, []);
   useEffect(() => {
     setSearchOpen(false);
   }, [selected]);
@@ -586,6 +639,8 @@ function Chat() {
     lastTopRef.current = list.scrollTop;
     setFar(fromBottomRef.current > list.clientHeight);
     setAwaySince((a) => (wasAtBottomRef.current ? null : a ?? filteredMessages.reduce((n, m) => Math.max(n, m.sentAt), 0)));
+    if (fromBottomRef.current > 40) awayFromBottom.current = true;
+    else if (fromBottomRef.current <= 8 && awayFromBottom.current && newLineAt) setNewLineDone(openId);
   };
 
   // Keep things in place when sizes change, so nothing slides off the bottom:
@@ -676,6 +731,7 @@ function Chat() {
       setFar(fromBottomRef.current > list.clientHeight);
       // Opened at the line: the button counts the unread below it.
       setAwaySince(wasAtBottomRef.current ? null : newLine.current.mark);
+      awayFromBottom.current = !wasAtBottomRef.current;
     };
     place();
     // Again once the browser has laid it all out (the bottom scroll always waited a frame).
@@ -906,8 +962,10 @@ function Chat() {
       endEdit(true);
       return;
     }
-    // Sending always brings you to the bottom, where the new message shows (replying from further up included).
+    // Sending always brings you to the bottom, where the new message shows (replying from further up included),
+    // and means you've caught up: the "New" line goes.
     wasAtBottomRef.current = true;
+    setNewLineDone(openId);
     requestAnimationFrame(() => {
       const list = messagesListRef.current;
       if (list) list.scrollTop = list.scrollHeight;
@@ -1263,7 +1321,7 @@ function Chat() {
                   // After a press and hold opened a popup, end the touch here: otherwise iPhone keeps the gesture going
                   // and eats the next tap (Cancel needed two).
                   onTouchEnd={(e) => longPressActivated.current && e.preventDefault()}
-                  className={`w-full text-left px-3 py-2.5 text-sm truncate transition-colors ${isSelected ? "[background-color:color-mix(in_srgb,var(--accent)_30%,transparent)]" : "hover:bg-[var(--border)] active:bg-[var(--border)]"} ${isInactive(conv) ? "opacity-50" : ""}`}
+                  className={`w-full text-left px-3 py-2.5 text-sm truncate transition-colors ${isSelected ? "md:[background-color:color-mix(in_srgb,var(--accent)_30%,transparent)] active:bg-[var(--border)]" : "hover:bg-[var(--border)] active:bg-[var(--border)]"} ${isInactive(conv) ? "opacity-50" : ""}`}
                 >
                   <span className="flex items-center gap-2">
                     {conv.type === "dm" ? (
@@ -1313,7 +1371,7 @@ function Chat() {
                   // After a press and hold opened a popup, end the touch here: otherwise iPhone keeps the gesture going
                   // and eats the next tap (Cancel needed two).
                   onTouchEnd={(e) => longPressActivated.current && e.preventDefault()}
-                  className={`w-full text-left px-3 py-2.5 text-sm truncate transition-colors ${isSelected ? "[background-color:color-mix(in_srgb,var(--accent)_30%,transparent)]" : "hover:bg-[var(--border)] active:bg-[var(--border)]"}`}
+                  className={`w-full text-left px-3 py-2.5 text-sm truncate transition-colors ${isSelected ? "md:[background-color:color-mix(in_srgb,var(--accent)_30%,transparent)] active:bg-[var(--border)]" : "hover:bg-[var(--border)] active:bg-[var(--border)]"}`}
                 >
                   <span className="flex items-center gap-2">
                     <Avatar keyHash={c.keyHash} name={getDisplayName(c.keyHash)} className="-my-0.5 h-6 w-6 text-xs" />
@@ -1392,7 +1450,7 @@ function Chat() {
                   </span>
                 </button>
               </div>
-              <IconButton icon="chatSearch" label="Search" onClick={() => setSearchOpen((o) => !o)} />
+              <IconButton icon="chatSearch" label="Search" onClick={() => (searchOpen ? closeSearch() : openSearch())} />
               {selected.type === "group" && !selectedInactive && (
                 <IconButton icon="chatMembers" label="Members" onClick={() => setMembersOpen(true)} />
               )}
@@ -1430,7 +1488,7 @@ function Chat() {
                 <li className="py-8 text-sm text-center text-[var(--muted)]">No messages yet.</li>
               )}
               {/* Each message, after the "New" line if it's the first unread one. */}
-              {filteredMessages.map((m, i) => [m.messageId === newLineAt && <NewLine key="new-line" />, (() => {
+              {filteredMessages.map((m, i) => [m.messageId === showNewLineAt && <NewLine key="new-line" />, (() => {
                 const prev = i > 0 ? filteredMessages[i - 1] : undefined;
 
                 // System messages: call events and group renames
@@ -1972,8 +2030,12 @@ function Chat() {
               const shown = groupIconValue ?? groupIcons.get(conversationId(groupRenameModal, me));
               return (
                 <div className="flex items-center gap-3">
-                  <label className="cursor-pointer" aria-label="Choose group picture" title="Choose group picture">
+                  <label className="relative cursor-pointer" aria-label="Choose group picture" title="Choose group picture">
                     <GroupIcon src={shown || undefined} className="h-14 w-14" size={26} />
+                    {/* The same pen as on your own picture: tap to change it. */}
+                    <span className="absolute -bottom-0.5 -right-0.5 flex h-6 w-6 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface)] text-[var(--text)]">
+                      <Icon name="chatPencil" size={12} />
+                    </span>
                     <input
                       type="file"
                       accept="image/*"
