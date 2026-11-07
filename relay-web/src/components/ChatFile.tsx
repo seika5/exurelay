@@ -5,6 +5,7 @@ import { useDoubleTap } from "@/lib/doubleTap";
 import { getQuickEmoji } from "@/lib/emoji";
 import { createPortal } from "react-dom";
 import { Icon, IconButton } from "@/components/icons";
+import { isVoiceName } from "@/lib/voice";
 
 type Kind = "image" | "video" | "audio" | null;
 
@@ -21,12 +22,19 @@ const MIME: Record<string, string> = {
 
 /** Photos, videos and audio the app can show itself. SVG isn't one: it can carry code, so it stays a download. */
 export function mediaKind(filename: string): Kind {
+  // A recorded voice message in WebM is sound only.
+  if (isVoiceName(filename)) return "audio";
   return KINDS[filename.split(".").pop()?.toLowerCase() ?? ""] ?? null;
 }
 
+const mimeFor = (name: string) => {
+  const ext = name.split(".").pop()?.toLowerCase() ?? "";
+  return isVoiceName(name) && ext === "webm" ? "audio/webm" : MIME[ext] ?? "";
+};
+
 /**
  * A file in a message. Photos, videos and audio get a Show button next to Download, and show here. The file's data is
- * only turned into something viewable when Show is pressed.
+ * only turned into something viewable when Show is pressed, except a voice message's, whose player shows at once.
  */
 export function ChatFile({
   name,
@@ -68,10 +76,16 @@ export function ChatFile({
     setFailed(false);
     if (!url) {
       const bin = Uint8Array.from(atob(body), (c) => c.charCodeAt(0));
-      setUrl(URL.createObjectURL(new Blob([bin], { type: MIME[name.split(".").pop()?.toLowerCase() ?? ""] ?? "" })));
+      setUrl(URL.createObjectURL(new Blob([bin], { type: mimeFor(name) })));
     }
     setShown(true);
   };
+  // Voice messages are there to be played: the player shows at once, with no Show button.
+  const voice = kind === "audio" && isVoiceName(name);
+  useEffect(() => {
+    if (voice) show();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [voice]);
   const open = shown && !!url && !failed;
 
 
@@ -119,6 +133,7 @@ export function ChatFile({
           <span className="min-w-0 truncate">{name}</span>
           {size && <span className="shrink-0 text-xs text-[var(--muted)]">· {size}</span>}
           {kind &&
+            !voice &&
             (open ? (
               <IconButton icon="chatHide" label={`Hide ${name}`} onClick={(e) => { soon(e); setShown(false); }} />
             ) : (
