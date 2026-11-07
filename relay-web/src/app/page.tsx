@@ -1312,7 +1312,8 @@ function Chat() {
                   // Pasted photos and files are attached (not their names pasted as text).
                   onPaste={(e) => {
                     const files = Array.from(e.clipboardData?.files ?? []);
-                    if (!files.length) return;
+                    // Text wins: Word and Excel put a picture of the copied text on the clipboard too.
+                    if (!files.length || e.clipboardData.getData("text/plain").trim()) return;
                     e.preventDefault();
                     addFiles(files);
                   }}
