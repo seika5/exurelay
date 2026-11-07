@@ -85,6 +85,7 @@ const PATHS = {
     </>
   ),
   chatCopy: <path d="M9 9h10v11H9zM5 15H4V4h11v1" />,
+  chatReply: <path d="M10 5L4 11l6 6M4 11h10a6 6 0 0 1 6 6v2" />,
   chatShow: (
     <>
       <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z" />

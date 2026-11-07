@@ -11,8 +11,11 @@ import { expired, type CachedMessage } from "./messageCache";
 export const HISTORY_BATCH_BYTES = 192 * 1024;
 export const HISTORY_TOTAL_BYTES = 2 * 1024 * 1024;
 
-/** Kinds copied as they are; files go without their contents; device_sync and history themselves never. */
-const COPIED = new Set(["text", "file", "contact", "call_event", "group_rename", "plugin"]);
+/**
+ * Kinds copied as they are; files go without their contents; device_sync and history themselves never. Edits and
+ * deletes go too, so the new device shows messages as they are now.
+ */
+const COPIED = new Set(["text", "file", "contact", "call_event", "group_rename", "plugin", "edit", "delete"]);
 
 export type HistoryPlan = {
   batches: CachedMessage[][];
