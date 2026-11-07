@@ -40,7 +40,9 @@ export function Modal({
   return (
     <div
       className={`fixed inset-0 z-30 bg-black/60 flex justify-center ${compact ? "items-center p-4" : "sm:items-start sm:p-4 sm:pt-[8vh]"}`}
-      onMouseDown={(e) => e.target === e.currentTarget && close.current()}
+      // A pointer down, not a mouse down: lifting the finger from a press and hold (which can open this) sends a
+      // mouse down to whatever is under it, and that mustn't close it.
+      onPointerDown={(e) => e.target === e.currentTarget && close.current()}
     >
       <div
         ref={card}
@@ -106,7 +108,7 @@ export function ConfirmHost() {
     setReq(null);
   };
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onMouseDown={(e) => e.target === e.currentTarget && answer(false)}>
+    <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onPointerDown={(e) => e.target === e.currentTarget && answer(false)}>
       <div
         role="alertdialog"
         aria-modal="true"

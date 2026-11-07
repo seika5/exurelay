@@ -82,3 +82,15 @@ export function AvatarPicker() {
     </div>
   );
 }
+
+/** A group's picture, or the members icon on a plain circle when it has none. */
+export function GroupIcon({ src, className = "h-8 w-8", size = 16 }: { src?: string; className?: string; size?: number }) {
+  return src ? (
+    // eslint-disable-next-line @next/next/no-img-element -- a data URL, nothing for next/image to optimize
+    <img src={src} alt="" aria-hidden="true" draggable={false} className={`shrink-0 rounded-full object-cover select-none ${className}`} />
+  ) : (
+    <span aria-hidden="true" className={`shrink-0 rounded-full bg-[var(--border)] inline-flex items-center justify-center text-[var(--muted)] ${className}`}>
+      <Icon name="chatMembers" size={size} />
+    </span>
+  );
+}

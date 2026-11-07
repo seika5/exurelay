@@ -4,7 +4,7 @@
 
 import "fake-indexeddb/auto";
 import { describe, it, expect } from "vitest";
-import { appCacheKey, deleteMessages, expired, loadCache, saveMeta, saveMessages, wipeCache, type CachedMessage } from "../messageCache";
+import { appCacheKey, deleteMessages, expired, loadCache, loadGroupInfo, saveGroupInfo, saveMeta, saveMessages, wipeCache, type CachedMessage } from "../messageCache";
 import { CACHE_MESSAGES, run } from "../keystore";
 
 const msg = (id: string, expiresAt = Date.now() + 86_400_000): CachedMessage => ({
@@ -66,5 +66,21 @@ describe("message cache", () => {
     const now = 1_000 * 86_400_000;
     expect(expired(msg("x", now - 6 * 86_400_000), 7, now)).toBe(false);
     expect(expired(msg("x", now - 8 * 86_400_000), 7, now)).toBe(true);
+  });
+});
+
+describe("group names and pictures kept on the device", () => {
+  it("round-trip encrypted, survive saving the sync state, and go when the identity leaves", async () => {
+    const key = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+    const other = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+    const info = { "group:g1": { name: "Trio", nameAt: 5, icon: "data:image/png;base64,AAAA", iconAt: 6 } };
+    await saveGroupInfo("own-g", key, info);
+    await saveMeta("own-g", key, { cursor: "3", read: {} });
+    expect(await loadGroupInfo("own-g", key)).toEqual(info);
+    expect(await loadGroupInfo("own-g", other)).toEqual({});
+    await wipeCache("own-g", "sync");
+    expect(await loadGroupInfo("own-g", key)).toEqual(info);
+    await wipeCache("own-g", "all");
+    expect(await loadGroupInfo("own-g", key)).toEqual({});
   });
 });

@@ -88,6 +88,27 @@ export async function saveMeta(owner: string, key: CryptoKey, meta: CacheMeta): 
   await run("readwrite", (s) => s.put(record), CACHE_META);
 }
 
+/**
+ * Each group's latest name and picture, with when they were set, so they outlast the messages that set them (those
+ * expire like any other). Dropped for a group once none of its messages are left (page.tsx).
+ */
+export type GroupInfo = Record<string, { name?: string; nameAt?: number; icon?: string; iconAt?: number }>;
+
+export async function loadGroupInfo(owner: string, key: CryptoKey): Promise<GroupInfo> {
+  const record = await run<MetaRecord | undefined>("readonly", (s) => s.get(`${owner}|groups`), CACHE_META);
+  if (!record) return {};
+  try {
+    return await open<GroupInfo>(key, `${owner}|groups`, record);
+  } catch {
+    return {};
+  }
+}
+
+export async function saveGroupInfo(owner: string, key: CryptoKey, info: GroupInfo): Promise<void> {
+  const record: MetaRecord = { owner: `${owner}|groups`, ...(await seal(key, `${owner}|groups`, info)) };
+  await run("readwrite", (s) => s.put(record), CACHE_META);
+}
+
 export async function deleteMessages(owner: string, messageIds: string[]): Promise<void> {
   for (const m of messageIds) await run("readwrite", (s) => s.delete(recordId(owner, m)), CACHE_MESSAGES);
 }
@@ -100,6 +121,7 @@ export async function wipeCache(owner: string, scope: "messages" | "sync" | "all
   const ids = await run<IDBValidKey[]>("readonly", (s) => s.index("owner").getAllKeys(owner), CACHE_MESSAGES);
   for (const id of ids) await run("readwrite", (s) => s.delete(id), CACHE_MESSAGES);
   if (scope !== "messages") await run("readwrite", (s) => s.delete(owner), CACHE_META);
+  if (scope === "all") await run("readwrite", (s) => s.delete(`${owner}|groups`), CACHE_META);
   if (scope === "all") await run("readwrite", (s) => s.delete(owner), CACHE_KEYS);
 }
 

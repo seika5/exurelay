@@ -39,12 +39,12 @@ import { draftFromBody, replyTarget } from "@/lib/messageActions";
 import { getQuickEmoji } from "@/lib/emoji";
 import { ScrollList } from "@/components/ScrollList";
 import { ChatSearch } from "@/components/ChatSearch";
-import { MuteMenu } from "@/components/MuteMenu";
-import { muteLabel, useMutes } from "@/lib/mute";
 import { firstUnreadIndex } from "@/lib/chatView";
 import { GroupMembers } from "@/components/GroupMembers";
 import { groupFields, membershipChange, newGroupId } from "@/lib/groups";
-import { Avatar } from "@/components/Avatar";
+import { Avatar, GroupIcon } from "@/components/Avatar";
+import { encodeAvatar, isAvatarData } from "@/lib/avatar";
+import { loadGroupInfo, saveGroupInfo, type GroupInfo } from "@/lib/messageCache";
 
 const GROUP_BREAK_MS = 10 * 60 * 1000;
 
@@ -231,6 +231,9 @@ function Chat() {
   const [addingServer, setAddingServer] = useState(false);
   const [groupRenameModal, setGroupRenameModal] = useState<Conversation | null>(null);
   const [groupRenameValue, setGroupRenameValue] = useState("");
+  // The picture in the Edit group popup: undefined unchanged, "" removed, or a new one.
+  const [groupIconValue, setGroupIconValue] = useState<string | undefined>(undefined);
+  const [groupIconError, setGroupIconError] = useState<string | null>(null);
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   // The chat screen is pinned to the area above the keyboard (useVisibleViewport.ts).
   const visible = useVisibleViewport();
@@ -386,20 +389,11 @@ function Chat() {
   }
   const newLineAt = newLine.current.for === openId ? newLine.current.at : null;
 
-  // Muted chats (this device only): no white dot. Mentions, calls and rings still show yellow and still notify.
-  const { mutedUntil, setMute } = useMutes();
-  const isMutedConv = useCallback(
-    (c: Conversation) => !!identity && mutedUntil(conversationId(c, identity.keyHash)) !== undefined,
-    [identity, mutedUntil]
-  );
-  // The header's mute menu (on phones the "more" menu, with Search in it too), and the search bar.
-  const [chatMenu, setChatMenu] = useState<{ anchor: DOMRect; more: boolean } | null>(null);
-  const closeChatMenu = useCallback(() => setChatMenu(null), []);
+  // The search bar.
   const [searchOpen, setSearchOpen] = useState(false);
   const closeSearch = useCallback(() => setSearchOpen(false), []);
   useEffect(() => {
     setSearchOpen(false);
-    setChatMenu(null);
   }, [selected]);
   // What search looks through: text messages as you read them (mentions as @names).
   const searchItems = useMemo(
@@ -486,24 +480,67 @@ function Chat() {
     [identity, readMarks, messages, rings, mentionsMeNow]
   );
 
-  const groupNamesFromMessages = useMemo(() => {
-    const map = new Map<string, string>();
+  // Group names and pictures. The messages that set them expire like any other, so each device also keeps the latest
+  // of each (encrypted, messageCache.ts GroupInfo) and uses whichever is newer. A group's entry goes once none of its
+  // messages are left, so a quiet group still disappears as usual.
+  const [groupInfo, setGroupInfo] = useState<GroupInfo>({});
+  const groupInfoLoaded = useRef(false);
+  useEffect(() => {
+    groupInfoLoaded.current = false;
+    if (!identity || !cacheKey) return;
+    let live = true;
+    loadGroupInfo(identity.keyHash, cacheKey).then((info) => {
+      if (!live) return;
+      setGroupInfo(info);
+      groupInfoLoaded.current = true;
+    }, () => {});
+    return () => {
+      live = false;
+    };
+  }, [identity?.keyHash, cacheKey]);
+
+  const groupDetails = useMemo(() => {
+    const map = new Map<string, GroupInfo[string]>();
     if (!identity) return map;
     for (const conv of conversations) {
       if (conv.type !== "group") continue;
       const cid = conversationId(conv, identity.keyHash);
-      // Renames, and the name a membership change carries (how someone added later learns it).
-      const named = messages.filter(
-        (m) =>
-          (m.type === "group_rename" || (m.type === "group_members" && typeof m.name === "string" && m.name.trim())) &&
-          messageBelongsToConversation(m, conv, identity.keyHash)
+      const own = messages.filter(
+        (m) => (m.type === "group_rename" || m.type === "group_members") && messageBelongsToConversation(m, conv, identity.keyHash)
       );
-      const last = [...named].sort((a, b) => b.sentAt - a.sentAt)[0];
-      if (last?.type === "group_rename") map.set(cid, last.newName);
-      else if (last?.type === "group_members" && last.name) map.set(cid, last.name.slice(0, 100));
+      const d: GroupInfo[string] = { ...groupInfo[cid] };
+      for (const m of own) {
+        // Renames, and what a membership change carries (how someone added later learns them).
+        const name = m.type === "group_rename" ? m.newName : m.type === "group_members" && typeof m.name === "string" && m.name.trim() ? m.name.slice(0, 100) : undefined;
+        if (name !== undefined && m.sentAt > (d.nameAt ?? 0)) Object.assign(d, { name, nameAt: m.sentAt });
+        const icon = (m.type === "group_rename" || m.type === "group_members") && typeof m.icon === "string" ? m.icon : undefined;
+        if (icon !== undefined && (icon === "" || isAvatarData(icon)) && m.sentAt > (d.iconAt ?? 0)) Object.assign(d, { icon, iconAt: m.sentAt });
+      }
+      map.set(cid, d);
     }
     return map;
-  }, [conversations, messages, identity?.keyHash]);
+  }, [conversations, messages, identity?.keyHash, groupInfo]);
+
+  // Keep the saved copy current, and only for groups that still have messages here.
+  useEffect(() => {
+    if (!identity || !cacheKey || !cacheReady || !groupInfoLoaded.current) return;
+    const next: GroupInfo = {};
+    for (const [cid, d] of groupDetails) if (d.name !== undefined || d.icon !== undefined) next[cid] = d;
+    if (JSON.stringify(next) === JSON.stringify(groupInfo)) return;
+    setGroupInfo(next);
+    saveGroupInfo(identity.keyHash, cacheKey, next).catch(() => {});
+  }, [groupDetails, groupInfo, identity?.keyHash, cacheKey, cacheReady]);
+
+  const groupNamesFromMessages = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const [cid, d] of groupDetails) if (d.name) map.set(cid, d.name);
+    return map;
+  }, [groupDetails]);
+  const groupIcons = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const [cid, d] of groupDetails) if (d.icon) map.set(cid, d.icon);
+    return map;
+  }, [groupDetails]);
 
   // A ring while the app is open (sw.js): mark that chat, so it shows yellow until it's seen.
   const ringTargets = useRef({ conversations, groupNamesFromMessages });
@@ -811,32 +848,18 @@ function Chat() {
     setInput(text);
     setPicked(was);
     setMentionQuery(null);
-    editScroll.current = messagesListRef.current?.scrollTop ?? null;
     focusComposer(text.length);
-    keepInView(m.messageId);
   };
 
-  // Where the chat was scrolled when an edit started: saving or cancelling puts it back there, keyboard down.
-  const editScroll = useRef<number | null>(null);
-  const endEdit = () => {
-    const top = editScroll.current;
-    editScroll.current = null;
+  /** An edit ends like a reply: nothing moves while you edit; saving goes to the bottom, like a send. Keyboard down. */
+  const endEdit = (saved = false) => {
     composerRef.current?.blur();
-    if (top === null) return;
-    // After the box shrinks back and the keyboard goes down.
-    for (const delay of [0, 120, 400]) {
-      setTimeout(() => {
-        const list = messagesListRef.current;
-        if (list) list.scrollTop = top;
-      }, delay);
-    }
-  };
-
-  /** Once the message box has grown (or the keyboard is up), bring this message back into view if it went out. */
-  const keepInView = (id: string) => {
-    for (const delay of [50, 350]) {
-      setTimeout(() => messagesListRef.current?.querySelector(`[data-mid="${CSS.escape(id)}"]`)?.scrollIntoView({ block: "nearest" }), delay);
-    }
+    if (!saved) return;
+    wasAtBottomRef.current = true;
+    requestAnimationFrame(() => {
+      const list = messagesListRef.current;
+      if (list) list.scrollTop = list.scrollHeight;
+    });
   };
 
   const deleteMessage = async (m: DecryptedMessage) => {
@@ -880,7 +903,7 @@ function Chat() {
       if (text && target?.type === "text" && text !== shownBody(target)) {
         sendAction({ type: "edit", target: target.messageId, body: text, mentions: mentions.length ? mentions : undefined });
       }
-      endEdit();
+      endEdit(true);
       return;
     }
     // Sending always brings you to the bottom, where the new message shows (replying from further up included).
@@ -973,6 +996,7 @@ function Chat() {
     } else {
       setGroupRenameModal(conv);
       setGroupRenameValue(groupNamesFromMessages.get(conversationId(conv, identity.keyHash)) || "Group Chat");
+      setGroupIconValue(undefined);
     }
   };
 
@@ -1000,13 +1024,18 @@ function Chat() {
   const closeGroupRename = useCallback(() => {
     setGroupRenameModal(null);
     setGroupRenameValue("");
+    setGroupIconValue(undefined);
+    setGroupIconError(null);
   }, []);
 
   const saveGroupRename = async () => {
     if (!identity || groupRenameModal?.type !== "group") return;
+    const cid = conversationId(groupRenameModal, identity.keyHash);
     const newName = groupRenameValue.trim() || "Group Chat";
+    const iconChanged = groupIconValue !== undefined && groupIconValue !== (groupIcons.get(cid) ?? "");
+    if (newName === (groupNamesFromMessages.get(cid) || "Group Chat") && !iconChanged) return closeGroupRename();
     await sendMessage(
-      { type: "group_rename", newName, ...groupFields(groupRenameModal) } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
+      { type: "group_rename", newName, ...(iconChanged ? { icon: groupIconValue } : {}), ...groupFields(groupRenameModal) } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
       groupRenameModal.memberKeyHashes.filter((k) => k !== identity.keyHash)
     );
     closeGroupRename();
@@ -1017,8 +1046,9 @@ function Chat() {
     if (!identity || selected?.type !== "group") return;
     const { message, recipients } = membershipChange(selected, change);
     const name = groupNamesFromMessages.get(conversationId(selected, identity.keyHash));
+    const icon = groupIcons.get(conversationId(selected, identity.keyHash));
     sendMessage(
-      { ...message, ...(name ? { name } : {}) } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
+      { ...message, ...(name ? { name } : {}), ...(icon ? { icon } : {}) } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
       recipients.filter((k) => k !== identity.keyHash && stillHere(k))
     ).catch(() => {});
   };
@@ -1239,17 +1269,11 @@ function Chat() {
                     {conv.type === "dm" ? (
                       <Avatar keyHash={conv.otherKeyHash} name={getDisplayName(conv.otherKeyHash)} className="-my-0.5 h-6 w-6 text-xs" />
                     ) : (
-                      <span aria-hidden="true" className="-my-0.5 h-6 w-6 shrink-0 rounded-full bg-[var(--border)] inline-flex items-center justify-center text-[var(--muted)]">
-                        <Icon name="chatMembers" size={14} />
-                      </span>
+                      <GroupIcon src={identity ? groupIcons.get(conversationId(conv, identity.keyHash)) : undefined} className="-my-0.5 h-6 w-6" size={14} />
                     )}
                     <span className="truncate">{conversationLabel(conv, me, getDisplayName, groupNamesFromMessages, stillHere)}</span>
                     {unreadMentions(conv) > 0 ? (
                       <span className="ml-auto shrink-0 h-2.5 w-2.5 rounded-full bg-amber-400" role="img" aria-label="Unread mention" />
-                    ) : isMutedConv(conv) ? (
-                      <span className="ml-auto shrink-0 text-[var(--muted)]" role="img" aria-label="Muted">
-                        <Icon name="chatMuted" size={14} />
-                      </span>
                     ) : (
                       hasUnread(conv) && <span className="ml-auto shrink-0 h-2.5 w-2.5 rounded-full bg-white" role="img" aria-label="Unread" />
                     )}
@@ -1341,11 +1365,11 @@ function Chat() {
             >
               <span className="md:hidden -ml-1 flex relative">
                 <IconButton icon="chatBack" label="Back to chat list" onClick={() => setSidebarVisible(true)} />
-                {/* Something new in another chat: white (not from a muted one), or yellow if it mentions you. */}
+                {/* Something new in another chat: white, or yellow if it mentions you. */}
                 {(() => {
                   const others = listed.filter((c) => !selected || conversationId(c, identity?.keyHash ?? "") !== conversationId(selected, identity?.keyHash ?? ""));
                   const mention = others.some((c) => unreadMentions(c) > 0);
-                  if (!mention && !others.some((c) => !isMutedConv(c) && hasUnread(c))) return null;
+                  if (!mention && !others.some(hasUnread)) return null;
                   return (
                     <span
                       className={`pointer-events-none absolute -top-0.5 -right-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-[var(--bg)] ${mention ? "bg-amber-400" : "bg-white"}`}
@@ -1359,7 +1383,7 @@ function Chat() {
                 <button
                   type="button"
                   onClick={() => openRename(selected)}
-                  title={selected.type === "dm" ? "Set nickname" : "Rename group"}
+                  title={selected.type === "dm" ? "Set nickname" : "Edit group"}
                   className={`${btn} min-w-0 max-w-full justify-start font-medium`}
                 >
                   <span className="truncate">{conversationLabel(selected, me, getDisplayName, groupNamesFromMessages, stillHere)}</span>
@@ -1368,31 +1392,7 @@ function Chat() {
                   </span>
                 </button>
               </div>
-              {/* Search and mute: their own icons on larger screens; on phones, behind "more" (no room for both). */}
-              {(() => {
-                const until = mutedUntil(conversationId(selected, me));
-                const toggle = (more: boolean) => (e: React.MouseEvent<HTMLButtonElement>) => {
-                  const anchor = e.currentTarget.getBoundingClientRect();
-                  setChatMenu((m) => (m ? null : { anchor, more }));
-                };
-                return (
-                  <>
-                    <span className="hidden md:flex items-center gap-2">
-                      <IconButton icon="chatSearch" label="Search" onClick={() => setSearchOpen((o) => !o)} />
-                      <span className="flex" data-menu-anchor>
-                        <IconButton
-                          icon={until !== undefined ? "chatMuted" : "callBell"}
-                          label={until !== undefined ? muteLabel(until, Date.now()) : "Mute"}
-                          onClick={toggle(false)}
-                        />
-                      </span>
-                    </span>
-                    <span className="md:hidden flex" data-menu-anchor>
-                      <IconButton icon="chatMore" label="More" onClick={toggle(true)} />
-                    </span>
-                  </>
-                );
-              })()}
+              <IconButton icon="chatSearch" label="Search" onClick={() => setSearchOpen((o) => !o)} />
               {selected.type === "group" && !selectedInactive && (
                 <IconButton icon="chatMembers" label="Members" onClick={() => setMembersOpen(true)} />
               )}
@@ -1444,10 +1444,17 @@ function Chat() {
                   );
                 }
 
+                const groupLine = (r: typeof m & { type: "group_rename" }) => {
+                  const was = filteredMessages.slice(0, i).reverse().find((x) => x.type === "group_rename" && x.newName) as (typeof r) | undefined;
+                  const renamed = !was || was.newName !== r.newName;
+                  const pic = r.icon === undefined ? null : r.icon ? "changed the group picture" : "removed the group picture";
+                  const parts = [renamed ? `renamed the group to ${r.newName}` : null, pic].filter(Boolean);
+                  return `${senderName(r.senderKeyHash)} ${parts.length ? parts.join(" and ") : `renamed the group to ${r.newName}`}`;
+                };
                 if (m.type === "group_rename") {
                   return (
                     <li key={i} className="text-xs text-center text-[var(--muted)] py-2 italic">
-                      {senderName(m.senderKeyHash)} renamed the group to {m.newName}
+                      {groupLine(m)}
                     </li>
                   );
                 }
@@ -1882,15 +1889,6 @@ function Chat() {
         </Modal>
       )}
 
-      {chatMenu && selected && (
-        <MuteMenu
-          anchor={chatMenu.anchor}
-          until={mutedUntil(conversationId(selected, me))}
-          onMute={(until) => setMute(conversationId(selected, me), until)}
-          onSearch={chatMenu.more ? () => setSearchOpen(true) : undefined}
-          onClose={closeChatMenu}
-        />
-      )}
       {reactPicker && (
         <ReactionPopover anchor={reactPicker.anchor} onPick={(e) => toggleReaction(reactPicker.id, e)} onClose={closePicker} />
       )}
@@ -1962,7 +1960,7 @@ function Chat() {
       )}
 
       {groupRenameModal && groupRenameModal.type === "group" && (
-        <Modal title="Rename group" onClose={closeGroupRename} closeLabel={null} compact>
+        <Modal title="Edit group" onClose={closeGroupRename} closeLabel={null} compact>
           <form
             className="flex flex-col gap-3"
             onSubmit={(e) => {
@@ -1970,6 +1968,35 @@ function Chat() {
               saveGroupRename();
             }}
           >
+            {(() => {
+              const shown = groupIconValue ?? groupIcons.get(conversationId(groupRenameModal, me));
+              return (
+                <div className="flex items-center gap-3">
+                  <label className="cursor-pointer" aria-label="Choose group picture" title="Choose group picture">
+                    <GroupIcon src={shown || undefined} className="h-14 w-14" size={26} />
+                    <input
+                      type="file"
+                      accept="image/*"
+                      aria-label="Group picture file"
+                      className="sr-only"
+                      onChange={async (e) => {
+                        const f = e.target.files?.[0];
+                        e.target.value = "";
+                        if (!f) return;
+                        setGroupIconError(null);
+                        try {
+                          setGroupIconValue(await encodeAvatar(f));
+                        } catch {
+                          setGroupIconError("Couldn't read that image");
+                        }
+                      }}
+                    />
+                  </label>
+                  {shown && <IconButton icon="trash" label="Remove group picture" danger onClick={() => setGroupIconValue("")} />}
+                  {groupIconError && <span className="text-xs text-red-500">{groupIconError}</span>}
+                </div>
+              );
+            })()}
             <input
               type="text"
               value={groupRenameValue}
