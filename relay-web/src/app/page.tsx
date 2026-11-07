@@ -33,7 +33,8 @@ import { PageLock, useVisibleViewport } from "@/lib/useVisibleViewport";
 import { ChatFile } from "@/components/ChatFile";
 import { AttachButton, DropOverlay, prepareFiles, useFileDrop } from "@/components/AttachMenu";
 import { MicButton, RecordingBar, useVoiceRecorder } from "@/components/VoiceRecorder";
-import { MessageSheet, ReactionChips, ReactionPopover } from "@/components/Reactions";
+import { MessageSheet, ReactionChips, ReactionPopover, type SheetAction } from "@/components/Reactions";
+import { draftFromBody, replyTarget } from "@/lib/messageActions";
 import { getQuickEmoji } from "@/lib/emoji";
 import { ScrollList } from "@/components/ScrollList";
 
@@ -152,7 +153,7 @@ function Chat() {
   } = useCall();
   // Messages need a login, which needs membership: nothing is fetched until we're enrolled on a server.
   // Wait for the cache key too, so the first sync resumes from the cached cursor instead of starting over.
-  const { messages, reactions, conversations, sendMessage, sendHistory, retrySend, cancelSend, storage, readMarks, markRead, cacheReady, loading: messagesLoading, error } = useMessages(
+  const { messages, reactions, actions, conversations, sendMessage, sendHistory, retrySend, cancelSend, storage, readMarks, markRead, cacheReady, loading: messagesLoading, error } = useMessages(
     enrolled && server && cacheKey !== undefined ? identity : null,
     useMemo(() => blobSettings(directory), [directory]),
     cacheKey ?? null,
@@ -242,6 +243,10 @@ function Chat() {
   const lastTap = useRef<{ id: string; at: number } | null>(null);
   const closePicker = useCallback(() => setReactPicker(null), []);
   const closeSheet = useCallback(() => setSheetFor(null), []);
+  // The composer's reply or edit (a messageId; one at a time), and the message a quote just jumped to.
+  const [replyingTo, setReplyingTo] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [flash, setFlash] = useState<string | null>(null);
 
   // The chats the list shows: not a DM with a removed member, nor a group that's down to just you.
   const listed = useMemo(
@@ -273,6 +278,20 @@ function Chat() {
     if (!selected || !identity) return [];
     return messages.filter((m) => messageBelongsToConversation(m, selected, identity.keyHash));
   }, [messages, selected, identity?.keyHash]);
+
+  // Every shown message by id, for reply quotes (replyTarget checks they're from the same conversation).
+  const messagesById = useMemo(() => new Map(messages.map((m) => [m.messageId, m as DecryptedMessage])), [messages]);
+  // A reply or edit belongs to the chat it was started in (and an edit's text isn't a draft for the next one).
+  const editingRef = useRef(editingId);
+  editingRef.current = editingId;
+  useEffect(() => {
+    if (editingRef.current) {
+      setInput("");
+      setPicked([]);
+    }
+    setReplyingTo(null);
+    setEditingId(null);
+  }, [selected]);
 
   /** The room of this conversation's ongoing call, if any (random, announced in the encrypted "started" message). */
   const ongoingRoom = useMemo(() => activeCallRoom(filteredMessages), [filteredMessages]);
@@ -617,6 +636,82 @@ function Chat() {
       .map((seg) => ("text" in seg ? seg.text : `@${seg.mention === EVERYONE ? "everyone" : nameFor(seg.mention)}`))
       .join("");
 
+  /** A text message's body as shown: its latest edit. */
+  const shownBody = (m: DecryptedMessage) => (m.type === "text" ? actions.edits.get(m.messageId)?.body ?? m.body : "");
+
+  /** One line about a message, for reply quotes and the composer's reply bar. */
+  const snippet = (m: DecryptedMessage) => {
+    if (m.type === "text") return plainText(shownBody(m)).replace(/\s+/g, " ");
+    if (m.type === "file") return safeFilename(m.filename || "file");
+    if (m.type === "contact") return m.name || "Contact";
+    if (m.type === "plugin") return m.fallback;
+    return "";
+  };
+
+  /** Send an edit or delete to the open conversation, like a reaction. */
+  const sendAction = (base: { type: "edit"; target: string; body: string; mentions?: string[] } | { type: "delete"; target: string }) => {
+    if (!identity || !selected) return;
+    if (selected.type === "dm") {
+      sendMessage(base as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">, [selected.otherKeyHash], { recipientKeyHash: selected.otherKeyHash });
+    } else {
+      sendMessage(
+        { ...base, groupMemberKeyHashes: selected.memberKeyHashes } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
+        selected.memberKeyHashes.filter((k) => k !== identity.keyHash && stillHere(k))
+      );
+    }
+  };
+
+  // Focused right away, still inside the tap, or iPhone won't bring the keyboard up; the caret once the text is in.
+  const focusComposer = (caret?: number) => {
+    composerRef.current?.focus({ preventScroll: true });
+    if (caret !== undefined) requestAnimationFrame(() => composerRef.current?.setSelectionRange(caret, caret));
+  };
+
+  /** Leave reply or edit mode. An edit's text goes with it. */
+  const cancelCompose = () => {
+    if (editingId) {
+      setInput("");
+      setPicked([]);
+      setMentionQuery(null);
+    }
+    setEditingId(null);
+    setReplyingTo(null);
+  };
+
+  const startReply = (m: DecryptedMessage) => {
+    if (editingId) cancelCompose();
+    setReplyingTo(m.messageId);
+    focusComposer();
+  };
+
+  /** Your text message's current text into the composer, mentions and all; Send saves it. */
+  const startEdit = (m: DecryptedMessage) => {
+    if (m.type !== "text") return;
+    const { text, picked: was } = draftFromBody(shownBody(m), nameFor);
+    setReplyingTo(null);
+    setEditingId(m.messageId);
+    setInput(text);
+    setPicked(was);
+    setMentionQuery(null);
+    focusComposer(text.length);
+  };
+
+  const deleteMessage = async (m: DecryptedMessage) => {
+    if (!(await confirmDialog("Delete this message for everyone?", { ok: "Delete", danger: true }))) return;
+    if (editingId === m.messageId) cancelCompose();
+    if (replyingTo === m.messageId) setReplyingTo(null);
+    sendAction({ type: "delete", target: m.messageId });
+  };
+
+  /** A reply's quote was tapped: bring the original into view and light it up for a moment. */
+  const jumpTo = (id: string) => {
+    const el = messagesListRef.current?.querySelector(`[data-mid="${CSS.escape(id)}"]`);
+    if (!el) return;
+    el.scrollIntoView({ block: "center", behavior: "smooth" });
+    setFlash(id);
+    setTimeout(() => setFlash((f) => (f === id ? null : f)), 1500);
+  };
+
   /** `extra`: files sent along without being attached first (a voice message). */
   const handleSend = async (extra: File[] = []) => {
     if (!identity || (!input.trim() && pendingFiles.length === 0 && extra.length === 0)) return;
@@ -631,6 +726,22 @@ function Chat() {
     // Plugins that asked may change the text first (sandboxed; at most 0.5 s each).
     const draft = plugins && input.trim() ? await plugins.beforeSend(input.trim()) : input.trim();
     const { body: text, mentions } = encodeDraft(draft, picked);
+    // A voice message sent while editing is just sent: the edit stays open.
+    if (editingId && extra.length === 0) {
+      // Saving an edit changes only the text: files picked meanwhile stay for the next message.
+      const target = messages.find((x) => x.messageId === editingId);
+      setInput("");
+      setPicked([]);
+      setMentionQuery(null);
+      setEditingId(null);
+      if (text && target?.type === "text" && text !== shownBody(target)) {
+        sendAction({ type: "edit", target: target.messageId, body: text, mentions: mentions.length ? mentions : undefined });
+      }
+      return;
+    }
+    // A reply goes on the text, or on the first file if there's no text.
+    let replyTo = replyingTo ?? undefined;
+    setReplyingTo(null);
     const files = [...pendingFiles, ...extra];
     setInput("");
     setPicked([]);
@@ -641,17 +752,18 @@ function Chat() {
     if (text) {
       if (selected?.type === "dm") {
         await sendMessage(
-          { type: "text", body: text, mentions: sentMentions } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
+          { type: "text", body: text, mentions: sentMentions, replyTo } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
           recipients,
           { recipientKeyHash: selected.otherKeyHash }
         );
       } else if (selected?.type === "group") {
         await sendMessage(
-          { type: "text", body: text, groupMemberKeyHashes: selected.memberKeyHashes, mentions: sentMentions } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
+          { type: "text", body: text, groupMemberKeyHashes: selected.memberKeyHashes, mentions: sentMentions, replyTo } as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
           recipients
         );
       }
       if (sentMentions) notifyMentions(sentMentions, recipients).catch(() => {});
+      replyTo = undefined;
     }
 
     for (const file of files) {
@@ -661,8 +773,10 @@ function Chat() {
         body,
         filename: file.name,
         fileSize: file.size,
+        replyTo,
         ...(selected?.type === "group" ? { groupMemberKeyHashes: selected.memberKeyHashes } : {}),
       };
+      replyTo = undefined;
       if (selected?.type === "dm") {
         await sendMessage(
           fileMsg as Omit<DecryptedMessage, "senderKeyHash" | "sentAt" | "messageId">,
@@ -1141,13 +1255,32 @@ function Chat() {
 
                 // Regular message
                 const grouped = isGroupedWithPrev(m, prev);
+                // Deleted for everyone: a one-line placeholder where it was, so the chat doesn't jump.
+                if (actions.deleted.has(m.messageId)) {
+                  return (
+                    <li key={i} data-mid={m.messageId} className={grouped ? "mt-0.5" : "mt-3"}>
+                      {!grouped && (
+                        <div className="flex items-baseline gap-2 mb-0.5">
+                          <span className="text-xs font-semibold text-[var(--text)]">{senderName(m.senderKeyHash)}</span>
+                          <span className="text-xs text-[var(--muted)]">{formatMsgTime(m.sentAt)}</span>
+                        </div>
+                      )}
+                      <div className="text-sm italic text-[var(--muted)]">Message deleted</div>
+                    </li>
+                  );
+                }
                 const forMe = mentionsMe(m, me);
                 const canReact = !m.outbox;
+                const mine = m.senderKeyHash === me;
+                const edit = actions.edits.get(m.messageId);
+                const quote = replyTarget(m, messagesById, me);
                 const endHold = () => holdTimer.current && clearTimeout(holdTimer.current);
+                const tool = "h-7 w-7 flex items-center justify-center rounded hover:bg-white/10";
                 return (
                   <li
                     key={i}
-                    className={`group relative ${grouped ? "mt-0.5" : "mt-3"} ${forMe ? "border-l-2 border-amber-400 bg-amber-500/5 pl-2 -ml-2" : ""}`}
+                    data-mid={m.messageId}
+                    className={`group relative rounded transition-colors duration-500 ${grouped ? "mt-0.5" : "mt-3"} ${forMe ? "border-l-2 border-amber-400 bg-amber-500/5 pl-2 -ml-2" : ""} ${flash === m.messageId ? "!bg-[var(--accent)]/20" : ""}`}
                     // Phones: press and hold for reactions and Copy (no text selection).
                     onPointerDown={(e) => {
                       // Only one finger on the message itself: not a pinch in the photo viewer (it's drawn elsewhere on the
@@ -1178,19 +1311,36 @@ function Chat() {
                     style={{ touchAction: "manipulation" }}
                     onContextMenu={(e) => window.matchMedia("(pointer: coarse)").matches && e.preventDefault()}
                   >
-                    {/* Desktop: a react button at the top right when hovering the message. */}
+                    {/* Desktop: react, reply, and for your own edit and delete, at the top right when hovering the message. */}
                     {canReact && (
-                      <button
-                        type="button"
-                        aria-label="Add reaction"
-                        title="Add reaction"
-                        onClick={(e) => setReactPicker({ id: m.messageId, anchor: e.currentTarget.getBoundingClientRect() })}
-                        className={`absolute -top-3 right-1 z-10 h-7 w-7 items-center justify-center rounded border border-[var(--border)] bg-[var(--surface)] text-[var(--text)] shadow touch:!hidden ${
-                          reactPicker?.id === m.messageId ? "flex" : "hidden group-hover:flex"
+                      <div
+                        className={`absolute -top-3 right-1 z-10 items-center rounded border border-[var(--border)] bg-[var(--surface)] text-[var(--text)] shadow touch:!hidden ${
+                          reactPicker?.id === m.messageId ? "flex" : "hidden group-hover:flex group-focus-within:flex"
                         }`}
                       >
-                        <Icon name="chatReact" />
-                      </button>
+                        <button
+                          type="button"
+                          aria-label="Add reaction"
+                          title="Add reaction"
+                          onClick={(e) => setReactPicker({ id: m.messageId, anchor: e.currentTarget.getBoundingClientRect() })}
+                          className={tool}
+                        >
+                          <Icon name="chatReact" />
+                        </button>
+                        <button type="button" aria-label="Reply" title="Reply" onClick={() => startReply(m)} className={tool}>
+                          <Icon name="chatReply" />
+                        </button>
+                        {mine && m.type === "text" && (
+                          <button type="button" aria-label="Edit" title="Edit" onClick={() => startEdit(m)} className={tool}>
+                            <Icon name="chatPencil" />
+                          </button>
+                        )}
+                        {mine && (
+                          <button type="button" aria-label="Delete" title="Delete" onClick={() => deleteMessage(m)} className={`${tool} text-red-400`}>
+                            <Icon name="trash" />
+                          </button>
+                        )}
+                      </div>
                     )}
                     {!grouped && (
                       <div className="flex items-baseline gap-2 mb-0.5">
@@ -1198,15 +1348,35 @@ function Chat() {
                         <span className="text-xs text-[var(--muted)]">{formatMsgTime(m.sentAt)}</span>
                       </div>
                     )}
+                    {quote === "missing" && (
+                      <div className="mb-0.5 border-l-2 border-[var(--border)] pl-2 text-xs italic text-[var(--muted)]">Original message not here</div>
+                    )}
+                    {quote && quote !== "missing" && (
+                      <button
+                        type="button"
+                        aria-label="Go to original message"
+                        title="Go to original message"
+                        onClick={() => jumpTo(quote.messageId)}
+                        className="mb-0.5 flex max-w-full items-baseline gap-1.5 border-l-2 border-[var(--border)] pl-2 text-left text-xs text-[var(--muted)] hover:text-[var(--text)]"
+                      >
+                        <span className="shrink-0 font-semibold">{senderName(quote.senderKeyHash)}</span>
+                        {actions.deleted.has(quote.messageId) ? <span className="italic">Message deleted</span> : <span className="min-w-0 truncate">{snippet(quote)}</span>}
+                      </button>
+                    )}
                     <div className={`text-sm ${m.outbox?.status === "sending" ? "opacity-50" : ""}`}>
                       {m.type === "text" && (
                         <MessageText
-                          body={m.body}
+                          body={edit?.body ?? m.body}
                           myKeyHash={me}
                           nameFor={nameFor}
                           inGroup={!!m.groupMemberKeyHashes}
                           fromMe={m.senderKeyHash === me}
                         />
+                      )}
+                      {edit && (
+                        <span className="ml-1 text-[11px] text-[var(--muted)]" title={`Edited ${formatMsgTime(edit.at)}`}>
+                          (edited)
+                        </span>
                       )}
                       {m.type === "file" && (
                         <ChatFile
@@ -1271,6 +1441,21 @@ function Chat() {
                   ))}
                 </div>
               )}
+              {(replyingTo || editingId) && (() => {
+                const t = filteredMessages.find((x) => x.messageId === (editingId ?? replyingTo));
+                return (
+                  <div className="flex items-center gap-2 border-l-2 border-[var(--accent)] pl-2 text-xs">
+                    <span className="text-[var(--muted)]">
+                      <Icon name={editingId ? "chatPencil" : "chatReply"} size={14} />
+                    </span>
+                    <span className="min-w-0 flex-1 truncate">
+                      <span className="font-semibold">{editingId ? "Editing message" : `Replying to ${t ? senderName(t.senderKeyHash) : "message"}`}</span>
+                      {!editingId && t && <span className="ml-1.5 text-[var(--muted)]">{snippet(t)}</span>}
+                    </span>
+                    <IconButton icon="close" label={editingId ? "Cancel editing" : "Cancel reply"} onClick={cancelCompose} />
+                  </div>
+                );
+              })()}
               <MentionPicker candidates={mentionCandidates} active={mentionActive} onPick={pickMention} />
               {voice.recording && <RecordingBar voice={voice} />}
               {/* Hidden, not removed, while recording: the message box keeps its draft and its place. */}
@@ -1303,6 +1488,11 @@ function Chat() {
                         setMentionQuery(null);
                         return;
                       }
+                    }
+                    if (e.key === "Escape" && (replyingTo || editingId)) {
+                      e.preventDefault();
+                      cancelCompose();
+                      return;
                     }
                     if (e.key === "Enter" && !e.shiftKey && !window.matchMedia("(pointer: coarse)").matches && !e.nativeEvent.isComposing) {
                       e.preventDefault();
@@ -1438,11 +1628,18 @@ function Chat() {
       )}
       {sheetFor && (() => {
         const m = filteredMessages.find((x) => x.messageId === sheetFor);
-        if (!m) return null;
+        if (!m || actions.deleted.has(m.messageId)) return null;
+        const mine = m.senderKeyHash === me;
+        const more: SheetAction[] = [
+          { label: "Reply", icon: "chatReply", onClick: () => startReply(m) },
+          ...(mine && m.type === "text" ? [{ label: "Edit", icon: "chatPencil" as const, onClick: () => startEdit(m) }] : []),
+          ...(mine ? [{ label: "Delete", icon: "trash" as const, danger: true, onClick: () => deleteMessage(m) }] : []),
+        ];
         return (
           <MessageSheet
             onReact={(e) => toggleReaction(m.messageId, e)}
-            copyText={m.type === "text" ? plainText(m.body) : null}
+            copyText={m.type === "text" ? plainText(shownBody(m)) : null}
+            actions={more}
             onClose={closeSheet}
           />
         );

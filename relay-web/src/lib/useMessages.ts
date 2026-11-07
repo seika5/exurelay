@@ -1,6 +1,7 @@
 "use client";
 
 import { tallyReactions, type Reaction } from "./reactions";
+import { tallyActions, type MessageActions } from "./messageActions";
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { ApiError, getBlobsSince, postBlobs } from "@/lib/api";
 import { createSocket } from "@/lib/socket";
@@ -202,6 +203,13 @@ export function useMessages(
     return tallyReactions([...receivedMessages, ...pending, ...outbox.map((o) => o.message).filter((m) => m.type !== "reaction")], identity.keyHash);
   }, [receivedMessages, outbox, identity]);
 
+  /** Edits and deletes for everyone, including ones still on their way. */
+  const actions = useMemo((): MessageActions => {
+    if (!identity) return { edits: new Map(), deleted: new Set() };
+    const pending = outbox.map((o) => o.message).filter((m) => !receivedMessages.some((r) => r.messageId === m.messageId));
+    return tallyActions([...receivedMessages, ...pending], identity.keyHash);
+  }, [receivedMessages, outbox, identity]);
+
   const owner = identity?.keyHash ?? null;
 
   /** Show what's kept, newest last, after dropping anything past retention (from memory and the cache). */
@@ -210,6 +218,18 @@ export function useMessages(
     const gone = [...received.current.values()].filter((c) => expired(c, days)).map((c) => c.message.messageId);
     for (const id of gone) received.current.delete(id);
     if (gone.length && owner && cacheKey) await deleteMessages(owner, gone).catch(() => {});
+    // A file its sender deleted for everyone: drop its contents here too, as Clear files does.
+    if (owner) {
+      const changed: CachedMessage[] = [];
+      for (const id of tallyActions([...received.current.values()].map((c) => c.message), owner).deleted) {
+        const c = received.current.get(id);
+        if (c?.message.type !== "file" || c.message.removed) continue;
+        const next = { ...c, message: { ...c.message, body: "", removed: true } };
+        received.current.set(id, next);
+        changed.push(next);
+      }
+      if (changed.length && cacheKey) await saveMessages(owner, cacheKey, changed).catch(() => {});
+    }
     setReceivedMessages([...received.current.values()].map((c) => c.message).sort((a, b) => a.sentAt - b.sentAt));
   }, [owner, cacheKey]);
 
@@ -666,5 +686,5 @@ export function useMessages(
     [receivedMessages, retentionDays, setRetentionDays, clearFiles, clearConversation, clearAll, resync]
   );
 
-  return { messages, reactions, conversations, loadBlobs, sendMessage, sendHistory, retrySend, cancelSend, storage, readMarks, markRead, cacheReady, loading, error };
+  return { messages, reactions, actions, conversations, loadBlobs, sendMessage, sendHistory, retrySend, cancelSend, storage, readMarks, markRead, cacheReady, loading, error };
 }

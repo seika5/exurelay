@@ -6,8 +6,8 @@ import { DEFAULT_QUICK_EMOJI, EMOJI_GROUPS, getQuickEmoji, setQuickEmoji } from 
 import { SectionTitle } from "@/components/InfoTip";
 import { useVisibleViewport } from "@/lib/useVisibleViewport";
 import type { Reaction } from "@/lib/reactions";
-import { Icon } from "@/components/icons";
-import { btn, field } from "@/components/ui";
+import { Icon, type IconName } from "@/components/icons";
+import { btn, btnDanger, field } from "@/components/ui";
 import { EMOJI_NAMES } from "@/lib/emojiNames";
 
 /**
@@ -146,18 +146,23 @@ export function ReactionPopover({ anchor, onPick, onClose }: { anchor: DOMRect; 
   );
 }
 
+/** An action the sheet offers below Copy (Reply, Edit, Delete). The sheet closes first. */
+export type SheetAction = { label: string; icon: IconName; onClick: () => void; danger?: boolean };
+
 /**
  * Phone: what press and hold on a message brings up from the bottom. Five quick reactions, a button for every emoji,
- * and Copy (for text).
+ * Copy (for text), and any `actions`.
  */
 export function MessageSheet({
   onReact,
   copyText,
+  actions = [],
   onClose,
 }: {
   onReact: (emoji: string) => void;
   /** The message's text, if it has any to copy. */
   copyText: string | null;
+  actions?: SheetAction[];
   onClose: () => void;
 }) {
   const [all, setAll] = useState(false);
@@ -217,6 +222,21 @@ export function MessageSheet({
             Copy
           </button>
         )}
+        {!all &&
+          actions.map((a) => (
+            <button
+              key={a.label}
+              type="button"
+              className={`${a.danger ? btnDanger : btn} !justify-start gap-3 h-12 px-4`}
+              onClick={() => {
+                onClose();
+                a.onClick();
+              }}
+            >
+              <Icon name={a.icon} size={18} />
+              {a.label}
+            </button>
+          ))}
       </div>
     </div>,
     document.body
