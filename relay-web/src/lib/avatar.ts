@@ -27,8 +27,13 @@ export const AVATAR_COLORS = [
   "#8a8f98", // slate
 ];
 
-/** A stable color for a member: from the first 8 hex digits of their key hash. */
-export function avatarColor(keyHash: string): string {
+/**
+ * A member's color. With their place on the member list (the same signed list on every device), each member gets
+ * their own hue, 137.5 degrees on from the last (the golden angle), so neighbors on the list never look alike.
+ * Without one (not on the list), one of the fixed colors, from their key hash.
+ */
+export function avatarColor(keyHash: string, index?: number): string {
+  if (index !== undefined && index >= 0) return `hsl(${Math.round((index * 137.508 + 10) % 360)} 55% 48%)`;
   const n = parseInt(keyHash.slice(0, 8), 16);
   return AVATAR_COLORS[(Number.isFinite(n) ? n : 0) % AVATAR_COLORS.length];
 }

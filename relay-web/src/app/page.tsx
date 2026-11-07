@@ -856,6 +856,12 @@ function Chat() {
       }
       return;
     }
+    // Sending always brings you to the bottom, where the new message shows (replying from further up included).
+    wasAtBottomRef.current = true;
+    requestAnimationFrame(() => {
+      const list = messagesListRef.current;
+      if (list) list.scrollTop = list.scrollHeight;
+    });
     // A reply goes on the text, or on the first file if there's no text.
     let replyTo = replyingTo ?? undefined;
     setReplyingTo(null);
