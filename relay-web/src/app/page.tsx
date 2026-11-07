@@ -790,6 +790,7 @@ function Chat() {
       setInput("");
       setPicked([]);
       setMentionQuery(null);
+      endEdit();
     }
     setEditingId(null);
     setReplyingTo(null);
@@ -810,7 +811,32 @@ function Chat() {
     setInput(text);
     setPicked(was);
     setMentionQuery(null);
+    editScroll.current = messagesListRef.current?.scrollTop ?? null;
     focusComposer(text.length);
+    keepInView(m.messageId);
+  };
+
+  // Where the chat was scrolled when an edit started: saving or cancelling puts it back there, keyboard down.
+  const editScroll = useRef<number | null>(null);
+  const endEdit = () => {
+    const top = editScroll.current;
+    editScroll.current = null;
+    composerRef.current?.blur();
+    if (top === null) return;
+    // After the box shrinks back and the keyboard goes down.
+    for (const delay of [0, 120, 400]) {
+      setTimeout(() => {
+        const list = messagesListRef.current;
+        if (list) list.scrollTop = top;
+      }, delay);
+    }
+  };
+
+  /** Once the message box has grown (or the keyboard is up), bring this message back into view if it went out. */
+  const keepInView = (id: string) => {
+    for (const delay of [50, 350]) {
+      setTimeout(() => messagesListRef.current?.querySelector(`[data-mid="${CSS.escape(id)}"]`)?.scrollIntoView({ block: "nearest" }), delay);
+    }
   };
 
   const deleteMessage = async (m: DecryptedMessage) => {
@@ -854,6 +880,7 @@ function Chat() {
       if (text && target?.type === "text" && text !== shownBody(target)) {
         sendAction({ type: "edit", target: target.messageId, body: text, mentions: mentions.length ? mentions : undefined });
       }
+      endEdit();
       return;
     }
     // Sending always brings you to the bottom, where the new message shows (replying from further up included).
@@ -1206,7 +1233,7 @@ function Chat() {
                   // After a press and hold opened a popup, end the touch here: otherwise iPhone keeps the gesture going
                   // and eats the next tap (Cancel needed two).
                   onTouchEnd={(e) => longPressActivated.current && e.preventDefault()}
-                  className={`w-full text-left px-3 py-2.5 text-sm truncate transition-colors ${isSelected ? "bg-[var(--accent)]/30" : "hover:bg-[var(--border)] active:bg-[var(--border)]"} ${isInactive(conv) ? "opacity-50" : ""}`}
+                  className={`w-full text-left px-3 py-2.5 text-sm truncate transition-colors ${isSelected ? "[background-color:color-mix(in_srgb,var(--accent)_30%,transparent)]" : "hover:bg-[var(--border)] active:bg-[var(--border)]"} ${isInactive(conv) ? "opacity-50" : ""}`}
                 >
                   <span className="flex items-center gap-2">
                     {conv.type === "dm" ? (
@@ -1262,7 +1289,7 @@ function Chat() {
                   // After a press and hold opened a popup, end the touch here: otherwise iPhone keeps the gesture going
                   // and eats the next tap (Cancel needed two).
                   onTouchEnd={(e) => longPressActivated.current && e.preventDefault()}
-                  className={`w-full text-left px-3 py-2.5 text-sm truncate transition-colors ${isSelected ? "bg-[var(--accent)]/30" : "hover:bg-[var(--border)] active:bg-[var(--border)]"}`}
+                  className={`w-full text-left px-3 py-2.5 text-sm truncate transition-colors ${isSelected ? "[background-color:color-mix(in_srgb,var(--accent)_30%,transparent)]" : "hover:bg-[var(--border)] active:bg-[var(--border)]"}`}
                 >
                   <span className="flex items-center gap-2">
                     <Avatar keyHash={c.keyHash} name={getDisplayName(c.keyHash)} className="-my-0.5 h-6 w-6 text-xs" />
@@ -1478,7 +1505,7 @@ function Chat() {
                     key={i}
                     data-mid={m.messageId}
                     // Room on the left for the sender's picture (on the group's first message), so a group's lines align.
-                    className={`group relative rounded transition-colors duration-500 ${grouped ? "mt-0.5" : "mt-3"} ${forMe ? "border-l-2 border-amber-400 bg-amber-500/5 pl-12 md:pl-11 -ml-2" : "pl-10 md:pl-9"} ${flash === m.messageId ? "!bg-[var(--accent)]/20" : ""} ${pressing === m.messageId || sheetFor === m.messageId ? "!bg-[var(--border)] !duration-100" : ""}`}
+                    className={`group relative rounded transition-colors duration-500 ${grouped ? "mt-0.5" : "mt-3"} ${forMe ? "border-l-2 border-amber-400 bg-amber-500/5 pl-12 md:pl-11 -ml-2" : "pl-10 md:pl-9"} ${flash === m.messageId ? "![background-color:color-mix(in_srgb,var(--accent)_20%,transparent)]" : ""} ${pressing === m.messageId || sheetFor === m.messageId ? "!bg-[var(--border)] !duration-100" : ""}`}
                     // Phones: press and hold for reactions and Copy (no text selection).
                     onPointerDown={(e) => {
                       // Only one finger on the message itself: not a pinch in the photo viewer (it's drawn elsewhere on the

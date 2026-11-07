@@ -32,7 +32,7 @@ export function MentionPicker({
               e.preventDefault();
               onPick(c);
             }}
-            className={`w-full text-left px-3 py-1.5 ${i === active ? "bg-[var(--accent)]/30" : "hover:bg-[var(--border)]"}`}
+            className={`w-full text-left px-3 py-1.5 ${i === active ? "[background-color:color-mix(in_srgb,var(--accent)_30%,transparent)]" : "hover:bg-[var(--border)]"}`}
           >
             @{c.label}
             {c.keyHash === EVERYONE && <span className="ml-2 text-xs text-[var(--muted)]">everyone in this group</span>}

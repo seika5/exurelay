@@ -2,7 +2,7 @@
 
 import { useRef, useState } from "react";
 import { useIdentity } from "@/context/IdentityContext";
-import { avatarColor, encodeAvatar, initialOf } from "@/lib/avatar";
+import { avatarColor, encodeAvatar } from "@/lib/avatar";
 import { Icon, IconButton } from "@/components/icons";
 
 /**
@@ -21,7 +21,11 @@ export function Avatar({ keyHash, name, className = "h-8 w-8 text-sm" }: { keyHa
       className={`shrink-0 rounded-full inline-flex items-center justify-center font-semibold text-white select-none leading-none ${className}`}
       style={{ backgroundColor: avatarColor(keyHash, directory?.members.findIndex((m) => m.keyHash === keyHash)) }}
     >
-      {initialOf(name)}
+      {/* The same person shape for everyone without a picture; the color tells them apart. */}
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-[58%] w-[58%]" aria-hidden>
+        <circle cx="12" cy="8" r="3.5" />
+        <path d="M5 20c0-3.9 3.1-7 7-7s7 3.1 7 7" />
+      </svg>
     </span>
   );
 }
