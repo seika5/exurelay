@@ -5,7 +5,8 @@ import QRCode from "qrcode";
 import { useIdentity } from "@/context/IdentityContext";
 import { getServerStatus, type ServerStatus } from "@/lib/api";
 import { createJoinCode, joinLink } from "@/lib/server";
-import { blobSettings, directoryWithBlobSettings } from "@/lib/signed";
+import { blobSettings, directoryWithBlobSettings, directoryWithNotifyAll, notifyAllAllowed } from "@/lib/signed";
+import { Switch } from "@/components/Modal";
 import { MAX_DECOYS } from "@/lib/sealed";
 import { Icon, IconButton } from "@/components/icons";
 import { btn, btnPrimary, field } from "@/components/ui";
@@ -119,6 +120,36 @@ export function BlobSettingsPanel() {
       </button>
       {message && <p className="text-xs text-[var(--muted)]">{message}</p>}
     </div>
+  );
+}
+
+/** Lets members turn on a notification for every message and call start (off by default), signed into the member list. */
+export function NotifyAllSetting() {
+  const { directory, identity, publishSignedDirectory } = useIdentity();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (!directory || !identity) return null;
+  const on = notifyAllAllowed(directory);
+  return (
+    <span className="flex items-center gap-2">
+      {error && <span className="text-xs text-red-500">{error}</span>}
+      <Switch
+        on={on}
+        label="Allow every-message notifications"
+        disabled={busy}
+        onChange={async (next) => {
+          setBusy(true);
+          setError(null);
+          try {
+            await publishSignedDirectory(directoryWithNotifyAll(directory, identity.signingPublicKeyBase64, next));
+          } catch (e) {
+            setError(e instanceof Error ? e.message : "Couldn't save");
+          } finally {
+            setBusy(false);
+          }
+        }}
+      />
+    </span>
   );
 }
 

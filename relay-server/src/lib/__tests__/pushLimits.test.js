@@ -21,5 +21,10 @@ describe("push limits", () => {
     assert.strictEqual(l.take("mention", "ana"), true);
     assert.strictEqual(l.take("ring", "ana"), true);
     assert.strictEqual(l.take("nonsense", "ana"), false);
+    for (let i = 0; i < 6; i++) assert.strictEqual(l.take("message", "ana"), true);
+    assert.strictEqual(l.take("message", "ana"), false);
+    assert.strictEqual(l.take("call", "ana"), true);
+    assert.strictEqual(l.take("call", "ana"), true);
+    assert.strictEqual(l.take("call", "ana"), false);
   });
 });

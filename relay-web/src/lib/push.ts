@@ -1,5 +1,6 @@
 /**
- * Push notifications, only for @mentions and call rings (DESIGN.md §9 "direct push (A)").
+ * Push notifications for @mentions and call rings, and (if the admin allows and you turn it on) every message and
+ * call start (DESIGN.md §9 "direct push (A)").
  *
  * The sender encrypts a tiny payload to each recipient device with a key from the static ECDH secret between the two
  * devices, and pays for the push with an anonymous token. The server wraps it in Web Push encryption and forwards it.
@@ -13,7 +14,8 @@ import { getServerUrl, listServers, serverScopedKey } from "./server";
 import { sessionFetch } from "./session";
 import { tokenFetch } from "./tokens";
 
-export type PushKind = "mention" | "everyone" | "ring";
+/** "message" and "call" (every message, call started) go only to devices that turned them on, if the admin allows. */
+export type PushKind = "mention" | "everyone" | "ring" | "message" | "call";
 /** What a push says, encrypted: who (member keyHash) did what, and in which group (its shared name), if any. */
 export type PushContent = { kind: PushKind; member: string; group?: string; ts: number };
 
@@ -68,16 +70,20 @@ export async function openPush(
 }
 
 /** Devices with notifications on, for the active server: null if the server doesn't send them. Cached 2 minutes. */
-let pushable: { url: string; at: number; devices: Set<string> | null } | null = null;
+type Pushable = { devices: Set<string>; all: Set<string> };
+let pushable: { url: string; at: number; on: Pushable | null } | null = null;
 const PUSHABLE_TTL_MS = 2 * 60_000;
 
-async function pushableDevices(): Promise<Set<string> | null> {
+const readPushable = (body: { devices: string[]; all?: string[] }): Pushable => ({ devices: new Set(body.devices), all: new Set(body.all ?? []) });
+
+/** Which devices have notifications on, and which of those want every message too. Null if the server doesn't send them. */
+async function pushableDevices(): Promise<Pushable | null> {
   const url = getServerUrl();
-  if (pushable && pushable.url === url && Date.now() - pushable.at < PUSHABLE_TTL_MS) return pushable.devices;
+  if (pushable && pushable.url === url && Date.now() - pushable.at < PUSHABLE_TTL_MS) return pushable.on;
   const res = await sessionFetch("/api/push/devices", { cache: "no-store" });
-  const devices = res.ok ? new Set<string>(((await res.json()) as { devices: string[] }).devices) : null;
-  if (res.ok || res.status === 503) pushable = { url, at: Date.now(), devices };
-  return devices;
+  const on = res.ok ? readPushable(await res.json()) : null;
+  if (res.ok || res.status === 503) pushable = { url, at: Date.now(), on };
+  return on;
 }
 
 /**
@@ -93,7 +99,8 @@ export async function sendPushes(
 ): Promise<{ sent: number; limited: number }> {
   if (devices.length === 0) return { sent: 0, limited: 0 };
   const on = await pushableDevices();
-  const targets = on ? devices.filter((d) => on.has(d.keyHash)) : [];
+  const wanted = kind === "message" || kind === "call" ? on?.all : on?.devices;
+  const targets = wanted ? devices.filter((d) => wanted.has(d.keyHash)) : [];
   if (targets.length === 0) return { sent: 0, limited: 0 };
   const full: PushContent = { ...content, kind, ts: Date.now() };
   const items = await Promise.all(
@@ -104,7 +111,8 @@ export async function sendPushes(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ kind, items }),
   });
-  if (res.status === 503) return { sent: 0, limited: 0 }; // this server doesn't send notifications
+  // This server doesn't send notifications (503), or not every-message ones (403).
+  if (res.status === 503 || res.status === 403) return { sent: 0, limited: 0 };
   if (!res.ok) throw new Error(`Couldn't send the notification (${res.status})`);
   return res.json();
 }
@@ -160,12 +168,28 @@ export async function pushState(myDevice: string): Promise<PushState> {
     const res = await sessionFetch("/api/push/devices", { cache: "no-store" });
     if (res.status === 503) return "server-off";
     if (!res.ok) return "on";
-    const { devices } = (await res.json()) as { devices: string[] };
-    pushable = { url: getServerUrl(), at: Date.now(), devices: new Set(devices) };
-    return devices.includes(myDevice) ? "on" : "off";
+    const on = readPushable(await res.json());
+    pushable = { url: getServerUrl(), at: Date.now(), on };
+    return on.devices.has(myDevice) ? "on" : "off";
   } catch {
     return "on";
   }
+}
+
+/** Whether this device gets every message and call start too (as last read from the server). */
+export async function notifyAllState(myDevice: string): Promise<boolean> {
+  return (await pushableDevices())?.all.has(myDevice) ?? false;
+}
+
+/** Turn every-message and call-start notifications on or off for this device (notifications must be on). */
+export async function setNotifyAll(on: boolean): Promise<void> {
+  const res = await sessionFetch("/api/push/all", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ on }),
+  });
+  if (!res.ok) throw new Error(on ? "Couldn't turn on every-message notifications" : "Couldn't turn them off");
+  pushable = null;
 }
 
 /** Turn notifications off for this device on the active server; in the browser too if no other server uses them. */

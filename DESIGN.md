@@ -43,6 +43,7 @@ Every request reaches the server from an IP address. A typical member's IP is st
 | Activity and rough size: when uploads happen, and how many blobs each takes (a long message or file takes several) | Decoys (admin setting); more decoys blur it more, at a data cost |
 | Calls: the server sees an anonymous room, when it starts and ends, and each connection's IP (so it can guess who by IP and timing); people in a call see each other's IPs (direct WebRTC); the TURN relay sees IPs. Calls started by older apps still show who joined | A VPN or Tor; relaying every call through TURN would hide IPs from peers (not built); keep the app updated |
 | Notifications: the server learns, live, which device is being mentioned or rung; Apple or Google sees each wake-up | Turn notifications off |
+| Every-message notifications (off unless the admin allows them and you turn them on): the server sees, live, who is messaging you and when calls start for you | Leave it off; a VPN or Tor hides only the sender's IP |
 | Name and picture updates: the server sees when someone changes theirs | None |
 | No forward secrecy, not post-quantum (§3) | Open |
 | Deleted and edited messages stay on the server, encrypted, until they expire, and older app versions still show the original | Keep the app updated |
@@ -410,7 +411,7 @@ Recommended fix: authenticate signaling end to end. Seal each offer/answer/ICE m
 - **Rendering:** each viewer shows a mention using their own name for that person. Mentions of you are highlighted, the message gets a highlight bar, and the conversation shows a mention badge until you read it.
 - **Notifications:** the sender's client asks the server to push each mentioned member (§9). Mentioning someone who isn't your contact sends nothing.
 - **`@everyone`** mentions every member of the conversation and notifies each of them.
-- **Rate limits are per recipient**, enforced by the server (it knows push targets under A, §9): each member gets at most a few mention pushes per minute in total, and at most one `@everyone` push per minute, whoever sends them. Extra mentions aren't lost; they show up, highlighted, the next time the app opens.
+- **Rate limits are per recipient**, enforced by the server (it knows push targets under A, §9): each member gets at most a few mention pushes per minute in total, and at most one `@everyone` push per minute, whoever sends them (every-message pushes have their own limits, §9). Extra mentions aren't lost; they show up, highlighted, the next time the app opens.
 - Mentions are the *only* thing that notifies, in groups and DMs alike (§9).
 
 **As built (phase 5c),** without the notifications, which come with push in phase 7 (`relay-web/src/lib/mentions.ts`):
@@ -502,7 +503,7 @@ Members can add people to a group and leave it, and its history stays with it, l
 - A protocol compatibility suite (golden test vectors) runs in the fork's CI and warns before a change breaks messaging with everyone else.
 - Each origin has its own storage and push subscription, so a fork is added as a linked device (§4).
 
-### Decided: direct push (A), only for @mentions and manual call rings
+### Decided: direct push (A), for @mentions and manual call rings (every message is opt-in)
 
 Safari requires **every** web push to show a visible notification, and it revokes a subscription after a few pushes that don't. So pushing every member for every blob would notify everyone of everyone's messages. Instead, pushes are rare and sender-triggered:
 
@@ -511,13 +512,15 @@ Safari requires **every** web push to show a visible notification, and it revoke
    - a message **@mentions** you (including `@everyone`), or
    - someone presses **Notify** on your tile in a call (§7).
 
-   The sender's request tells the server which kind it is, so per-recipient limits apply (§8). Nothing else notifies: not DMs, not ordinary group messages, and not calls starting. Everything else appears the next time you open the app.
+   The sender's request tells the server which kind it is, so per-recipient limits apply (§8). By default nothing else notifies: not DMs, not ordinary group messages, and not calls starting. Everything else appears the next time you open the app.
+
+   **Every message (opt-in):** an admin can allow it (`notifyAll` in the signed member list, off by default). Then each device can turn on **Every message** under Notifications; the flag sits on that device's push subscription (`all`), so turning notifications off drops it too. Senders then push kind `message` once per send (text and files together; not reactions or edits; not to anyone already getting a mention push) and kind `call` when they start a call. The server refuses both kinds unless the newest member list allows them, and sends them only to subscriptions that asked. Limits: 6 messages and 2 call starts per minute per recipient. Banners say only "New message" or "A call started", and every-message banners share one notification.
 3. **Payload:** a small Exurelay-encrypted blob (pairwise key), wrapped in Web Push encryption to the device. The server forwards opaque bytes. The service worker decrypts it with the identity in IndexedDB and shows, e.g., "Alex mentioned you in Trip" using *your* name for the sender.
 4. **No push logs:** the server sends the push and keeps no record of who was notified or when.
 
 **Why A rather than a pseudonymous token (B):** B only hides the member behind a token. An operator who logs IPs links that token to the member anyway, because registration and login come from the same IP. Against a database leak, A without push logs exposes about as little (a member → push address mapping). B's extra complexity would add a false sense of security, so it's dropped.
 
-**What the server learns, live:** who is being mentioned or rung at that moment, and (from IPs) roughly who sent it. Apple's push service sees each wake-up, not the payload. Nothing is stored.
+**What the server learns, live:** who is being mentioned or rung at that moment (with every-message on: who is getting a message, and when calls start), and (from IPs) roughly who sent it. Apple's push service sees each wake-up, not the payload. Nothing is stored.
 
 **Reference, rotation (D), not planned.** What links wake-ups together is the *push endpoint*, not the token. Every token maps to the same endpoint, so changing tokens alone hides nothing from the server. Real rotation means re-subscribing for a new endpoint and registering it anonymously.
 

@@ -3,14 +3,18 @@ import webpush from "web-push";
 import { requireSession } from "./auth.js";
 import { createPushLimiter } from "../lib/pushLimits.js";
 import { isPermanentPushError } from "../lib/pushErrors.js";
+import { notifyAllOf } from "../lib/directory.js";
 
 const jsonBody = express.json({ limit: "64kb" });
-const KINDS = new Set(["mention", "everyone", "ring"]);
+const KINDS = new Set(["mention", "everyone", "ring", "message", "call"]);
+/** Kinds sent only when the admin-signed directory allows notifyAll. */
+const NOTIFY_ALL_KINDS = new Set(["message", "call"]);
 const MAX_ITEMS = 64;
 const MAX_PAYLOAD = 2048;
 
 /**
- * Web Push, only for @mentions and call rings (DESIGN.md §9 "direct push (A)").
+ * Web Push for @mentions and call rings, and, if the admin allows it, every message and call start for members who
+ * turn that on (DESIGN.md §9 "direct push (A)").
  *
  * - A logged-in device registers its push subscription (the server learns member → endpoint).
  * - A sender, paying with an anonymous token, asks for pushes to specific devices of the people it mentions or
@@ -38,9 +42,19 @@ export function pushRouter(prisma, auth, requireToken, { publicUrl = process.env
    */
   router.get("/devices", requireSession(auth), async (_req, res) => {
     if (!configured) return off(res);
-    const rows = await prisma.pushSubscription.findMany({ select: { device: true }, distinct: ["device"] });
+    const rows = await prisma.pushSubscription.findMany({ select: { device: true, all: true } });
     res.set("Cache-Control", "no-store");
-    return res.json({ devices: rows.map((r) => r.device) });
+    return res.json({ devices: [...new Set(rows.map((r) => r.device))], all: [...new Set(rows.filter((r) => r.all).map((r) => r.device))] });
+  });
+
+  /** Turn every-message and call-start notifications on or off for this device (its subscriptions). */
+  router.post("/all", requireSession(auth), jsonBody, async (req, res) => {
+    if (!configured) return off(res);
+    const on = req.body?.on;
+    if (typeof on !== "boolean") return res.status(400).json({ error: "bad request" });
+    const { count } = await prisma.pushSubscription.updateMany({ where: { device: req.session.keyHash }, data: { all: on } });
+    if (count === 0) return res.status(404).json({ error: "Notifications are off on this device." });
+    return res.json({ ok: true });
   });
 
   router.post("/subscribe", requireSession(auth), jsonBody, async (req, res) => {
@@ -69,13 +83,18 @@ export function pushRouter(prisma, auth, requireToken, { publicUrl = process.env
     if (!KINDS.has(kind) || !Array.isArray(items) || items.length === 0 || items.length > MAX_ITEMS) {
       return res.status(400).json({ error: "bad notify request" });
     }
+    if (NOTIFY_ALL_KINDS.has(kind)) {
+      const latest = await prisma.directory.findFirst({ orderBy: { version: "desc" }, select: { body: true } });
+      if (!notifyAllOf(latest?.body)) return res.status(403).json({ error: "This server doesn't send every-message notifications." });
+    }
     let sent = 0;
     let limited = 0;
     // One allowance per recipient member per request, however many of their devices are listed.
     const allowed = new Map();
     for (const item of items) {
       if (typeof item?.device !== "string" || typeof item?.payload !== "string" || item.payload.length > MAX_PAYLOAD) continue;
-      const subs = await prisma.pushSubscription.findMany({ where: { device: item.device } });
+      // Every-message and call-start pushes only reach devices that asked for them.
+      const subs = await prisma.pushSubscription.findMany({ where: NOTIFY_ALL_KINDS.has(kind) ? { device: item.device, all: true } : { device: item.device } });
       for (const sub of subs) {
         if (!allowed.has(sub.member)) allowed.set(sub.member, limiter.take(kind, sub.member));
         if (!allowed.get(sub.member)) {
@@ -86,7 +105,7 @@ export function pushRouter(prisma, auth, requireToken, { publicUrl = process.env
           await webpush.sendNotification(
             { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
             JSON.stringify({ kind, server: publicUrl, payload: item.payload }),
-            { TTL: kind === "ring" ? 60 : 3600, urgency: "high" }
+            { TTL: kind === "ring" || kind === "call" ? 60 : 3600, urgency: kind === "message" ? "normal" : "high" }
           );
           sent++;
         } catch (e) {

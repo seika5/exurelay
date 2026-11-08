@@ -7,6 +7,9 @@ export const PUSH_LIMITS = {
   mention: { max: 5, windowMs: 60_000 },
   everyone: { max: 1, windowMs: 60_000 },
   ring: { max: 1, windowMs: 30_000 },
+  // Every-message and call-start notifications, only if the admin allows them (directory notifyAll).
+  message: { max: 6, windowMs: 60_000 },
+  call: { max: 2, windowMs: 60_000 },
 };
 
 export function createPushLimiter({ now = () => Date.now(), limits = PUSH_LIMITS } = {}) {

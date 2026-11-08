@@ -101,7 +101,10 @@ async function openPush(data) {
 
 // Nothing about who or where: a notification can show on a locked screen. The app shows the rest once opened.
 function text(kind) {
-  return kind === "ring" ? "Incoming call" : "You were mentioned";
+  if (kind === "ring") return "Incoming call";
+  if (kind === "call") return "A call started";
+  if (kind === "message") return "New message";
+  return "You were mentioned";
 }
 
 self.addEventListener("push", (event) => {
@@ -123,13 +126,15 @@ self.addEventListener("push", (event) => {
       // a notification (or it drops the subscription), so show one and take it away at once.
       const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
       const inApp = windows.some((c) => c.visibilityState === "visible");
-      const tag = inApp ? "relay-in-app" : data.kind === "ring" ? "relay-ring" : undefined;
+      // Every-message pushes share one notification, so a busy chat doesn't stack them up.
+      const tag = inApp ? "relay-in-app" : data.kind === "ring" ? "relay-ring" : data.kind === "message" ? "relay-message" : undefined;
       // Every push must show a notification (Safari revokes subscriptions that don't).
       // The message is the title: iPhone already adds "from Exurelay" under it, so an "Exurelay" title only repeats it.
       await self.registration.showNotification(text(data.kind), {
         icon: `${BASE}icon-192.png`,
         badge: `${BASE}icon-192.png`,
         tag,
+        renotify: !inApp && data.kind === "message",
         silent: inApp,
       });
       if (inApp) for (const n of await self.registration.getNotifications({ tag })) n.close();

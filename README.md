@@ -24,7 +24,7 @@ See **[DESIGN.md](DESIGN.md)** for the threat model, cryptography, every design 
 - **Sender and recipient hidden from the server.** Each message or file is encrypted once and stored as blobs of one fixed size (64 KB by default; the admin sets 16–256 KB and up to how many random decoy blobs a send adds). No blob carries a sender, a recipient or any structure: every member downloads every blob and keeps what decrypts, so the server can't tell who wrote to whom, or text from files.
 - **Anonymous requests.** Members log in only to collect blind-signed tokens (RFC 9474). Sending, syncing and call setup each spend one, so the server knows a member is asking but not which one. No request or IP logs.
 - **Calls** (WebRTC, mute, deafen, camera, screen share) with signaling sealed end to end between the two devices, in random rooms announced only inside encrypted messages.
-- **@mentions**, with a picker, highlighting and an unread badge, plus **push notifications only for @mentions and call rings**, encrypted device to device.
+- **@mentions**, with a picker, highlighting and an unread badge, plus **push notifications for @mentions and call rings** (every message too, if the admin allows it and you turn it on), encrypted device to device.
 - **Linked devices.** Each device has its own keys. Link a new one from one you already have (no admin needed); unlink a lost one.
 - **Encrypted local history**, kept 7 days after the server drops a message (adjustable), with **Settings → Storage** to clear files, a conversation or everything.
 - **Your keys, your choice of place.** On desktop Chrome/Edge, a passphrase-encrypted identity file in a folder you pick; elsewhere, non-exportable keys inside the app.
@@ -250,8 +250,11 @@ Admins: admin works from one device at a time; move it with **Make admin device*
 
 ### 2.6 Notifications
 
-**Settings → General → Turn on notifications** (on iPhone, in the installed app). Only @mentions and call rings
+**Settings → General → Turn on notifications** (on iPhone, in the installed app). @mentions and call rings
 notify; everything else waits until you open the app. Rings come from **Notify** on a "not in call" tile.
+If an admin turns on **Every-message notifications** (Settings → Admin → Server details, off by default), each
+device can also turn on **Every message**, which notifies for every message and when a call starts. The server
+then sees, live, who is messaging you.
 
 ### 2.7 Plugins
 
