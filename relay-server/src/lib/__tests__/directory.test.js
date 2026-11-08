@@ -119,6 +119,21 @@ describe("blob settings", () => {
     assert.strictEqual(blobSizeOf(JSON.stringify({ blobSize: 32768 })), 32768);
     assert.strictEqual(blobSizeOf(undefined), DEFAULT_BLOB_SIZE);
   });
+
+  it("accepts a true/false notifyAll, off unless the newest directory turns it on", async () => {
+    const { notifyAllOf } = await import("../directory.js");
+    const admin = await signingKeyPair();
+    const ecdh = await ecdhPub();
+    const member = { keyHash: keyHashOf(ecdh), ecdh, sig: admin.pub, enrolledAt: 1 };
+    const dir = (extra) =>
+      sign(admin.pair.privateKey, { type: "relay-directory", version: 1, issuedAt: 1, signer: admin.pub, members: [member], removed: [], admins: [admin.pub], ...extra });
+    assert.strictEqual((await validateDirectory(await dir({ notifyAll: true }), [admin.pub])).ok, true);
+    assert.match((await validateDirectory(await dir({ notifyAll: "yes" }), [admin.pub])).error, /notifyAll/);
+    assert.strictEqual(notifyAllOf(JSON.stringify({ notifyAll: true })), true);
+    assert.strictEqual(notifyAllOf(JSON.stringify({ notifyAll: 1 })), false);
+    assert.strictEqual(notifyAllOf(undefined), false);
+    assert.strictEqual(notifyAllOf("{bad"), false);
+  });
 });
 
 describe("admin devices", () => {

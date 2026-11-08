@@ -113,6 +113,8 @@ model PushSubscription {
   member   String
   p256dh   String
   auth     String
+  /// Notify for every message and call start too, not only @mentions and rings (if the admin allows it).
+  all      Boolean @default(false)
 
   @@index([device])
   @@index([member])

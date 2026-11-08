@@ -36,6 +36,8 @@ export type Directory = {
   /** Admin settings for protocol v2 blobs (sealed.ts): every blob's size in bytes, and the most decoys per send. */
   blobSize?: number;
   decoys?: number;
+  /** Admin setting: members may turn on notifications for every message and call start (off unless true). */
+  notifyAll?: boolean;
 };
 
 /** The directory's blob settings, or the defaults where it doesn't set them (or sets something out of range). */
@@ -335,6 +337,7 @@ export function directoryWithMember(
     admins,
     blobSize: current?.blobSize,
     decoys: current?.decoys,
+    notifyAll: current?.notifyAll,
   };
 }
 
@@ -378,6 +381,7 @@ export function directoryWithoutMembers(
     admins,
     blobSize: current.blobSize,
     decoys: current.decoys,
+    notifyAll: current.notifyAll,
   };
 }
 
@@ -405,6 +409,16 @@ export async function fingerprint(publicKeyBase64: string): Promise<string> {
 }
 
 /** Next directory version with new blob settings (admin setting, protocol v2). */
+/** Whether this server's admins let members get notified for every message and call start. */
+export function notifyAllAllowed(d: Directory | null): boolean {
+  return d?.notifyAll === true;
+}
+
+/** Next directory version with the every-message notifications setting changed. */
+export function directoryWithNotifyAll(current: Directory, signer: string, on: boolean, now = Date.now()): Directory {
+  return { ...current, version: current.version + 1, issuedAt: now, signer, notifyAll: on };
+}
+
 export function directoryWithBlobSettings(current: Directory, signer: string, blobSize: number, decoys: number, now = Date.now()): Directory {
   if (blobSettings({ ...current, blobSize, decoys }).blobSize !== blobSize) throw new Error("Blob size must be 16-256 KB in 1 KB steps");
   if (blobSettings({ ...current, blobSize, decoys }).decoys !== decoys) throw new Error(`Decoys must be 0-${MAX_DECOYS}`);

@@ -1,21 +1,31 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { disablePush, enablePush, pushState, type PushState } from "@/lib/push";
+import { disablePush, enablePush, notifyAllState, pushState, setNotifyAll, type PushState } from "@/lib/push";
+import { notifyAllAllowed } from "@/lib/signed";
 import { useIdentity } from "@/context/IdentityContext";
 import { InfoTip, SectionTitle } from "@/components/InfoTip";
 import { Switch } from "@/components/Modal";
 import { appPath } from "@/lib/basePath";
 
-/** Settings → General: push for @mentions and call rings on this device, on or off (DESIGN.md §9). */
+/** Settings → General: push for @mentions and call rings on this device, and every message if the admin allows (DESIGN.md §9). */
 export function NotificationsSection() {
   const [state, setState] = useState<PushState | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const device = useIdentity().identity?.deviceKeyHash;
+  const { identity, directory } = useIdentity();
+  const device = identity?.deviceKeyHash;
+  const [all, setAll] = useState(false);
+  const [allBusy, setAllBusy] = useState(false);
   useEffect(() => {
     if (device) pushState(device).then(setState, () => setState("unsupported"));
   }, [device]);
+  // Every-message notifications ride on this device's subscription: turning notifications off drops them too.
+  useEffect(() => {
+    if (device && state === "on") notifyAllState(device).then(setAll, () => setAll(false));
+    else setAll(false);
+  }, [device, state]);
+  const allowed = notifyAllAllowed(directory);
 
   // Shown instead of the switch when it can't be turned on here.
   const blocked: Partial<Record<PushState, string>> = {
@@ -39,7 +49,7 @@ export function NotificationsSection() {
   return (
     <section className="flex flex-col gap-2">
       <div className="flex items-center justify-between gap-3">
-        <SectionTitle tip="Only @mentions and call rings notify you. Nothing else does.">Notifications</SectionTitle>
+        <SectionTitle tip="@mentions and call rings notify you. Turn on Every message for the rest.">Notifications</SectionTitle>
         {(state === "on" || state === "off") && (
           <span className="flex items-center gap-2">
             {busy && (
@@ -60,6 +70,35 @@ export function NotificationsSection() {
         )}
       </div>
       {state && blocked[state] && <p className="text-xs text-[var(--muted)]">{blocked[state]}</p>}
+      {state !== "unsupported" && state !== "server-off" && (
+        <div className={`flex items-center justify-between gap-3 ${on && allowed ? "" : "opacity-50"}`}>
+          <span className="text-sm flex items-center gap-1.5">
+            Every message
+            <InfoTip>
+              {allowed
+                ? "Also notify for every message and when a call starts. The server then sees, as it happens, who is messaging you."
+                : "Turned off for this server by its admin."}
+            </InfoTip>
+          </span>
+          <Switch
+            on={on && allowed && all}
+            label="Notify for every message"
+            disabled={!on || !allowed || allBusy}
+            onChange={async (next) => {
+              setAllBusy(true);
+              setError(null);
+              try {
+                await setNotifyAll(next);
+                setAll(next);
+              } catch (e) {
+                setError(e instanceof Error ? e.message : "Couldn't change that");
+              } finally {
+                setAllBusy(false);
+              }
+            }}
+          />
+        </div>
+      )}
       {error && <p className="text-xs text-red-500">{error}</p>}
     </section>
   );

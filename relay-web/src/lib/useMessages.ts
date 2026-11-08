@@ -160,6 +160,10 @@ export function useMessages(
   const [cacheReady, setCacheReady] = useState(false);
   /** A download that has taken more than a moment (boot, catching up), for a spinner. */
   const [loading, setLoading] = useState(false);
+  // Until the first sync since opening (or since a re-sync) has finished, the spinner shows however quick it is, and
+  // through retries: it's how you know nothing new is still on its way.
+  const [caughtUp, setCaughtUp] = useState(false);
+  useEffect(() => setCaughtUp(false), [identity?.keyHash]);
   const syncing = useRef<Promise<void> | null>(null);
   const syncAgain = useRef(false);
   /** Settings syncs between my devices seen this session (never shown, never cached). */
@@ -358,6 +362,7 @@ export function useMessages(
         } while (syncAgain.current && alive.current);
         syncFailures.current = 0;
         setError(null);
+        setCaughtUp(true);
       } catch (e) {
         // Out of tokens: sync again once there are some (from the same cursor).
         if (e instanceof RateLimitError) syncLater.current?.(e.retryAfter * 1000);
@@ -663,6 +668,7 @@ export function useMessages(
 
   /** Clear everything and download again whatever the server still holds (the last ~3–4 days). */
   const resync = useCallback(async () => {
+    setCaughtUp(false);
     received.current = new Map();
     cursor.current = "0";
     savedCursor.current = "0";
@@ -692,5 +698,5 @@ export function useMessages(
     [receivedMessages, retentionDays, setRetentionDays, clearFiles, clearConversation, clearAll, resync]
   );
 
-  return { messages, reactions, actions, conversations, loadBlobs, sendMessage, sendHistory, retrySend, cancelSend, storage, readMarks, markRead, cacheReady, loading, error };
+  return { messages, reactions, actions, conversations, loadBlobs, sendMessage, sendHistory, retrySend, cancelSend, storage, readMarks, markRead, cacheReady, loading: loading || (!!identity && !caughtUp), error };
 }

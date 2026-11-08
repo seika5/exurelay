@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useIdentity } from "@/context/IdentityContext";
 import { EnrollMember, MembersAdmin } from "@/components/MembersAdmin";
-import { BlobSettingsPanel, JoinCodePanel, ServerStatusPanel } from "@/components/AdminPanels";
+import { BlobSettingsPanel, JoinCodePanel, NotifyAllSetting, ServerStatusPanel } from "@/components/AdminPanels";
 import { fingerprint } from "@/lib/signed";
 import { StoragePanel, type StorageControls } from "@/components/StoragePanel";
 import { DevicesPanel } from "@/components/DevicesPanel";
@@ -113,6 +113,12 @@ export function SettingsModal({
                 Message padding
               </SectionTitle>
               <BlobSettingsPanel />
+            </section>
+            <section className="flex items-center justify-between gap-3 pt-2">
+              <SectionTitle tip="Lets members get a notification for every message and when a call starts. The server then sees, as it happens, who is messaging them. Off by default.">
+                Every-message notifications
+              </SectionTitle>
+              <NotifyAllSetting />
             </section>
             <section className="flex flex-col gap-2 pt-2">
               <SectionTitle>Server status</SectionTitle>

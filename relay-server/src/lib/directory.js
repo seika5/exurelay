@@ -55,6 +55,15 @@ export function blobSizeOf(latestBody) {
   }
 }
 
+/** Whether the newest directory lets members get a notification for every message and call start (off by default). */
+export function notifyAllOf(latestBody) {
+  try {
+    return JSON.parse(latestBody ?? "null")?.notifyAll === true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Check a signed member directory. Returns { ok, directory } or { ok: false, error }.
  * The directory must be signed by one of adminKeys, and its version must be above currentVersion. Admins may be
@@ -96,6 +105,7 @@ export async function validateDirectory(envelope, adminKeys, currentVersion = 0,
   if (d.decoys != null && !(Number.isSafeInteger(d.decoys) && d.decoys >= 0 && d.decoys <= MAX_DECOYS)) {
     return { ok: false, error: `decoys must be 0-${MAX_DECOYS}` };
   }
+  if (d.notifyAll != null && typeof d.notifyAll !== "boolean") return { ok: false, error: "notifyAll must be true or false" };
   for (const r of d.removed) {
     if (!r || typeof r.keyHash !== "string" || !isTime(r.removedAt)) return { ok: false, error: "malformed removal" };
     if (hashes.has(r.keyHash)) return { ok: false, error: "member is both enrolled and removed" };

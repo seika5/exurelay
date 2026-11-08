@@ -21,7 +21,7 @@ import {
 import { activeCall, newRoomId } from "@/lib/callRoom";
 import { newRoomKey } from "@/lib/callIntro";
 import type { DecryptedMessage } from "@/lib/blobPayload";
-import { blobSettings } from "@/lib/signed";
+import { blobSettings, notifyAllAllowed } from "@/lib/signed";
 import { activeMentionQuery, encodeDraft, mentionsMe, splitMentions, EVERYONE, type PickedMention } from "@/lib/mentions";
 import { sendPushes, syncPush } from "@/lib/push";
 import { usePlugins } from "@/context/PluginContext";
@@ -416,6 +416,11 @@ function Chat() {
   const [newLineDone, setNewLineDone] = useState<string | null>(null);
   const awayFromBottom = useRef(false);
   const showNewLineAt = newLineDone === openId ? null : newLineAt;
+  const swipeFrom = useRef<number | null>(null);
+  const pushedPastBottom = () => {
+    const list = messagesListRef.current;
+    if (list && newLineAt && list.scrollHeight - list.clientHeight - list.scrollTop <= 8) setNewLineDone(openId);
+  };
   // Reset per opening (awayFromBottom is set by the opening scroll below, which runs first).
   useEffect(() => setNewLineDone(null), [openId, chatOnScreen]);
 
@@ -679,8 +684,9 @@ function Chat() {
         if (was !== undefined && was !== h && e.target.getBoundingClientRect().top < list.getBoundingClientRect().bottom) shift += h - was;
       }
       if (resized) list.scrollTop = list.scrollHeight - list.clientHeight - fromBottomRef.current;
-      // From where the view was, not where it is now: a photo shrinking has already pulled it in.
-      // From where the view was before the change (a photo shrinking has already pulled it in by now).
+      // At the bottom before the change: stay there (a photo can load in more than one step).
+      else if (shift && fromBottomRef.current <= 8) list.scrollTop = list.scrollHeight - list.clientHeight;
+      // Otherwise from where the view was before the change (a photo shrinking has already pulled it in by now).
       else if (shift) list.scrollTop = (heldTop ?? lastTopRef.current) + shift;
       heldTop = null;
       measure();
@@ -763,6 +769,19 @@ function Chat() {
     const devices = targets.flatMap((k) => identity.contacts.find((c) => c.keyHash === k)?.devices ?? []);
     const group = selected.type === "group" ? groupNamesFromMessages.get(conversationId(selected, identity.keyHash)) : undefined;
     await sendPushes(everyone ? "everyone" : "mention", identity, devices, { member: identity.keyHash, group });
+  };
+
+  /**
+   * Every-message pushes (if the admin allows them): to recipients whose devices asked for every message (the server
+   * and sendPushes keep it to those), except anyone this message already notifies with a mention.
+   */
+  const notifyEveryMessage = async (kind: "message" | "call", recipients: string[], conv: Conversation, mentioned: string[] = []) => {
+    if (!identity || !notifyAllAllowed(directory) || mentioned.includes(EVERYONE)) return;
+    const devices = recipients
+      .filter((k) => !mentioned.includes(k))
+      .flatMap((k) => identity.contacts.find((c) => c.keyHash === k)?.devices ?? []);
+    const group = conv.type === "group" ? groupNamesFromMessages.get(conversationId(conv, identity.keyHash)) ?? "a group" : undefined;
+    await sendPushes(kind, identity, devices, { member: identity.keyHash, group });
   };
 
   // The call's Notify button: ring one member's devices (rate-limited per person by the server).
@@ -996,6 +1015,8 @@ function Chat() {
       if (sentMentions) notifyMentions(sentMentions, recipients).catch(() => {});
       replyTo = undefined;
     }
+    // One every-message push for the whole send (text and files together).
+    if (selected && (text || files.length)) notifyEveryMessage("message", recipients, selected, sentMentions).catch(() => {});
 
     for (const file of files) {
       const body = await readFileAsBase64(file);
@@ -1136,6 +1157,8 @@ function Chat() {
           selected.memberKeyHashes.filter((k) => k !== identity.keyHash && stillHere(k))
         );
       }
+      const others = selected.type === "dm" ? [selected.otherKeyHash] : selected.memberKeyHashes.filter((k) => k !== identity.keyHash && stillHere(k));
+      notifyEveryMessage("call", others, selected).catch(() => {});
     };
     await startOrJoinCall(callRoomId, call.roomKey, allowedKeyHashes, sendStartedIfFirst);
   };
@@ -1477,6 +1500,17 @@ function Chat() {
             <ul
               ref={messagesListRef}
               onScroll={handleMessagesScroll}
+              // At the bottom already, a scroll down (wheel, or a swipe up on a phone) still counts as "seen": it clears
+              // the "New" line even with nothing further to scroll.
+              onWheel={(e) => e.deltaY > 0 && pushedPastBottom()}
+              onTouchStart={(e) => (swipeFrom.current = e.touches[0]?.clientY ?? null)}
+              onTouchMove={(e) => {
+                const y = e.touches[0]?.clientY;
+                if (swipeFrom.current !== null && y !== undefined && swipeFrom.current - y > 24) {
+                  swipeFrom.current = null;
+                  pushedPastBottom();
+                }
+              }}
               className="flex-1 overflow-auto px-3 py-2 flex flex-col"
               // Scrolling past either end bounces this list only: passed on to the page, it moved the whole screen while
               // the keyboard was up.
@@ -1995,7 +2029,7 @@ function Chat() {
               if (!displayNameSaving) saveNickname();
             }}
           >
-            <p className="text-xs text-[var(--muted)]">Only you see this. Leave empty to use their own name.</p>
+            <p className="text-xs text-[var(--muted)]">Only visible to you.</p>
             <input
               type="text"
               value={displayNameValue}
