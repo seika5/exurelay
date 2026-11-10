@@ -3,7 +3,7 @@
  *
  * - Offline: the app's own files only (same origin, GET). Pages are network-first, hashed build files cache-first.
  *   Nothing from any Exurelay server (messages, keys) is ever cached here.
- * - Push: only @mentions and call rings. The payload is encrypted device to device (relay-web/src/lib/push.ts). In
+ * - Push: @mentions and call rings, and every message and call start if turned on. The payload is encrypted device to device (relay-web/src/lib/push.ts). In
  *   app-storage mode this device's key is in IndexedDB as a non-extractable CryptoKey, which a service worker can
  *   use: decrypt, then show it with *your* name for the sender. Otherwise (folder mode, or anything unexpected) the
  *   notification is generic.
@@ -124,17 +124,19 @@ self.addEventListener("push", (event) => {
       }
       // The app is on screen: it shows the mention or call itself, so no banner. Safari still needs every push to show
       // a notification (or it drops the subscription), so show one and take it away at once.
+      // On screen means visible *and* focused: iPhone can report a backgrounded app as still visible, which would make
+      // a real notification silent and take it away at once.
       const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-      const inApp = windows.some((c) => c.visibilityState === "visible");
-      // Every-message pushes share one notification, so a busy chat doesn't stack them up.
-      const tag = inApp ? "relay-in-app" : data.kind === "ring" ? "relay-ring" : data.kind === "message" ? "relay-message" : undefined;
+      const inApp = windows.some((c) => c.visibilityState === "visible" && c.focused);
+      // No tag outside the app: Safari has no renotify, so a notification replacing an earlier one with the same tag
+      // arrives without a sound or banner.
+      const tag = inApp ? "relay-in-app" : undefined;
       // Every push must show a notification (Safari revokes subscriptions that don't).
       // The message is the title: iPhone already adds "from Exurelay" under it, so an "Exurelay" title only repeats it.
       await self.registration.showNotification(text(data.kind), {
         icon: `${BASE}icon-192.png`,
         badge: `${BASE}icon-192.png`,
         tag,
-        renotify: !inApp && data.kind === "message",
         silent: inApp,
       });
       if (inApp) for (const n of await self.registration.getNotifications({ tag })) n.close();
