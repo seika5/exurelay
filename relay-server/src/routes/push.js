@@ -105,7 +105,8 @@ export function pushRouter(prisma, auth, requireToken, { publicUrl = process.env
           await webpush.sendNotification(
             { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
             JSON.stringify({ kind, server: publicUrl, payload: item.payload }),
-            { TTL: kind === "ring" || kind === "call" ? 60 : 3600, urgency: kind === "message" ? "normal" : "high" }
+            // High urgency for all: Apple and Android may hold back or batch anything lower until the phone wakes.
+            { TTL: kind === "ring" || kind === "call" ? 60 : 3600, urgency: "high" }
           );
           sent++;
         } catch (e) {
