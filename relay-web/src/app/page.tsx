@@ -45,7 +45,7 @@ import { GroupMembers } from "@/components/GroupMembers";
 import { groupFields, membershipChange, newGroupId } from "@/lib/groups";
 import { Avatar, GroupIcon } from "@/components/Avatar";
 import { encodeAvatar, isAvatarData } from "@/lib/avatar";
-import { loadGroupInfo, saveGroupInfo, type GroupInfo } from "@/lib/messageCache";
+import { loadGroupInfo, nextGroupInfo, saveGroupInfo, type GroupInfo } from "@/lib/messageCache";
 
 const GROUP_BREAK_MS = 10 * 60 * 1000;
 
@@ -539,8 +539,8 @@ function Chat() {
   );
 
   // Group names and pictures. The messages that set them expire like any other, so each device also keeps the latest
-  // of each (encrypted, messageCache.ts GroupInfo) and uses whichever is newer. A group's entry goes once none of its
-  // messages are left, so a quiet group still disappears as usual.
+  // of each (encrypted, messageCache.ts GroupInfo) and uses whichever is newer. A group still disappears from the list
+  // once none of its messages are left; its saved entry goes 30 days after that.
   const [groupInfo, setGroupInfo] = useState<GroupInfo>({});
   const groupInfoLoaded = useRef(false);
   useEffect(() => {
@@ -579,11 +579,10 @@ function Chat() {
     return map;
   }, [conversations, messages, identity?.keyHash, groupInfo]);
 
-  // Keep the saved copy current, and only for groups that still have messages here.
+  // Keep the saved copy current, through a re-sync or clear too (messageCache.ts nextGroupInfo).
   useEffect(() => {
     if (!identity || !cacheKey || !cacheReady || !groupInfoLoaded.current) return;
-    const next: GroupInfo = {};
-    for (const [cid, d] of groupDetails) if (d.name !== undefined || d.icon !== undefined) next[cid] = d;
+    const next = nextGroupInfo(groupInfo, groupDetails);
     if (JSON.stringify(next) === JSON.stringify(groupInfo)) return;
     setGroupInfo(next);
     saveGroupInfo(identity.keyHash, cacheKey, next).catch(() => {});
