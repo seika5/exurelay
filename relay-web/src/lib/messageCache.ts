@@ -90,9 +90,26 @@ export async function saveMeta(owner: string, key: CryptoKey, meta: CacheMeta): 
 
 /**
  * Each group's latest name and picture, with when they were set, so they outlast the messages that set them (those
- * expire like any other). Dropped for a group once none of its messages are left (page.tsx).
+ * expire like any other). Kept 30 days after the group was last seen here (seenAt, by the day; page.tsx).
  */
-export type GroupInfo = Record<string, { name?: string; nameAt?: number; icon?: string; iconAt?: number }>;
+export type GroupInfo = Record<string, { name?: string; nameAt?: number; icon?: string; iconAt?: number; seenAt?: number }>;
+
+const DAY_MS = 24 * 60 * 60_000;
+/** How long a group's saved name and picture outlast its last message here. */
+export const GROUP_INFO_KEEP_MS = 30 * DAY_MS;
+
+/**
+ * What to save next: every group shown now (with seenAt today), plus saved groups missing for now (a re-sync or clear
+ * empties the list, then downloads again) seen within GROUP_INFO_KEEP_MS. seenAt is by the day, so this only changes
+ * when something does.
+ */
+export function nextGroupInfo(saved: GroupInfo, shown: Map<string, GroupInfo[string]>, now = Date.now()): GroupInfo {
+  const today = Math.floor(now / DAY_MS) * DAY_MS;
+  const next: GroupInfo = {};
+  for (const [cid, d] of Object.entries(saved)) if (!shown.has(cid) && (d.seenAt ?? 0) > today - GROUP_INFO_KEEP_MS) next[cid] = d;
+  for (const [cid, d] of shown) if (d.name !== undefined || d.icon !== undefined) next[cid] = { ...d, seenAt: today };
+  return next;
+}
 
 export async function loadGroupInfo(owner: string, key: CryptoKey): Promise<GroupInfo> {
   const record = await run<MetaRecord | undefined>("readonly", (s) => s.get(`${owner}|groups`), CACHE_META);

@@ -4,7 +4,7 @@
 
 import "fake-indexeddb/auto";
 import { describe, it, expect } from "vitest";
-import { appCacheKey, deleteMessages, expired, loadCache, loadGroupInfo, saveGroupInfo, saveMeta, saveMessages, wipeCache, type CachedMessage } from "../messageCache";
+import { appCacheKey, deleteMessages, expired, loadCache, GROUP_INFO_KEEP_MS, loadGroupInfo, nextGroupInfo, saveGroupInfo, saveMeta, saveMessages, wipeCache, type CachedMessage } from "../messageCache";
 import { CACHE_MESSAGES, run } from "../keystore";
 
 const msg = (id: string, expiresAt = Date.now() + 86_400_000): CachedMessage => ({
@@ -82,5 +82,32 @@ describe("group names and pictures kept on the device", () => {
     expect(await loadGroupInfo("own-g", key)).toEqual(info);
     await wipeCache("own-g", "all");
     expect(await loadGroupInfo("own-g", key)).toEqual({});
+  });
+});
+
+describe("nextGroupInfo", () => {
+  const day = 24 * 60 * 60_000;
+  const now = 100 * day;
+
+  it("keeps a group's name while a re-sync has emptied the list, so an expired rename doesn't reset it", () => {
+    const saved = nextGroupInfo({}, new Map([["group:g1", { name: "Trip", nameAt: 5 }]]), now);
+    expect(saved["group:g1"]).toMatchObject({ name: "Trip", seenAt: now });
+    const during = nextGroupInfo(saved, new Map(), now); // re-sync: nothing shown for a moment
+    expect(during["group:g1"]?.name).toBe("Trip");
+    // Downloaded again without the (expired) rename: the group shows with what was saved.
+    const after = nextGroupInfo(during, new Map([["group:g1", { ...during["group:g1"] }]]), now);
+    expect(after["group:g1"]?.name).toBe("Trip");
+  });
+
+  it("drops a group missing for longer than the keep time, and doesn't change within a day", () => {
+    const saved = nextGroupInfo({}, new Map([["group:g1", { name: "Trip" }]]), now);
+    expect(nextGroupInfo(saved, new Map(), now + GROUP_INFO_KEEP_MS - day)["group:g1"]).toBeDefined();
+    expect(nextGroupInfo(saved, new Map(), now + GROUP_INFO_KEEP_MS + day)["group:g1"]).toBeUndefined();
+    const shown = new Map([["group:g1", { ...saved["group:g1"] }]]);
+    expect(nextGroupInfo(saved, shown, now + 3600_000)).toEqual(saved);
+  });
+
+  it("doesn't save groups with neither name nor picture", () => {
+    expect(nextGroupInfo({}, new Map([["group:g2", {}]]), now)).toEqual({});
   });
 });
